@@ -54,6 +54,8 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <limits.h>
+#include <errno.h>
+#include <fcntl.h>
 
 #define USE_DECMOUSE 1
 #define USE_FILTER_RECTANGLE 1
@@ -63,6 +65,7 @@ void KdExecuteChildCommand(void);
 extern Bool kdRawPointerCoordinates;
 
 static void sixelFini(void);
+static void sixelStopResizeMonitor(void);
 static Bool sixelScreenInit(KdScreenInfo *screen);
 static Bool sixelFinishInitScreen(ScreenPtr pScreen);
 static Bool sixelCreateRes(ScreenPtr pScreen);
@@ -1224,6 +1227,121 @@ sixelApplyTerminalSize(SIXEL_Driver *driver)
     fflush(stdout);
 }
 
+/* A self-pipe wakes the server without doing X server work in SIGWINCH. */
+static int sixelResizePipe[2] = {-1, -1};
+static volatile sig_atomic_t sixelResizeWriteFd = -1;
+static struct sigaction sixelPreviousWinch;
+static Bool sixelWinchInstalled;
+static OsTimerPtr sixelResizeTimer;
+
+static void
+sixelHandleWinch(int signo)
+{
+    int saved_errno = errno;
+    int fd = sixelResizeWriteFd;
+    char byte = 0;
+
+    if (fd >= 0) {
+        /* EAGAIN means the pipe already contains a wakeup. */
+        while (write(fd, &byte, 1) < 0 && errno == EINTR)
+            ;
+    }
+    errno = saved_errno;
+}
+
+static CARD32
+sixelResizeTimeout(OsTimerPtr timer, CARD32 now, void *arg)
+{
+    SIXEL_Driver *driver = g_driver;
+
+    if (!driver)
+        return 0;
+    /* Pixel and cell dimensions must belong to this terminal configuration.
+     * In particular, do not reuse cell geometry after a font-size change. */
+    driver->pixel_w = driver->pixel_h = 0;
+    driver->cell_w = driver->cell_h = 0;
+    driver->cell_pixel_w = driver->cell_pixel_h = 0;
+    driver->pixel_size_reported = FALSE;
+    sixelReadTerminalSize(driver);
+    if (sixelValidSize(driver->pixel_w, driver->pixel_h))
+        sixelApplyTerminalSize(driver);
+    return 0;
+}
+
+static void
+sixelResizeNotify(int fd, int ready, void *data)
+{
+    char bytes[128];
+    ssize_t count;
+
+    do {
+        count = read(fd, bytes, sizeof(bytes));
+    } while (count > 0 || (count < 0 && errno == EINTR));
+    /* Restart the quiet period each time more resize signals arrive. */
+    sixelResizeTimer = TimerSet(sixelResizeTimer, 0, 100,
+                                sixelResizeTimeout, NULL);
+}
+
+static Bool
+sixelStartResizeMonitor(void)
+{
+    struct sigaction action = {0};
+    int i, flags;
+
+    if (pipe(sixelResizePipe) < 0)
+        return FALSE;
+    for (i = 0; i < 2; i++) {
+        flags = fcntl(sixelResizePipe[i], F_GETFL);
+        if (flags < 0 ||
+            fcntl(sixelResizePipe[i], F_SETFL, flags | O_NONBLOCK) < 0 ||
+            fcntl(sixelResizePipe[i], F_SETFD, FD_CLOEXEC) < 0)
+            goto fail;
+    }
+    if (!SetNotifyFd(sixelResizePipe[0], sixelResizeNotify, X_NOTIFY_READ, NULL))
+        goto fail;
+    action.sa_handler = sixelHandleWinch;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = SA_RESTART;
+    sixelResizeWriteFd = sixelResizePipe[1];
+    if (sigaction(SIGWINCH, &action, &sixelPreviousWinch) < 0)
+        goto fail;
+    sixelWinchInstalled = TRUE;
+    return TRUE;
+
+fail:
+    sixelStopResizeMonitor();
+    return FALSE;
+}
+
+static void
+sixelStopResizeMonitor(void)
+{
+    sigset_t blocked, previous;
+
+    sigemptyset(&blocked);
+    sigaddset(&blocked, SIGWINCH);
+    sigprocmask(SIG_BLOCK, &blocked, &previous);
+    sixelResizeWriteFd = -1;
+    if (sixelWinchInstalled) {
+        sigaction(SIGWINCH, &sixelPreviousWinch, NULL);
+        sixelWinchInstalled = FALSE;
+    }
+    if (sixelResizeTimer) {
+        TimerFree(sixelResizeTimer);
+        sixelResizeTimer = NULL;
+    }
+    if (sixelResizePipe[0] >= 0) {
+        RemoveNotifyFd(sixelResizePipe[0]);
+        close(sixelResizePipe[0]);
+        sixelResizePipe[0] = -1;
+    }
+    if (sixelResizePipe[1] >= 0) {
+        close(sixelResizePipe[1]);
+        sixelResizePipe[1] = -1;
+    }
+    sigprocmask(SIG_SETMASK, &previous, NULL);
+}
+
 static void sixelPollInput(void)
 {
     int posted = 0;
@@ -1476,6 +1594,7 @@ static void sixelFini(void)
     struct timeval timeout;
     char buf[4096];
 
+    sixelStopResizeMonitor();
     printf("\033\\");
     fflush(stdout);
 #if USE_DECMOUSE
@@ -1557,6 +1676,8 @@ void ddxInit(void)
     KdOsInit(&sixelOsFuncs);
     sixelInit();
     SetNotifyFd(STDIN_FILENO, sixelNotifyFd, X_NOTIFY_READ, NULL);
+    if (!sixelStartResizeMonitor())
+        FatalError("Xsixel: could not monitor terminal size changes\n");
 }
 
 /* Input thread hook (may be called by os/inputthread.c) */

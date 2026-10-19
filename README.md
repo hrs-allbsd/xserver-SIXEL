@@ -118,11 +118,15 @@ only reports rows and columns, Xsixel also asks for its pixel dimensions and
 character-cell size. It starts at 640x480 if those dimensions are unavailable,
 then resizes through RandR when a valid reply arrives. Explicit dimensions such
 as `-screen 1024x768` remain fixed. Terminal replies do not block startup.
-Automatic tracking of subsequent terminal window changes via SIGWINCH is not
-implemented yet.
+Terminal window changes are detected through SIGWINCH. Updates are applied after
+100 ms without another resize notification, so dragging the terminal window does
+not repeatedly reallocate the framebuffer. When pixel dimensions are unavailable,
+Xsixel queries the terminal again and keeps the current screen size until a valid
+reply arrives. Explicit `-screen` dimensions remain fixed during window changes.
 
 The PTY integration tests cover sizing, delayed and fragmented replies, RandR
-notifications, drawing, pointer bounds, and allocation failure recovery:
+notifications, SIGWINCH resizing and coalescing, font-size changes, drawing,
+pointer bounds, allocation failure recovery, and shutdown with a pending resize:
 
 ```sh
 meson test -C build-xsixel --suite xsixel --print-errorlogs
