@@ -306,7 +306,7 @@ class Autosize(unittest.TestCase):
         self.assertEqual(received, [(ord('a'), b'a'), (ord('A'), b'A'),
                                      (0xff0d, b'\r'), (0xff52, b'')])
 
-    def test_display_modes_and_bottom_edge_full_frames(self):
+    def test_display_modes_and_bottom_edge_updates(self):
         server = self.server(pixels=(800, 600))
         server.wait_output(b'\x1b[?80s\x1b[?80h')
         server.wait_output(b'\x1b[>3p')
@@ -330,6 +330,27 @@ class Autosize(unittest.TestCase):
         self.assertIn(b'\x1b[>0p', server.output)
         self.assertIn(b'\x1b[?25h', server.output)
         self.assertLess(server.output.rfind(b'\x1bP'), server.output.rfind(b'\x1b[?80r'))
+
+    def test_small_damage_uses_transparent_pixel_offset(self):
+        server = self.server(pixels=(800, 600))
+        server.wait_output(b'\x1bP')
+        time.sleep(0.1)
+        start = len(server.output)
+        window = server.x11.XCreateSimpleWindow(server.display, server.root, 701, 563,
+                                                13, 11, 0, 0, 0x0000ff)
+        server.x11.XMapWindow(server.display, window)
+        server.x11.XClearWindow(server.display, window)
+        server.x11.XSync(server.display, False)
+        # The RGB crop is only 13x18; preceding rows/columns are transparent
+        # positioning commands, even when the coordinates are not cell-aligned.
+        prefix = b'\x1bP0;1q"1;1;714;576' + b'-' * 93 + b'!701?'
+        server.wait_output(prefix, start)
+        server.wait_output(b'\x1b\\', start)
+        time.sleep(0.03)
+        packet = bytes(server.output[start:])
+        self.assertNotIn(b'q"1;1;800;600', packet)
+        self.assertNotIn(b'\x1b[?80l', packet)
+        self.assertLess(len(packet), 10000)
 
     def test_initial_ioctl_pixels(self):
         server = self.server(pixels=(800, 600))

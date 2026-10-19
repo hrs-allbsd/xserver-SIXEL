@@ -134,7 +134,7 @@ KdCardFuncs sixelFuncs = {
 
 int mouseState = 0;
 
-enum { SIXEL_FRAME_INTERVAL = 50 };
+enum { SIXEL_FRAME_INTERVAL = 8 };
 
 typedef struct
 {
@@ -155,6 +155,9 @@ typedef struct
 #ifdef HAVE_LIBSIXEL
     sixel_dither_t *dither;
     sixel_output_t *output;
+    unsigned char *encoded;
+    size_t encoded_size, encoded_capacity;
+    Bool encode_failed;
 #endif
     /* chafa backend */
 #ifdef HAVE_CHAFA
@@ -167,6 +170,8 @@ typedef struct
 static SIXEL_Driver *g_driver = NULL;
 static OsTimerPtr sixelFrameTimer;
 static Bool sixelFramePending;
+static RegionRec sixelPendingDamage;
+static Bool sixelDamageInitialized;
 static int sixelHostCursorFd = -1;
 
 /* Screen coordinates and damage rectangles use signed 16-bit coordinates. */
@@ -489,6 +494,82 @@ static void tty_restore(void)
     tcsetattr(fileno(stdin), TCSADRAIN, &orig_termios);
 }
 
+#ifdef HAVE_LIBSIXEL
+/* Blank SIXEL columns/rows advance the raster without touching existing pixels
+ * when DCS parameter Pb is 1. This permits exact pixel offsets with DECSDM set. */
+static void
+sixelHorizontalOffset(int x)
+{
+    if (x)
+        printf("!%d?", x);
+}
+
+static Bool
+sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
+{
+    int x1 = max(0, damage->x1), y1 = max(0, damage->y1);
+    int x2 = min(driver->w, damage->x2), y2 = min(driver->h, damage->y2);
+    int x, y, width, height;
+    size_t body, end, chunk, i;
+    SIXELSTATUS status;
+
+    if (x1 >= x2 || y1 >= y2)
+        return TRUE;
+    y1 = y1 / 6 * 6;
+    y2 = min(driver->h, (y2 + 5) / 6 * 6);
+    width = x2 - x1;
+    height = y2 - y1;
+    for (y = y1; y < y2; y++) {
+        unsigned char *src = driver->buffer + (size_t)y * driver->pitch + x1 * 4;
+        unsigned char *dst = driver->bitmap + (size_t)(y - y1) * width * 3;
+        for (x = 0; x < width; x++, src += 4, dst += 3) {
+            dst[0] = src[2];
+            dst[1] = src[1];
+            dst[2] = src[0];
+        }
+    }
+    driver->encoded_size = 0;
+    driver->encode_failed = FALSE;
+    status = sixel_encode(driver->bitmap, width, height, 3,
+                          driver->dither, driver->output);
+    if (SIXEL_FAILED(status) || driver->encode_failed)
+        return FALSE;
+    /* Keep libsixel's palette and pixel data, replacing only the envelope and
+     * raster attributes. No RGB pixels are allocated for the transparent gap. */
+    end = driver->encoded_size;
+    if (end < 4 || driver->encoded[0] != '\033' || driver->encoded[1] != 'P' ||
+        driver->encoded[end - 2] != '\033' || driver->encoded[end - 1] != '\\')
+        return FALSE;
+    body = 2;
+    while (body < end && driver->encoded[body] != 'q')
+        body++;
+    if (++body >= end - 2)
+        return FALSE;
+    if (driver->encoded[body] == '"') {
+        body++;
+        while (body < end - 2 &&
+               ((driver->encoded[body] >= '0' && driver->encoded[body] <= '9') ||
+                driver->encoded[body] == ';'))
+            body++;
+    }
+    printf("\033P0;1q\"1;1;%d;%d", x2, y2);
+    for (y = 0; y < y1; y += 6)
+        putchar('-');
+    sixelHorizontalOffset(x1);
+    chunk = body;
+    for (i = body; i < end - 2; i++) {
+        if (driver->encoded[i] == '$' || driver->encoded[i] == '-') {
+            fwrite(driver->encoded + chunk, 1, i + 1 - chunk, stdout);
+            sixelHorizontalOffset(x1);
+            chunk = i + 1;
+        }
+    }
+    fwrite(driver->encoded + chunk, 1, end - 2 - chunk, stdout);
+    printf("\033\\");
+    return TRUE;
+}
+#endif
+
 static int sixelRenderFrame(SIXEL_Driver *driver)
 {
 #ifdef HAVE_CHAFA
@@ -502,21 +583,9 @@ static int sixelRenderFrame(SIXEL_Driver *driver)
 #endif
 #ifdef HAVE_LIBSIXEL
     if (g_renderer == RENDERER_LIBSIXEL) {
-        int x, y;
-        unsigned char *dst3 = driver->bitmap;
-        for (y = 0; y < driver->h; ++y) {
-            unsigned char *src32 = driver->buffer + y * driver->pitch;
-            for (x = 0; x < driver->w; ++x) {
-                unsigned char b = src32[0];
-                unsigned char g = src32[1];
-                unsigned char r = src32[2];
-                dst3[0] = r; dst3[1] = g; dst3[2] = b;
-                src32 += 4;
-                dst3  += 3;
-            }
-        }
-        printf("\033[H");
-        sixel_encode(driver->bitmap, driver->w, driver->h, 3, driver->dither, driver->output);
+        BoxRec full = {0, 0, driver->w, driver->h};
+        if (!sixelRenderRect(driver, &full))
+            ErrorF("Xsixel: could not encode full frame\n");
     }
 #endif
 #ifdef HAVE_CHAFA
@@ -567,8 +636,7 @@ static int sixelRenderFrame(SIXEL_Driver *driver)
 }
 
 
-/* DECSDM anchors every graphic at the top-left. Coalesce damage into a
- * complete frame instead of sending cropped graphics at cursor positions. */
+/* Poll shadow damage cheaply; encode only the changed pixels. */
 static CARD32
 sixelFrameTimeout(OsTimerPtr timer, CARD32 now, void *arg)
 {
@@ -579,6 +647,17 @@ sixelFrameTimeout(OsTimerPtr timer, CARD32 now, void *arg)
         if (sixelFramePending) {
             sixelFramePending = FALSE;
             sixelRenderFrame(g_driver);
+            RegionEmpty(&sixelPendingDamage);
+            fflush(stdout);
+        } else if (RegionNotEmpty(&sixelPendingDamage)) {
+#ifdef HAVE_LIBSIXEL
+            if (g_renderer == RENDERER_LIBSIXEL) {
+                if (!sixelRenderRect(g_driver, RegionExtents(&sixelPendingDamage)))
+                    ErrorF("Xsixel: could not encode damaged region\n");
+            } else
+#endif
+                sixelRenderFrame(g_driver);
+            RegionEmpty(&sixelPendingDamage);
             fflush(stdout);
         }
     }
@@ -649,7 +728,25 @@ sixelSetScreenSizes(ScreenPtr pScreen)
 
 static int sixel_write(char *data, int size, void *priv)
 {
-    return fwrite(data, 1, size, (FILE *)priv);
+    SIXEL_Driver *driver = priv;
+    size_t needed = driver->encoded_size + (size_t)size;
+    if (driver->encode_failed || size < 0 || needed < driver->encoded_size) {
+        driver->encode_failed = TRUE;
+        return 0;
+    }
+    if (needed > driver->encoded_capacity) {
+        size_t capacity = max(needed, driver->encoded_capacity * 2);
+        unsigned char *encoded = realloc(driver->encoded, capacity);
+        if (!encoded) {
+            driver->encode_failed = TRUE;
+            return 0;
+        }
+        driver->encoded = encoded;
+        driver->encoded_capacity = capacity;
+    }
+    memcpy(driver->encoded + driver->encoded_size, data, size);
+    driver->encoded_size = needed;
+    return size;
 }
 
 static Bool sixelScreenInit(KdScreenInfo *screen)
@@ -676,6 +773,8 @@ static Bool sixelScreenInit(KdScreenInfo *screen)
         return FALSE;
     }
     g_driver = driver;
+    RegionInit(&sixelPendingDamage, NullBox, 0);
+    sixelDamageInitialized = TRUE;
     /* Force a sane default pixel format (depth 24, bpp 32, XRGB8888). */
     screen->fb.depth = 24;
     screen->fb.bitsPerPixel = 32;
@@ -704,7 +803,9 @@ static Bool sixelScreenInit(KdScreenInfo *screen)
 
 #ifdef HAVE_LIBSIXEL
     if (g_renderer == RENDERER_LIBSIXEL) {
-        driver->output = sixel_output_create(sixel_write, stdout);
+        if (SIXEL_FAILED(sixel_output_new(&driver->output, sixel_write, driver, NULL)))
+            return FALSE;
+        sixel_output_set_8bit_availability(driver->output, 0);
         driver->dither = sixel_dither_get(BUILTIN_XTERM256);
     }
 #endif
@@ -735,8 +836,7 @@ static void sixelShadowUpdate(ScreenPtr pScreen, shadowBufPtr pBuf)
     SIXEL_Driver *driver = screen->driver;
     if (driver->shadow)
         shadowUpdatePacked(pScreen, pBuf);
-    if (pixman_region_not_empty(&pBuf->pDamage->damage))
-        SIXEL_Flip(driver);
+    RegionUnion(&sixelPendingDamage, &sixelPendingDamage, &pBuf->pDamage->damage);
 }
 
 static void *sixelShadowWindow(ScreenPtr pScreen, CARD32 row, CARD32 offset, int mode, CARD32 *size, void *closure)
@@ -1482,6 +1582,10 @@ static void sixelFini(void)
         sixelFrameTimer = NULL;
     }
     sixelFramePending = FALSE;
+    if (sixelDamageInitialized) {
+        RegionUninit(&sixelPendingDamage);
+        sixelDamageInitialized = FALSE;
+    }
     printf("\033\\");
     fflush(stdout);
     if (sixelDecMouse)
@@ -1519,6 +1623,7 @@ static void sixelFini(void)
             sixel_dither_unref(g_driver->dither);
         if (g_driver->output)
             sixel_output_unref(g_driver->output);
+        free(g_driver->encoded);
 #endif
         free(g_driver->buffer);
         free(g_driver->bitmap);

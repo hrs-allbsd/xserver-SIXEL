@@ -153,11 +153,13 @@ meson test -C build-xsixel --suite xsixel --print-errorlogs
 
 The suite requires Python 3, libX11, libXrandr, `xdpyinfo`, and `xsetroot`.
 
-Xsixel disables SIXEL scrolling and sends complete frames from the top-left,
-including for damage at the bottom edge. Updates are coalesced at 50 ms intervals
-(up to 20 frames per second); unchanged frames are not transmitted. This uses
-more bandwidth than cropped updates. The terminal's SIXEL mode is saved on
-startup and restored on exit.
+Xsixel disables SIXEL scrolling. The libsixel backend converts and transmits
+only the damaged rectangle, using transparent SIXEL rows and columns to position
+it from the top-left without erasing surrounding pixels. Vertical damage is
+aligned to six-pixel bands. Full redraws are used for initialization, resizing,
+and explicit refresh. Pending updates are collected at 8 ms intervals; unchanged
+frames are not transmitted. The optional Chafa backend still uses full redraws.
+The terminal's SIXEL mode is saved on startup and restored on exit.
 
 When built with libX11 and libXfixes development files, Xsixel uses the outer
 terminal's `DISPLAY` and `WINDOWID` to hide its host pointer while the pointer is
