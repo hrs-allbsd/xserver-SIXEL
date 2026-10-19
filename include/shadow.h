@@ -68,6 +68,9 @@ typedef struct _shadowBuf {
 #define SHADOW_REFLECT_Y    32
 #define SHADOW_REFLECT_ALL  (SHADOW_REFLECT_X|SHADOW_REFLECT_Y)
 
+/* Flush pending damage before a DDX schedules its next frame. */
+extern _X_EXPORT void shadowRedisplay(ScreenPtr pScreen);
+
 extern _X_EXPORT Bool
  shadowSetup(ScreenPtr pScreen);
 

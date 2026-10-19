@@ -29,6 +29,7 @@
 #include "os/cmdline.h"
 #include "os/ddx_priv.h"
 #include "sixel-config.h"
+#include "hostcursor.h"
 #ifdef HAVE_CHAFA
 #include <chafa.h>
 /* Ensure we use a non-premultiplied BGRA format; fallback aliases for older API names */
@@ -133,7 +134,7 @@ KdCardFuncs sixelFuncs = {
 
 int mouseState = 0;
 
-enum { NUMRECTS = 32, FULLSCREEN_REFRESH_TIME = 1000 };
+enum { SIXEL_FRAME_INTERVAL = 50 };
 
 typedef struct
 {
@@ -164,6 +165,9 @@ typedef struct
 } SIXEL_Driver;
 
 static SIXEL_Driver *g_driver = NULL;
+static OsTimerPtr sixelFrameTimer;
+static Bool sixelFramePending;
+static int sixelHostCursorFd = -1;
 
 /* Screen coordinates and damage rectangles use signed 16-bit coordinates. */
 static Bool
@@ -485,7 +489,7 @@ static void tty_restore(void)
     tcsetattr(fileno(stdin), TCSADRAIN, &orig_termios);
 }
 
-static int SIXEL_Flip(SIXEL_Driver *driver)
+static int sixelRenderFrame(SIXEL_Driver *driver)
 {
 #ifdef HAVE_CHAFA
     if (g_renderer == RENDERER_CHAFA &&
@@ -493,9 +497,6 @@ static int SIXEL_Flip(SIXEL_Driver *driver)
          driver->pixel_w < driver->cell_w || driver->pixel_h < driver->cell_h))
         return 0;
 #endif
-    int start_row = 1;
-    int start_col = 1;
-
 #if USE_MUTEX
     pthread_mutex_lock(&sixel_mutex);
 #endif
@@ -514,8 +515,7 @@ static int SIXEL_Flip(SIXEL_Driver *driver)
                 dst3  += 3;
             }
         }
-    printf("\033[%d;%dH", start_row, start_col);
-printf("\033]2;Filp;start_row: %d, start_col: %d, driver->w: %d, driver->h: %d, driver->pitch: %d\007", start_row, start_col, driver->w, driver->h, driver->pitch);
+        printf("\033[H");
         sixel_encode(driver->bitmap, driver->w, driver->h, 3, driver->dither, driver->output);
     }
 #endif
@@ -567,133 +567,37 @@ printf("\033]2;Filp;start_row: %d, start_col: %d, driver->w: %d, driver->h: %d, 
 }
 
 
-static void SIXEL_UpdateRects(SIXEL_Driver *driver, int numrects, pixman_box16_t *rects)
+/* DECSDM anchors every graphic at the top-left. Coalesce damage into a
+ * complete frame instead of sending cropped graphics at cursor positions. */
+static CARD32
+sixelFrameTimeout(OsTimerPtr timer, CARD32 now, void *arg)
 {
-    int start_row = 1, start_col = 1;
-    int cell_height = 0, cell_width = 0;
-    int i, y;
-    unsigned char *dst;
-#if SIXEL_VIDEO_DEBUG
-    static int frames = 0;
-    char *format;
-#endif
-    pixman_box16_t box;
-
-    box.x1 = SHRT_MAX;
-    box.y1 = SHRT_MAX;
-    box.x2 = 0;
-    box.y2 = 0;
-
-    if (numrects <= 0)
-        return;
-    if (driver->cell_w > 0 && driver->cell_h > 0 &&
-        driver->pixel_w >= driver->cell_w &&
-        driver->pixel_h >= driver->cell_h) {
-#if USE_MUTEX
-        pthread_mutex_lock(&sixel_mutex);
-#endif
-#ifdef HAVE_CHAFA
-        if (g_renderer == RENDERER_CHAFA) {
-            /* Convert 32bpp XRGB to packed RGB8 to avoid alpha issues */
-            int x, y;
-            unsigned char *dst3 = driver->bitmap;
-            for (y = 0; y < driver->h; ++y) {
-                unsigned char *src32 = driver->buffer + y * driver->pitch;
-                for (x = 0; x < driver->w; ++x) {
-                    unsigned char b = src32[0];
-                    unsigned char g = src32[1];
-                    unsigned char r = src32[2];
-                    dst3[0] = r; dst3[1] = g; dst3[2] = b;
-                    src32 += 4;
-                    dst3  += 3;
-                }
-            }
-            cell_height = driver->pixel_h / driver->cell_h;
-            cell_width = driver->pixel_w / driver->cell_w;
-            chafa_canvas_config_set_cell_geometry(driver->chafa_cfg,
-                                                  driver->pixel_w / driver->cell_w,
-                                                  driver->pixel_h / driver->cell_h);
-            chafa_canvas_config_set_geometry(driver->chafa_cfg,
-                                             driver->cell_w,
-                                             driver->cell_h);
-            driver->chafa_canvas = chafa_canvas_new(g_driver->chafa_cfg);
-            chafa_canvas_draw_all_pixels(driver->chafa_canvas,
-                                         CHAFA_PIXEL_RGB8,
-                                         driver->bitmap,
-                                         driver->w,
-                                         driver->h,
-                                         driver->w * 3);
-            GString *s = chafa_canvas_print(driver->chafa_canvas, driver->chafa_tinfo);
-            if (s) {
-                printf("\033[H");
-                fwrite(s->str, 1, s->len, stdout);
-                g_string_free(s, TRUE);
-            }
-            chafa_canvas_unref(driver->chafa_canvas);
-            driver->chafa_canvas = NULL;
+    if (g_driver) {
+        /* Also collect damage when no client is issuing GetImage requests. */
+        if (g_driver->screen->pScreen)
+            shadowRedisplay(g_driver->screen->pScreen);
+        if (sixelFramePending) {
+            sixelFramePending = FALSE;
+            sixelRenderFrame(g_driver);
+            fflush(stdout);
         }
-#endif
-#ifdef HAVE_LIBSIXEL
-        if (g_renderer == RENDERER_LIBSIXEL) {
-            for (i = 0; i < numrects; ++i, ++rects) {
-                if (rects->x1 < box.x1) {
-                    box.x1 = rects->x1;
-                }
-                if (rects->y1 < box.y1) {
-                    box.y1 = rects->y1;
-                }
-                if (rects->x2 > box.x2) {
-                    box.x2 = rects->x2;
-                }
-                if (rects->y2 > box.y2) {
-                    box.y2 = rects->y2;
-                }
-            }
-            start_row = 1;
-            start_col = 1;
-            cell_height = driver->pixel_h / driver->cell_h;
-            cell_width = driver->pixel_w / driver->cell_w;
-            start_row += box.y1 / cell_height;
-            start_col += box.x1 / cell_width;
-            box.y1 = (start_row - 1) * cell_height;
-            box.x1 = (start_col - 1) * cell_width;
-            box.y2 = min((box.y2 / cell_height + 1) * cell_height, driver->h);
-            box.x2 = min((box.x2 / cell_width + 1) * cell_width, driver->w);
-            for (y = box.y1; y < box.y2; ++y) {
-                unsigned char *src32 = driver->buffer + y * driver->pitch + box.x1 * 4;
-                dst = driver->bitmap + (y - box.y1) * (box.x2 - box.x1) * 3;
-                int x;
-                for (x = box.x1; x < box.x2; ++x) {
-                    unsigned char b = src32[0];
-                    unsigned char g = src32[1];
-                    unsigned char r = src32[2];
-                    *dst++ = r; *dst++ = g; *dst++ = b;
-                    src32 += 4;
-                }
-            }
-            printf("\033[%d;%dH", start_row, start_col);
-            sixel_encode(driver->bitmap,
-                         (box.x2 - box.x1),
-                         (box.y2 - box.y1),
-                         3,
-                         driver->dither,
-                         driver->output);
-        }
-#endif
-#if SIXEL_VIDEO_DEBUG
-        format = "\033[100;1Hframes: %05d, x: %04d, y: %04d, w: %04d, h: %04d";
-        printf(format, ++frames,
-               box.x1, box.y2,
-               box.x2 - box.x1,
-               box.y2 - box.y1);
-#endif
-#if USE_MUTEX
-        pthread_mutex_unlock(&sixel_mutex);
-#endif
-    } else {
-        SIXEL_Flip(driver);
     }
-    fflush(stdout);
+    return SIXEL_FRAME_INTERVAL;
+}
+
+static void
+SIXEL_Flip(SIXEL_Driver *driver)
+{
+    sixelFramePending = TRUE;
+    if (!sixelFrameTimer) {
+        sixelFrameTimer = TimerSet(NULL, 0, SIXEL_FRAME_INTERVAL,
+                                   sixelFrameTimeout, NULL);
+        if (!sixelFrameTimer) {
+            sixelFramePending = FALSE;
+            sixelRenderFrame(driver);
+            fflush(stdout);
+        }
+    }
 }
 
 
@@ -829,35 +733,10 @@ static void sixelShadowUpdate(ScreenPtr pScreen, shadowBufPtr pBuf)
     KdScreenPriv(pScreen);
     KdScreenInfo *screen = pScreenPriv->screen;
     SIXEL_Driver *driver = screen->driver;
-    pixman_box16_t * rects;
-    int amount, i;
-    int updateRectsPixelCount = 0;
-
     if (driver->shadow)
-    {
         shadowUpdatePacked(pScreen, pBuf);
-    }
-
-    rects = pixman_region_rectangles(&pBuf->pDamage->damage, &amount);
-    for (i = 0; i < amount; i++)
-    {
-        updateRectsPixelCount += (pBuf->pDamage->damage.extents.x2 - pBuf->pDamage->damage.extents.x1) *
-                                 (pBuf->pDamage->damage.extents.y2 - pBuf->pDamage->damage.extents.y1);
-    }
-#if 0
-    /*
-     * Each subrect is copied into temp buffer before uploading to OpenGL texture,
-     * so if total area of pixels copied is more than 1/3 of the whole screen area,
-     * there will be performance hit instead of optimization.
-     */
-    if (amount > NUMRECTS || updateRectsPixelCount * 3 > driver->w * driver->h) {
+    if (pixman_region_not_empty(&pBuf->pDamage->damage))
         SIXEL_Flip(driver);
-    } else {
-        SIXEL_UpdateRects(driver, amount, rects);
-    }
-#else
-    SIXEL_UpdateRects(driver, amount, rects);
-#endif
 }
 
 static void *sixelShadowWindow(ScreenPtr pScreen, CARD32 row, CARD32 offset, int mode, CARD32 *size, void *closure)
@@ -1039,6 +918,7 @@ static Bool sixelFinishInitScreen(ScreenPtr pScreen)
         return FALSE;
     }
 #endif
+    SIXEL_Flip(g_driver);
     return TRUE;
 }
 
@@ -1574,7 +1454,10 @@ static int sixelInit(void)
     printf("\033[H");
     printf("\033[?1004h");
     printf("\033[?25l");
-    printf("\033[>2p");
+    /* Save the terminal's SIXEL mode and prevent bottom-edge scrolling. */
+    printf("\033[?80s\033[?80h");
+    /* Request the strongest terminal fallback; XFixes handles motion too. */
+    printf("\033[>3p");
     mouseState = 0;
     sixelEnableMouse();
 
@@ -1589,12 +1472,23 @@ static void sixelFini(void)
     char buf[4096];
 
     sixelStopResizeMonitor();
+    if (sixelHostCursorFd >= 0) {
+        RemoveNotifyFd(sixelHostCursorFd);
+        sixelHostCursorFd = -1;
+    }
+    sixelHostCursorFini();
+    if (sixelFrameTimer) {
+        TimerFree(sixelFrameTimer);
+        sixelFrameTimer = NULL;
+    }
+    sixelFramePending = FALSE;
     printf("\033\\");
     fflush(stdout);
     if (sixelDecMouse)
         printf("\033[0'z\033[2;4'{");
     else
         printf("\033[?1003l\033[?1016l\033[?1006l");
+    printf("\033[?80r");
     printf("\033[>0p");
     printf("\033[?25h");
     printf("\033[?1004l");
@@ -1652,6 +1546,12 @@ static void sixelNotifyFd(int fd, int ready, void *data)
     sixelPollInput();
 }
 
+static void
+sixelHostCursorNotify(int fd, int ready, void *data)
+{
+    sixelHostCursorDispatch();
+}
+
 static int sixelOsInit(void)
 {
     return 1;
@@ -1667,6 +1567,15 @@ void ddxInit(void)
     /* Initialize terminal + sixel, then hook stdin for input */
     KdOsInit(&sixelOsFuncs);
     sixelInit();
+    sixelHostCursorFd = sixelHostCursorInit();
+    if (sixelHostCursorFd >= 0) {
+        if (!SetNotifyFd(sixelHostCursorFd, sixelHostCursorNotify, X_NOTIFY_READ, NULL)) {
+            sixelHostCursorFini();
+            sixelHostCursorFd = -1;
+        } else {
+            sixelHostCursorDispatch();
+        }
+    }
     SetNotifyFd(STDIN_FILENO, sixelNotifyFd, X_NOTIFY_READ, NULL);
     if (!sixelStartResizeMonitor())
         FatalError("Xsixel: could not monitor terminal size changes\n");

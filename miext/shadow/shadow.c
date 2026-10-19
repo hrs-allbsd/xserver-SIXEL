@@ -52,7 +52,7 @@ static DevPrivateKeyRec shadowScrPrivateKeyRec;
     (real)->mem = (priv)->mem; \
 }
 
-static void
+void
 shadowRedisplay(ScreenPtr pScreen)
 {
     shadowBuf(pScreen);
