@@ -513,6 +513,23 @@ class TmuxPassthrough(unittest.TestCase):
         self.assertIn(b'tmux set-option -p allow-passthrough on', result.stderr)
         self.assertNotIn(b'\x1b', result.stdout)
 
+    def test_mouse_cells_cover_screen_and_follow_resize(self):
+        self.tmux('set-option', '-g', 'allow-passthrough', 'on')
+        server = Server(pixels=(800, 600), env=self.env)
+        self.addCleanup(server.close)
+        server.wait_output(b'\x1b[?1006h\x1b[?1003h')
+        self.assertNotIn(b'\x1b[?1016h', server.output)
+        Autosize.mouse_events(self, server,
+            [b'\x1b[<0;1;1M', b'\x1b[<32;80;30M', b'\x1b[<0;80;30m',
+             b'\x1b[<64;40;15M'],
+            [(4, 1, 5, 10), (5, 1, 795, 590),
+             (4, 4, 395, 290), (5, 4, 395, 290)])
+        server.resize_terminal((1200, 800), cells=(100, 40))
+        server.wait_size(1200, 800)
+        Autosize.mouse_events(self, server,
+            [b'\x1b[<0;100;40M', b'\x1b[<0;100;40m'],
+            [(4, 1, 1194, 790), (5, 1, 1194, 790)])
+
     def test_enabled_wraps_images_and_mode_restore(self):
         for setting in ('on', 'all'):
             with self.subTest(setting=setting):

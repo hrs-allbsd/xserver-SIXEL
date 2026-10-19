@@ -1423,6 +1423,9 @@ sixelEnableMouse(void)
 {
     if (sixelDecMouse)
         printf("\033[1;1'z\033[1;3'{\033['w");
+    else if (sixelTmux)
+        /* tmux forwards SGR cell coordinates and does not implement 1016. */
+        printf("\033[?1006h\033[?1003h");
     else
         printf("\033[?1006h\033[?1016h\033[?1003h");
     fflush(stdout);
@@ -1461,6 +1464,17 @@ sixelMouseReport(sixel_key_t *key)
     flags = key->params[0];
     x = key->params[1] - 1;
     y = key->params[2] - 1;
+    if (sixelTmux && g_driver &&
+        g_driver->cell_w > 0 && g_driver->cell_h > 0) {
+        int width = g_driver->pixel_w > 0 ? g_driver->pixel_w : g_driver->w;
+        int height = g_driver->pixel_h > 0 ? g_driver->pixel_h : g_driver->h;
+
+        /* SGR 1006 from tmux is pane-relative, in cells. Place the pointer at
+         * the cell centre; use current terminal geometry after each resize.
+         * Outside tmux, 1016 continues to provide exact pixel coordinates. */
+        x = ((int64_t)x * width + width / 2) / g_driver->cell_w;
+        y = ((int64_t)y * height + height / 2) / g_driver->cell_h;
+    }
     button = flags & 3;
     if (flags & 64) {
         if (!release) {
