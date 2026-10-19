@@ -12,6 +12,7 @@ import pty
 import re
 import resource
 import select
+import signal
 import shutil
 import struct
 import subprocess
@@ -117,6 +118,21 @@ class Server:
 
     def reply(self, data):
         os.write(self.master, data)
+
+    def resize_terminal(self, pixels, cells=(80, 30)):
+        fcntl.ioctl(self.slave, termios.TIOCSWINSZ,
+                    struct.pack('HHHH', cells[1], cells[0], *pixels))
+        # The test PTY is not the child's controlling terminal, so explicitly
+        # deliver the signal a real terminal sends to its foreground process.
+        os.kill(self.process.pid, signal.SIGWINCH)
+
+    def wait_output(self, needle, start=0):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if needle in self.output[start:]:
+                return
+            time.sleep(0.01)
+        raise AssertionError(f'Terminal query not received: {needle!r}')
 
     def dimensions(self):
         result = subprocess.run(['xdpyinfo', '-display', self.name],
@@ -253,6 +269,68 @@ class Autosize(unittest.TestCase):
         server.reply(b'\x1b[4;600;800t')
         server.wait_size(800, 600)
         server.check_drawing_and_pointer(self, 800, 600)
+
+    def test_sigwinch_ioctl_grow_shrink_and_duplicate(self):
+        server = self.server(pixels=(800, 600))
+        for width, height in [(1024, 768), (320, 240), (800, 600)]:
+            server.resize_terminal((width, height))
+            server.wait_size(width, height)
+            self.assertIn((width, height), server.events())
+            server.check_drawing_and_pointer(self, width, height)
+        server.resize_terminal((800, 600))
+        time.sleep(0.2)
+        self.assertEqual(server.events(), [])
+
+    def test_sigwinch_burst_uses_final_size(self):
+        server = self.server(pixels=(800, 600))
+        for pixels in [(900, 600), (920, 620), (940, 640), (960, 660), (1000, 700)]:
+            server.resize_terminal(pixels)
+            time.sleep(0.01)
+        server.wait_size(1000, 700)
+        # RandR may send multiple notifications for one configuration change;
+        # no intermediate dimensions should become visible to clients.
+        sizes = server.events()
+        self.assertTrue(sizes)
+        self.assertEqual(set(sizes), {(1000, 700)})
+        server.check_drawing_and_pointer(self, 1000, 700)
+
+    def test_sigwinch_requeries_missing_pixels(self):
+        server = self.server(pixels=(800, 600))
+        start = len(server.output)
+        server.resize_terminal((0, 0), cells=(100, 40))
+        server.wait_output(b'\x1b[14t', start)
+        self.assertEqual(server.dimensions(), (800, 600))
+        server.reply(b'\x1b[4;720;1000t')
+        server.wait_size(1000, 720)
+        self.assertIn((1000, 720), server.events())
+        server.check_drawing_and_pointer(self, 1000, 720)
+
+    def test_sigwinch_font_change_does_not_reuse_old_cell_size(self):
+        server = self.server(cells=(80, 30))
+        server.reply(b'\x1b[6;20;10t')
+        server.wait_size(800, 600)
+        server.events()
+        start = len(server.output)
+        server.resize_terminal((0, 0), cells=(100, 40))
+        server.wait_output(b'\x1b[16t', start)
+        self.assertEqual(server.dimensions(), (800, 600))
+        self.assertEqual(server.events(), [])
+        server.reply(b'\x1b[6;16;8t')
+        server.wait_size(800, 640)
+        server.check_drawing_and_pointer(self, 800, 640)
+
+    def test_sigwinch_explicit_screen_remains_fixed(self):
+        server = self.server(pixels=(800, 600), args=('-screen', '1024x768'))
+        server.resize_terminal((320, 240))
+        time.sleep(0.2)
+        self.assertEqual(server.dimensions(), (1024, 768))
+        self.assertEqual(server.events(), [])
+        server.check_drawing_and_pointer(self, 1024, 768)
+
+    def test_sigwinch_pending_at_shutdown(self):
+        server = self.server(pixels=(800, 600))
+        server.resize_terminal((900, 700))
+        # Cleanup must cancel the pending timer and restore the signal handler.
 
     def test_allocation_failure_keeps_old_screen(self):
         server = self.server(memory_limit=True)
