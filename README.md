@@ -126,8 +126,10 @@ Passthrough draws directly on the outer terminal, so use a single pane or a
 zoomed pane (`Ctrl-b z`), preferably with the status line disabled
 (`tmux set-option status off`). Split-pane clipping, nested tmux, and automatic
 image restoration after switching windows are not handled; trigger an X redraw
-(e.g. `xrefresh -display :9`) if needed. Mouse forwarding still depends on tmux;
-this change addresses image output. Outside tmux, the existing direct output
+(e.g. `xrefresh -display :9`) if needed. tmux forwards SGR mouse positions in character cells rather than pixels. Xsixel
+converts them to pixel positions using the current pane geometry, including after
+a resize. Pointer movement is consequently quantized to cell centres in tmux;
+outside tmux, SGR pixel precision is retained. Outside tmux, the existing direct output
 and damage-based encoding are retained without extra buffering or subprocesses.
 
 Mouse input defaults to SGR pixel reporting (terminal modes 1003, 1006, and
