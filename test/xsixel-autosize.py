@@ -49,7 +49,7 @@ def library(name, functions):
 
 
 class Server:
-    def __init__(self, pixels=(0, 0), cells=(80, 30), args=(), memory_limit=False):
+    def __init__(self, pixels=(0, 0), cells=(80, 30), args=(), memory_limit=False, env=None):
         self.closed = False
         self.master, self.slave = pty.openpty()
         fcntl.ioctl(self.slave, termios.TIOCSWINSZ,
@@ -64,7 +64,9 @@ class Server:
         self.process = subprocess.Popen(
             [os.environ['XSIXEL'], '-displayfd', str(wfd), '-terminate', '-nolisten', 'tcp', '-ac', *args],
             stdin=self.slave, stdout=self.slave, stderr=self.log, pass_fds=(wfd,),
-            start_new_session=True, preexec_fn=limit_memory if memory_limit else None)
+            start_new_session=True, preexec_fn=limit_memory if memory_limit else None,
+            env=env if env is not None else {k: v for k, v in os.environ.items()
+                                             if k not in ("TMUX", "TMUX_PANE")})
         os.close(wfd)
         self.display = None
         try:
@@ -486,6 +488,49 @@ class Autosize(unittest.TestCase):
         server.reply(b'\x1b[4;600;800t')
         server.wait_size(800, 600)
         server.check_drawing_and_pointer(self, 800, 600)
+
+
+@unittest.skipUnless(shutil.which('tmux'), 'tmux not installed')
+class TmuxPassthrough(unittest.TestCase):
+    def setUp(self):
+        import uuid
+        self.socket = 'xsixel-test-' + uuid.uuid4().hex
+        self.tmux('new-session', '-d', '-s', 'test')
+        self.addCleanup(self.tmux, 'kill-server')
+        socket_path = self.tmux('display-message', '-p', '#{socket_path}').strip()
+        pane = self.tmux('display-message', '-p', '#{pane_id}').strip()
+        self.env = dict(os.environ, TMUX=socket_path + ',0,0', TMUX_PANE=pane)
+
+    def tmux(self, *args):
+        return subprocess.check_output(['tmux', '-L', self.socket, '-f', '/dev/null',
+                                        *args], text=True)
+
+    def test_disabled_explains_setting_before_terminal_changes(self):
+        self.tmux('set-option', '-p', 'allow-passthrough', 'off')
+        result = subprocess.run([os.environ['XSIXEL'], '-displayfd', '1'],
+                                env=self.env, capture_output=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b'tmux set-option -p allow-passthrough on', result.stderr)
+        self.assertNotIn(b'\x1b', result.stdout)
+
+    def test_enabled_wraps_images_and_mode_restore(self):
+        for setting in ('on', 'all'):
+            with self.subTest(setting=setting):
+                self.tmux('set-option', '-g', 'allow-passthrough', setting)
+                server = Server(pixels=(320, 240), env=self.env)
+                try:
+                    subprocess.run(['xsetroot', '-display', server.name, '-solid', 'red'],
+                                   check=True)
+                    deadline = time.monotonic() + 3
+                    prefix = b'\x1bPtmux;\x1b\x1b[H\x1b\x1bP0;1q'
+                    while prefix not in server.output and time.monotonic() < deadline:
+                        time.sleep(.02)
+                    self.assertIn(prefix, server.output)
+                    self.assertIn(b'\x1b\x1b\\\x1b\\', server.output)
+                    self.assertIn(b'\x1bPtmux;\x1b\x1b[?80s\x1b\x1b[?80h\x1b\\', server.output)
+                finally:
+                    server.close()
+                self.assertIn(b'\x1bPtmux;\x1b\x1b[?80r\x1b\\', server.output)
 
 
 if __name__ == '__main__':

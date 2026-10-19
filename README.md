@@ -109,6 +109,27 @@ Run Xsixel in a SIXEL-capable terminal. The optional Chafa renderer requires
 Chafa development files and `-Dchafa=true`; select it at runtime with
 `-backend chafa`. The default renderer is libsixel.
 
+Inside tmux, Xsixel detects `TMUX` and automatically sends SIXEL images through
+tmux passthrough, regardless of whether tmux was built with SIXEL support.
+Enable passthrough in the current pane before starting Xsixel:
+
+```sh
+tmux set-option -p allow-passthrough on
+```
+
+Alternatively, add `set -g allow-passthrough on` to `~/.tmux.conf` for future
+panes. Xsixel checks the effective pane setting at startup and exits with setup
+instructions if it is off; `on` and `all` are accepted. The outer terminal must
+support SIXEL. No tmux configuration is changed automatically.
+
+Passthrough draws directly on the outer terminal, so use a single pane or a
+zoomed pane (`Ctrl-b z`), preferably with the status line disabled
+(`tmux set-option status off`). Split-pane clipping, nested tmux, and automatic
+image restoration after switching windows are not handled; trigger an X redraw
+(e.g. `xrefresh -display :9`) if needed. Mouse forwarding still depends on tmux;
+this change addresses image output. Outside tmux, the existing direct output
+and damage-based encoding are retained without extra buffering or subprocesses.
+
 Mouse input defaults to SGR pixel reporting (terminal modes 1003, 1006, and
 1016), so xterm does not need DEC locator support. Motion, dragging, the first
 three buttons, and vertical/horizontal wheel events are supported. For terminals

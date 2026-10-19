@@ -58,6 +58,79 @@
 #include <errno.h>
 #include <fcntl.h>
 
+/* Only the tmux path adds wrapping; direct terminal rendering is unchanged. */
+static Bool sixelTmux;
+
+static void
+sixelCheckTmux(void)
+{
+    const char *tmux = getenv("TMUX");
+    const char *pane = getenv("TMUX_PANE");
+    int fds[2], status;
+    pid_t pid, waited;
+    ssize_t n;
+    size_t used = 0;
+    char value[32];
+
+    if (!tmux || !*tmux)
+        return;
+    if (!pane || !*pane || pipe(fds) < 0)
+        FatalError("Xsixel: cannot check tmux allow-passthrough (TMUX_PANE missing or pipe failed)\n");
+    pid = fork();
+    if (pid == 0) {
+        close(fds[0]);
+        if (dup2(fds[1], STDOUT_FILENO) < 0)
+            _exit(127);
+        close(fds[1]);
+        execlp("tmux", "tmux", "show-options", "-A", "-p", "-v", "-t", pane,
+               "allow-passthrough", (char *)NULL);
+        _exit(127);
+    }
+    close(fds[1]);
+    if (pid < 0) {
+        close(fds[0]);
+        FatalError("Xsixel: cannot run tmux to check allow-passthrough\n");
+    }
+    while (used < sizeof(value) - 1) {
+        n = read(fds[0], value + used, sizeof(value) - 1 - used);
+        if (n > 0)
+            used += n;
+        else if (n == 0 || errno != EINTR)
+            break;
+    }
+    close(fds[0]);
+    do {
+        waited = waitpid(pid, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    value[used] = '\0';
+    value[strcspn(value, "\r\n")] = '\0';
+    if (waited != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+        FatalError("Xsixel: cannot query tmux allow-passthrough; check tmux and TMUX_PANE\n");
+    if (strcmp(value, "on") != 0 && strcmp(value, "all") != 0)
+        FatalError("Xsixel: tmux allow-passthrough is off. Run in this pane:\n"
+                   "  tmux set-option -p allow-passthrough on\n"
+                   "Then restart Xsixel. To enable it persistently, add to ~/.tmux.conf:\n"
+                   "  set -g allow-passthrough on\n");
+    sixelTmux = TRUE;
+}
+
+/* Send terminal-specific controls through tmux, doubling every embedded ESC. */
+static void
+sixelTerminalControl(const char *s)
+{
+    if (!sixelTmux) {
+        fputs(s, stdout);
+        return;
+    }
+    fputs("\033Ptmux;", stdout);
+    for (; *s; s++) {
+        if (*s == '\033')
+            putchar('\033');
+        putchar(*s);
+    }
+    fputs("\033\\", stdout);
+}
+
 static Bool sixelDecMouse = FALSE;
 
 char *kdExecuteCommand = NULL;
@@ -552,7 +625,14 @@ sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
                 driver->encoded[body] == ';'))
             body++;
     }
-    printf("\033P0;1q\"1;1;%d;%d", x2, y2);
+    if (sixelTmux) {
+        /* Home and DECSDM must reach the outer terminal together with the image.
+         * The image body contains SIXEL ASCII only, so only the DCS delimiters
+         * require ESC doubling. */
+        fputs("\033Ptmux;\033\033[H\033\033P", stdout);
+        printf("0;1q\"1;1;%d;%d", x2, y2);
+    } else
+        printf("\033P0;1q\"1;1;%d;%d", x2, y2);
     for (y = 0; y < y1; y += 6)
         putchar('-');
     sixelHorizontalOffset(x1);
@@ -565,7 +645,10 @@ sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
         }
     }
     fwrite(driver->encoded + chunk, 1, end - 2 - chunk, stdout);
-    printf("\033\\");
+    if (sixelTmux)
+        fputs("\033\033\\\033\\", stdout);
+    else
+        printf("\033\\");
     return TRUE;
 }
 #endif
@@ -621,7 +704,10 @@ static int sixelRenderFrame(SIXEL_Driver *driver)
         GString *s = chafa_canvas_print(driver->chafa_canvas, driver->chafa_tinfo);
         if (s) {
             printf("\033[H");
-            fwrite(s->str, 1, s->len, stdout);
+            if (sixelTmux)
+                sixelTerminalControl(s->str);
+            else
+                fwrite(s->str, 1, s->len, stdout);
             g_string_free(s, TRUE);
         }
         chafa_canvas_unref(driver->chafa_canvas);
@@ -1555,7 +1641,7 @@ static int sixelInit(void)
     printf("\033[?1004h");
     printf("\033[?25l");
     /* Save the terminal's SIXEL mode and prevent bottom-edge scrolling. */
-    printf("\033[?80s\033[?80h");
+    sixelTerminalControl("\033[?80s\033[?80h");
     /* Request the strongest terminal fallback; XFixes handles motion too. */
     printf("\033[>3p");
     mouseState = 0;
@@ -1592,7 +1678,7 @@ static void sixelFini(void)
         printf("\033[0'z\033[2;4'{");
     else
         printf("\033[?1003l\033[?1016l\033[?1006l");
-    printf("\033[?80r");
+    sixelTerminalControl("\033[?80r");
     printf("\033[>0p");
     printf("\033[?25h");
     printf("\033[?1004l");
@@ -1669,6 +1755,7 @@ static const KdOsFuncs sixelOsFuncs = {
 
 void ddxInit(void)
 {
+    sixelCheckTmux();
     /* Initialize terminal + sixel, then hook stdin for input */
     KdOsInit(&sixelOsFuncs);
     sixelInit();
