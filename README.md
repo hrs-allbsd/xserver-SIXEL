@@ -152,3 +152,16 @@ meson test -C build-xsixel --suite xsixel --print-errorlogs
 ```
 
 The suite requires Python 3, libX11, libXrandr, `xdpyinfo`, and `xsetroot`.
+
+Xsixel disables SIXEL scrolling and sends complete frames from the top-left,
+including for damage at the bottom edge. Updates are coalesced at 50 ms intervals
+(up to 20 frames per second); unchanged frames are not transmitted. This uses
+more bandwidth than cropped updates. The terminal's SIXEL mode is saved on
+startup and restored on exit.
+
+When built with libX11 and libXfixes development files, Xsixel uses the outer
+terminal's `DISPLAY` and `WINDOWID` to hide its host pointer while the pointer is
+inside that window. The pointer is restored on leaving the terminal and on
+Xsixel exit. Without that support, Xsixel requests xterm's pointer-hiding mode,
+whose effect depends on the terminal. No additional xterm startup option is
+needed for pointer hiding.

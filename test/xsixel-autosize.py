@@ -50,6 +50,7 @@ def library(name, functions):
 
 class Server:
     def __init__(self, pixels=(0, 0), cells=(80, 30), args=(), memory_limit=False):
+        self.closed = False
         self.master, self.slave = pty.openpty()
         fcntl.ioctl(self.slave, termios.TIOCSWINSZ,
                     struct.pack('HHHH', cells[1], cells[0], *pixels))
@@ -77,6 +78,7 @@ class Server:
                 ('XOpenDisplay', C.c_void_p, [C.c_char_p]),
                 ('XCreateSimpleWindow', C.c_ulong, [C.c_void_p, C.c_ulong, C.c_int, C.c_int,
                                                     C.c_uint, C.c_uint, C.c_uint, C.c_ulong, C.c_ulong]),
+                ('XClearWindow', C.c_int, [C.c_void_p, C.c_ulong]),
                 ('XMapWindow', C.c_int, [C.c_void_p, C.c_ulong]),
                 ('XSelectInput', C.c_int, [C.c_void_p, C.c_ulong, C.c_long]),
                 ('XSetInputFocus', C.c_int, [C.c_void_p, C.c_ulong, C.c_int, C.c_ulong]),
@@ -196,6 +198,9 @@ class Server:
         case.assertIsNone(self.process.poll())
 
     def close(self):
+        if self.closed:
+            return
+        self.closed = True
         if self.display:
             self.x11.XCloseDisplay(self.display)
             self.display = None
@@ -300,6 +305,31 @@ class Autosize(unittest.TestCase):
             time.sleep(0.01)
         self.assertEqual(received, [(ord('a'), b'a'), (ord('A'), b'A'),
                                      (0xff0d, b'\r'), (0xff52, b'')])
+
+    def test_display_modes_and_bottom_edge_full_frames(self):
+        server = self.server(pixels=(800, 600))
+        server.wait_output(b'\x1b[?80s\x1b[?80h')
+        server.wait_output(b'\x1b[>3p')
+        server.wait_output(b'\x1bP')
+        time.sleep(0.1)
+        start = len(server.output)
+        window = server.x11.XCreateSimpleWindow(server.display, server.root, 0, 580,
+                                                800, 20, 0, 0, 0xff0000)
+        server.x11.XMapWindow(server.display, window)
+        server.x11.XClearWindow(server.display, window)
+        server.x11.XSync(server.display, False)
+        server.wait_output(b'\x1bP', start)
+        time.sleep(0.1)
+        frames = re.findall(rb'\x1bP[0-9;]*q"1;1;(\d+);(\d+)', server.output[start:])
+        self.assertTrue(frames)
+        self.assertEqual(set(frames), {(b'800', b'600')})
+        self.assertNotIn(b'Filp;', server.output)
+        server.check_drawing_and_pointer(self, 800, 600)
+        server.close()
+        self.assertIn(b'\x1b[?80r', server.output)
+        self.assertIn(b'\x1b[>0p', server.output)
+        self.assertIn(b'\x1b[?25h', server.output)
+        self.assertLess(server.output.rfind(b'\x1bP'), server.output.rfind(b'\x1b[?80r'))
 
     def test_initial_ioctl_pixels(self):
         server = self.server(pixels=(800, 600))
