@@ -26,9 +26,9 @@ from The Open Group.
 
 */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
+
+#include <stdbool.h>
 
 #include "scrnintstr.h"
 #include "gcstruct.h"
@@ -65,7 +65,7 @@ miChangeClip(GCPtr pGC, int type, void *pvalue, int nrects)
     if (type == CT_PIXMAP) {
         /* convert the pixmap to a region */
         pGC->clientClip = BitmapToRegion(pGC->pScreen, (PixmapPtr) pvalue);
-        (*pGC->pScreen->DestroyPixmap) (pvalue);
+        dixDestroyPixmap(pvalue, 0);
     }
     else if (type == CT_REGION) {
         /* stuff the region in the GC */
@@ -103,7 +103,7 @@ miComputeCompositeClip(GCPtr pGC, DrawablePtr pDrawable)
     if (pDrawable->type == DRAWABLE_WINDOW) {
         WindowPtr pWin = (WindowPtr) pDrawable;
         RegionPtr pregWin;
-        Bool freeTmpClip, freeCompClip;
+        bool freeTmpClip, freeCompClip;
 
         if (pGC->subWindowMode == IncludeInferiors) {
             pregWin = NotClippedByChildren(pWin);

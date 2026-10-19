@@ -20,24 +20,22 @@
  * PERFORMANCE OF THIS SOFTWARE.
  *
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
 #include <mach.h>
 #include <device/device.h>
 #include <mach/machine/mach_i386.h>
 #include <hurd.h>
-
+#include <errno.h>
 #include <X11/X.h>
+
 #include "input.h"
 #include "scrnintstr.h"
 
 #include "xf86.h"
 #include "xf86Priv.h"
+#include "xf86_os_support.h"
 #include "xf86_OSlib.h"
-#include "xf86OSpriv.h"
 
 /**************************************************************************
  * Video Memory Mapping section

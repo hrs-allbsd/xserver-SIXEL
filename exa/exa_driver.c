@@ -22,10 +22,9 @@
  *
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <string.h>
 
 #include "exa_priv.h"
@@ -33,7 +32,7 @@
 
 /* This file holds the driver allocated pixmaps specific implementation. */
 
-static _X_INLINE void *
+static inline void *
 ExaGetPixmapAddress(PixmapPtr p)
 {
     ExaPixmapPriv(p);
@@ -87,7 +86,7 @@ exaCreatePixmap_driver(ScreenPtr pScreen, int w, int h, int depth,
     }
     else {
         paddedWidth = ((w * bpp + FB_MASK) >> FB_SHIFT) * sizeof(FbBits);
-        if (paddedWidth / 4 > 32767 || h > 32767)
+        if (paddedWidth / 4 > 32767)
             return NullPixmap;
 
         exaSetFbPitch(pExaScr, pExaPixmap, w, h, bpp);
@@ -100,9 +99,9 @@ exaCreatePixmap_driver(ScreenPtr pScreen, int w, int h, int depth,
     }
 
     if (!pExaPixmap->driverPriv) {
-        swap(pExaScr, pScreen, DestroyPixmap);
-        pScreen->DestroyPixmap(pPixmap);
-        swap(pExaScr, pScreen, DestroyPixmap);
+        // don't need to protect from calling our own (wrapped) DestroyPixmap
+        // handler, because it can deal with half-initialized state
+        dixDestroyPixmap(pPixmap, 0);
         return NULL;
     }
 
@@ -135,7 +134,7 @@ exaModifyPixmapHeader_driver(PixmapPtr pPixmap, int width, int height,
     ScreenPtr pScreen;
     ExaScreenPrivPtr pExaScr;
     ExaPixmapPrivPtr pExaPixmap;
-    Bool ret;
+    bool ret;
 
     if (!pPixmap)
         return FALSE;
@@ -187,29 +186,19 @@ exaModifyPixmapHeader_driver(PixmapPtr pPixmap, int width, int height,
     return ret;
 }
 
-Bool
-exaDestroyPixmap_driver(PixmapPtr pPixmap)
+void exaPixmapDestroy_driver(CallbackListPtr *pcbl, ScreenPtr pScreen, PixmapPtr pPixmap)
 {
-    ScreenPtr pScreen = pPixmap->drawable.pScreen;
-
     ExaScreenPriv(pScreen);
-    Bool ret;
 
-    if (pPixmap->refcnt == 1) {
-        ExaPixmapPriv(pPixmap);
+    ExaPixmapPriv(pPixmap);
+    if (!pExaPixmap) // we're called on an error path
+        return;
 
-        exaDestroyPixmap(pPixmap);
+    exaDestroyPixmap(pPixmap);
 
-        if (pExaPixmap->driverPriv)
-            pExaScr->info->DestroyPixmap(pScreen, pExaPixmap->driverPriv);
-        pExaPixmap->driverPriv = NULL;
-    }
-
-    swap(pExaScr, pScreen, DestroyPixmap);
-    ret = pScreen->DestroyPixmap(pPixmap);
-    swap(pExaScr, pScreen, DestroyPixmap);
-
-    return ret;
+    if (pExaPixmap->driverPriv)
+        pExaScr->info->DestroyPixmap(pScreen, pExaPixmap->driverPriv);
+    pExaPixmap->driverPriv = NULL;
 }
 
 Bool
@@ -219,7 +208,7 @@ exaPixmapHasGpuCopy_driver(PixmapPtr pPixmap)
 
     ExaScreenPriv(pScreen);
     void *saved_ptr;
-    Bool ret;
+    bool ret;
 
     saved_ptr = pPixmap->devPrivate.ptr;
     pPixmap->devPrivate.ptr = ExaGetPixmapAddress(pPixmap);

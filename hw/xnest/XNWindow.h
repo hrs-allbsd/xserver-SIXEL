@@ -1,6 +1,7 @@
 /*
 
 Copyright 1993 by Davor Matic
+Copyright 2026 by Enrico Weigelt, metux IT consult
 
 Permission to use, copy, modify, distribute, and sell this software
 and its documentation for any purpose is hereby granted without fee,
@@ -15,22 +16,25 @@ is" without express or implied warranty.
 #ifndef XNESTWINDOW_H
 #define XNESTWINDOW_H
 
+#include <X11/Xdefs.h>
+#include <xcb/xcb.h>
+
 typedef struct {
-    Window window;
-    Window parent;
+    xcb_window_t window;
+    xcb_window_t parent;
     int x;
     int y;
     unsigned int width;
     unsigned int height;
     unsigned int border_width;
-    Window sibling_above;
+    xcb_window_t sibling_above;
     RegionPtr bounding_shape;
     RegionPtr clip_shape;
 } xnestPrivWin;
 
 typedef struct {
     WindowPtr pWin;
-    Window window;
+    xcb_window_t window;
 } xnestWindowMatch;
 
 extern DevPrivateKeyRec xnestWindowPrivateKeyRec;
@@ -40,23 +44,20 @@ extern DevPrivateKeyRec xnestWindowPrivateKeyRec;
 #define xnestWindowPriv(pWin) ((xnestPrivWin *) \
     dixLookupPrivate(&(pWin)->devPrivates, xnestWindowPrivateKey))
 
-#define xnestWindow(pWin) (xnestWindowPriv(pWin)->window)
+#define xnestWindow(pWin) (xnestWindowPriv((pWin))->window)
 
 #define xnestWindowParent(pWin) \
   ((pWin)->parent ? \
    xnestWindow((pWin)->parent) : \
-   xnestDefaultWindows[pWin->drawable.pScreen->myNum])
+   xnestGetScreenPrivate((pWin)->drawable.pScreen)->defaultWindow)
 
 #define xnestWindowSiblingAbove(pWin) \
-  ((pWin)->prevSib ? xnestWindow((pWin)->prevSib) : None)
+  ((pWin)->prevSib ? xnestWindow((pWin)->prevSib) : XCB_WINDOW_NONE)
 
 #define xnestWindowSiblingBelow(pWin) \
-  ((pWin)->nextSib ? xnestWindow((pWin)->nextSib) : None)
+  ((pWin)->nextSib ? xnestWindow((pWin)->nextSib) : XCB_WINDOW_NONE)
 
-#define CWParent CWSibling
-#define CWStackingOrder CWStackMode
-
-WindowPtr xnestWindowPtr(Window window);
+WindowPtr xnestWindowPtr(xcb_window_t window);
 Bool xnestCreateWindow(WindowPtr pWin);
 Bool xnestDestroyWindow(WindowPtr pWin);
 Bool xnestPositionWindow(WindowPtr pWin, int x, int y);
@@ -66,8 +67,10 @@ Bool xnestRealizeWindow(WindowPtr pWin);
 Bool xnestUnrealizeWindow(WindowPtr pWin);
 void xnestCopyWindow(WindowPtr pWin, xPoint oldOrigin, RegionPtr oldRegion);
 void xnestClipNotify(WindowPtr pWin, int dx, int dy);
-void xnestWindowExposures(WindowPtr pWin, RegionPtr pRgn);
 void xnestSetShape(WindowPtr pWin, int kind);
 void xnestShapeWindow(WindowPtr pWin);
+
+/* ScreenRec operations */
+void xnest_screen_ClearToBackground(WindowPtr pWin, int x, int y, int w, int h, Bool generateExposures);
 
 #endif                          /* XNESTWINDOW_H */

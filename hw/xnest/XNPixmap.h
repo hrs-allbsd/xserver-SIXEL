@@ -15,6 +15,8 @@ is" without express or implied warranty.
 #ifndef XNESTPIXMAP_H
 #define XNESTPIXMAP_H
 
+#include <X11/Xdefs.h>
+
 extern DevPrivateKeyRec xnestPixmapPrivateKeyRec;
 
 #define xnestPixmapPrivateKey (&xnestPixmapPrivateKeyRec)
@@ -26,7 +28,7 @@ typedef struct {
 #define xnestPixmapPriv(pPixmap) ((xnestPrivPixmap *) \
     dixLookupPrivate(&(pPixmap)->devPrivates, xnestPixmapPrivateKey))
 
-#define xnestPixmap(pPixmap) (xnestPixmapPriv(pPixmap)->pixmap)
+#define xnestPixmap(pPixmap) (xnestPixmapPriv((pPixmap))->pixmap)
 
 #define xnestSharePixmap(pPixmap) ((pPixmap)->refcnt++)
 

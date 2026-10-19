@@ -26,13 +26,13 @@ Author:  Bob Scheifler, MIT X Consortium
 
 ********************************************************/
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <math.h>
 #include <X11/X.h>
 #include <X11/Xprotostr.h>
+
 #include "regionstr.h"
 #include "gcstruct.h"
 #include "pixmapstr.h"
@@ -47,8 +47,8 @@ Author:  Bob Scheifler, MIT X Consortium
 #define M_PI	3.14159265358979323846
 #endif
 
-#define Dsin(d)	sin((double)d*(M_PI/11520.0))
-#define Dcos(d)	cos((double)d*(M_PI/11520.0))
+#define Dsin(d)	sin((double)(d)*(M_PI/11520.0))
+#define Dcos(d)	cos((double)(d)*(M_PI/11520.0))
 
 static void
 miFillArcSetup(xArc * arc, miFillArcRec * info)
@@ -171,7 +171,7 @@ miEllipseAngleToSlope(int angle, int width, int height, int *dxp, int *dyp,
 {
     int dx, dy;
     double d_dx, d_dy, scale;
-    Bool negative_dx, negative_dy;
+    bool negative_dx, negative_dy;
 
     switch (angle) {
     case 0:
@@ -341,7 +341,7 @@ miFillArcSliceSetup(xArc * arc, miArcSliceRec * slice, GCPtr pGC)
     else {
         double w2, h2, x1, y1, x2, y2, dx, dy, scale;
         int signdx, signdy, y, k;
-        Bool isInt1 = TRUE, isInt2 = TRUE;
+        bool isInt1 = TRUE, isInt2 = TRUE;
 
         w2 = (double) arc->width / 2.0;
         h2 = (double) arc->height / 2.0;
@@ -526,16 +526,16 @@ miFillEllipseD(DrawablePtr pDraw, GCPtr pGC, xArc * arc, DDXPointPtr points, int
 }
 
 #define ADDSPAN(l,r) \
-    if (r >= l) \
+    if ((r) >= (l)) \
     { \
-	pts->x = l; \
+	pts->x = (l); \
 	pts->y = ya; \
 	pts++; \
-	*wids++ = r - l + 1; \
+	*wids++ = (r) - (l) + 1; \
     }
 
 #define ADDSLICESPANS(flip) \
-    if (!flip) \
+    if (!(flip)) \
     { \
 	ADDSPAN(xl, xr); \
     } \
@@ -667,7 +667,7 @@ miPolyFillArc(DrawablePtr pDraw, GCPtr pGC, int narcs_all, xArc * parcs)
                 nspans += (arc->height + 1) >> 1;
         }
 
-        pts = points = malloc (sizeof (DDXPointRec) * nspans +
+        pts = points = calloc(1, sizeof(xPoint) * nspans +
                                sizeof(int) * nspans);
         if (points) {
             wids = widths = (int *) (points + nspans);

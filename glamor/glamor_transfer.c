@@ -19,60 +19,35 @@
  * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
  * OF THIS SOFTWARE.
  */
+#include <dix-config.h>
+
+#include <assert.h>
+
+#include "os/bug_priv.h"
 
 #include "glamor_priv.h"
 #include "glamor_transfer.h"
 
-/* XXX a kludge for now */
-void
-glamor_format_for_pixmap(PixmapPtr pixmap, GLenum *format, GLenum *type)
-{
-    switch (pixmap->drawable.depth) {
-    case 24:
-    case 32:
-        *format = GL_BGRA;
-        *type = GL_UNSIGNED_INT_8_8_8_8_REV;
-        break;
-    case 30:
-        *format = GL_BGRA;
-        *type = GL_UNSIGNED_INT_2_10_10_10_REV;
-        break;
-    case 16:
-        *format = GL_RGB;
-        *type = GL_UNSIGNED_SHORT_5_6_5;
-        break;
-    case 15:
-        *format = GL_BGRA;
-        *type = GL_UNSIGNED_SHORT_1_5_5_5_REV;
-        break;
-    case 8:
-        *format = glamor_get_screen_private(pixmap->drawable.pScreen)->one_channel_format;
-        *type = GL_UNSIGNED_BYTE;
-        break;
-    default:
-        FatalError("Invalid pixmap depth %d\n", pixmap->drawable.depth);
-        break;
-    }
-}
-
 /*
- * Write a region of bits into a pixmap
+ * Write a region of bits into a drawable's backing pixmap
  */
 void
-glamor_upload_boxes(PixmapPtr pixmap, BoxPtr in_boxes, int in_nbox,
+glamor_upload_boxes(DrawablePtr drawable, BoxPtr in_boxes, int in_nbox,
                     int dx_src, int dy_src,
                     int dx_dst, int dy_dst,
                     uint8_t *bits, uint32_t byte_stride)
 {
-    ScreenPtr                   screen = pixmap->drawable.pScreen;
+    ScreenPtr                   screen = drawable->pScreen;
     glamor_screen_private       *glamor_priv = glamor_get_screen_private(screen);
+    PixmapPtr                   pixmap = glamor_get_drawable_pixmap(drawable);
     glamor_pixmap_private       *priv = glamor_get_pixmap_private(pixmap);
     int                         box_index;
-    int                         bytes_per_pixel = pixmap->drawable.bitsPerPixel >> 3;
-    GLenum                      type;
-    GLenum                      format;
+    const struct glamor_format *f = glamor_format_for_pixmap(pixmap);
+    int                         bytes_per_pixel = PIXMAN_FORMAT_BPP(f->render_format) >> 3;
+    char *tmp_bits = NULL;
 
-    glamor_format_for_pixmap(pixmap, &format, &type);
+    if (glamor_drawable_effective_depth(drawable) == 24 && pixmap->drawable.depth == 32)
+        tmp_bits = XNFalloc(byte_stride * pixmap->drawable.height);
 
     glamor_make_current(glamor_priv);
 
@@ -80,6 +55,8 @@ glamor_upload_boxes(PixmapPtr pixmap, BoxPtr in_boxes, int in_nbox,
 
     if (glamor_priv->has_unpack_subimage)
         glPixelStorei(GL_UNPACK_ROW_LENGTH, byte_stride / bytes_per_pixel);
+
+    BUG_RETURN(!priv);
 
     glamor_pixmap_loop(priv, box_index) {
         BoxPtr                  box = glamor_pixmap_box_at(priv, box_index);
@@ -97,6 +74,7 @@ glamor_upload_boxes(PixmapPtr pixmap, BoxPtr in_boxes, int in_nbox,
             int y1 = MAX(boxes->y1 + dy_dst, box->y1);
             int y2 = MIN(boxes->y2 + dy_dst, box->y2);
 
+            uint32_t *src_line;
             size_t ofs = (y1 - dy_dst + dy_src) * byte_stride;
             ofs += (x1 - dx_dst + dx_src) * bytes_per_pixel;
 
@@ -105,23 +83,43 @@ glamor_upload_boxes(PixmapPtr pixmap, BoxPtr in_boxes, int in_nbox,
             if (x2 <= x1 || y2 <= y1)
                 continue;
 
+            src_line = (uint32_t *)(bits + ofs);
+
+            if (tmp_bits) {
+                uint32_t *tmp_line = (uint32_t *)(tmp_bits + ofs);
+                int x, y;
+
+                /* Make sure any sampling of the alpha channel will return 1.0 */
+                for (y = y1; y < y2;
+                     y++, src_line += byte_stride / 4, tmp_line += byte_stride / 4) {
+                    for (x = 0; x < x2 - x1; x++)
+                        tmp_line[x] = src_line[x] | 0xff000000;
+                }
+
+                src_line = (uint32_t *)(tmp_bits + ofs);
+            }
+
             if (glamor_priv->has_unpack_subimage ||
                 x2 - x1 == byte_stride / bytes_per_pixel) {
                 glTexSubImage2D(GL_TEXTURE_2D, 0,
                                 x1 - box->x1, y1 - box->y1,
                                 x2 - x1, y2 - y1,
-                                format, type,
-                                bits + ofs);
+                                f->format, f->type,
+                                src_line);
             } else {
-                for (; y1 < y2; y1++, ofs += byte_stride)
+                uint8_t *src = (uint8_t*)src_line;
+                for (; y1 < y2; y1++, src += byte_stride) {
                     glTexSubImage2D(GL_TEXTURE_2D, 0,
                                     x1 - box->x1, y1 - box->y1,
                                     x2 - x1, 1,
-                                    format, type,
-                                    bits + ofs);
+                                    f->format, f->type,
+                                    src);
+                }
             }
         }
     }
+
+    free(tmp_bits);
 
     if (glamor_priv->has_unpack_subimage)
         glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
@@ -132,56 +130,40 @@ glamor_upload_boxes(PixmapPtr pixmap, BoxPtr in_boxes, int in_nbox,
  */
 
 void
-glamor_upload_region(PixmapPtr pixmap, RegionPtr region,
+glamor_upload_region(DrawablePtr drawable, RegionPtr region,
                      int region_x, int region_y,
                      uint8_t *bits, uint32_t byte_stride)
 {
-    glamor_upload_boxes(pixmap, RegionRects(region), RegionNumRects(region),
+    glamor_upload_boxes(drawable, RegionRects(region), RegionNumRects(region),
                         -region_x, -region_y,
                         0, 0,
                         bits, byte_stride);
 }
 
 /*
- * Take the data in the pixmap and stuff it back into the FBO
+ * Read stuff from the drawable's backing pixmap FBOs and write to memory
  */
 void
-glamor_upload_pixmap(PixmapPtr pixmap)
-{
-    BoxRec box;
-
-    box.x1 = 0;
-    box.x2 = pixmap->drawable.width;
-    box.y1 = 0;
-    box.y2 = pixmap->drawable.height;
-    glamor_upload_boxes(pixmap, &box, 1, 0, 0, 0, 0,
-                        pixmap->devPrivate.ptr, pixmap->devKind);
-}
-
-/*
- * Read stuff from the pixmap FBOs and write to memory
- */
-void
-glamor_download_boxes(PixmapPtr pixmap, BoxPtr in_boxes, int in_nbox,
+glamor_download_boxes(DrawablePtr drawable, BoxPtr in_boxes, int in_nbox,
                       int dx_src, int dy_src,
                       int dx_dst, int dy_dst,
                       uint8_t *bits, uint32_t byte_stride)
 {
-    ScreenPtr screen = pixmap->drawable.pScreen;
+    ScreenPtr screen = drawable->pScreen;
     glamor_screen_private *glamor_priv = glamor_get_screen_private(screen);
+    PixmapPtr pixmap = glamor_get_drawable_pixmap(drawable);
     glamor_pixmap_private *priv = glamor_get_pixmap_private(pixmap);
     int box_index;
-    int bytes_per_pixel = pixmap->drawable.bitsPerPixel >> 3;
-    GLenum type;
-    GLenum format;
-
-    glamor_format_for_pixmap(pixmap, &format, &type);
+    const struct glamor_format *f = glamor_format_for_pixmap(pixmap);
+    int bytes_per_pixel = PIXMAN_FORMAT_BPP(f->render_format) >> 3;
 
     glamor_make_current(glamor_priv);
 
     glPixelStorei(GL_PACK_ALIGNMENT, 4);
     if (glamor_priv->has_pack_subimage)
         glPixelStorei(GL_PACK_ROW_LENGTH, byte_stride / bytes_per_pixel);
+
+    BUG_RETURN(!priv);
 
     glamor_pixmap_loop(priv, box_index) {
         BoxPtr                  box = glamor_pixmap_box_at(priv, box_index);
@@ -210,47 +192,13 @@ glamor_download_boxes(PixmapPtr pixmap, BoxPtr in_boxes, int in_nbox,
 
             if (glamor_priv->has_pack_subimage ||
                 x2 - x1 == byte_stride / bytes_per_pixel) {
-                glReadPixels(x1 - box->x1, y1 - box->y1, x2 - x1, y2 - y1, format, type, bits + ofs);
+                glReadPixels(x1 - box->x1, y1 - box->y1, x2 - x1, y2 - y1, f->format, f->type, bits + ofs);
             } else {
                 for (; y1 < y2; y1++, ofs += byte_stride)
-                    glReadPixels(x1 - box->x1, y1 - box->y1, x2 - x1, 1, format, type, bits + ofs);
+                    glReadPixels(x1 - box->x1, y1 - box->y1, x2 - x1, 1, f->format, f->type, bits + ofs);
             }
         }
     }
     if (glamor_priv->has_pack_subimage)
         glPixelStorei(GL_PACK_ROW_LENGTH, 0);
-}
-
-/*
- * Read data from the pixmap FBO
- */
-void
-glamor_download_rect(PixmapPtr pixmap, int x, int y, int w, int h, uint8_t *bits)
-{
-    BoxRec      box;
-
-    box.x1 = x;
-    box.x2 = x + w;
-    box.y1 = y;
-    box.y2 = y + h;
-
-    glamor_download_boxes(pixmap, &box, 1, 0, 0, -x, -y,
-                          bits, PixmapBytePad(w, pixmap->drawable.depth));
-}
-
-/*
- * Pull the data from the FBO down to the pixmap
- */
-void
-glamor_download_pixmap(PixmapPtr pixmap)
-{
-    BoxRec      box;
-
-    box.x1 = 0;
-    box.x2 = pixmap->drawable.width;
-    box.y1 = 0;
-    box.y2 = pixmap->drawable.height;
-
-    glamor_download_boxes(pixmap, &box, 1, 0, 0, 0, 0,
-                          pixmap->devPrivate.ptr, pixmap->devKind);
 }

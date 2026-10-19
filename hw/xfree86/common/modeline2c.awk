@@ -52,9 +52,7 @@ BEGIN {
 	print " * Based on Perl script from Dirk Hohndel <hohndel@XFree86.Org>"
 	print " */"
 	print ""
-	print "#ifdef HAVE_XORG_CONFIG_H"
 	print "#include <xorg-config.h>"
-	print "#endif"
 	print ""
 	print "#include \"xf86.h\""
 	print "#include \"xf86Config.h\""
@@ -89,5 +87,5 @@ BEGIN {
 
 END {
 	print "};"
-	printf "const int xf86NumDefaultModes = ARRAY_SIZE(xf86DefaultModes);"
+	print "const int xf86NumDefaultModes = ARRAY_SIZE(xf86DefaultModes);"
 }

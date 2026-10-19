@@ -25,7 +25,9 @@
  *    - jaymz
  *
  */
-#include "xorg-server.h"
+#include <dix-config.h>
+#include "os/cmdline.h"
+#include "os/ddx_priv.h"
 #include "sixel-config.h"
 #ifdef HAVE_CHAFA
 #include <chafa.h>
@@ -54,6 +56,10 @@
 
 #define USE_DECMOUSE 1
 #define USE_FILTER_RECTANGLE 1
+
+char *kdExecuteCommand = NULL;
+void KdExecuteChildCommand(void);
+extern Bool kdRawPointerCoordinates;
 
 static void sixelFini(void);
 static Bool sixelScreenInit(KdScreenInfo *screen);
@@ -940,7 +946,7 @@ static Bool sixelRandRSetConfig(ScreenPtr pScreen,
     /*
      * Set frame buffer mapping
      */
-    (*pScreen->ModifyPixmapHeader)(fbGetScreenPixmap(pScreen),
+    (*pScreen->ModifyPixmapHeader)(pScreen->GetScreenPixmap(pScreen),
                                    pScreen->width,
                                    pScreen->height,
                                    screen->fb.depth,
@@ -1077,9 +1083,9 @@ void InitCard(char *name)
     TRACE1("InitCard: %s\n", name);
 }
 
-void InitOutput(ScreenInfo *pScreenInfo, int argc, char **argv)
+void InitOutput(int argc, char **argv)
 {
-    KdInitOutput(pScreenInfo, argc, argv);
+    KdInitOutput(argc, argv);
     signal(SIGHUP, SIG_DFL);
     TRACE("InitOutput()\n");
 }
@@ -1110,6 +1116,7 @@ void InitInput(int argc, char **argv)
     }
 
     KdInitInput();
+    KdExecuteChildCommand();
 }
 
 #ifdef DDXBEFORERESET
@@ -1121,11 +1128,20 @@ void ddxBeforeReset(void)
 void ddxUseMsg(void)
 {
     KdUseMsg();
+    ErrorF("-exec command    Execute command after server started\n");
     ErrorF("-backend {chafa|libsixel}  Choose renderer backend (default: libsixel if built)\n");
 }
 
 int ddxProcessArgument(int argc, char **argv, int i)
 {
+    if (!strcmp(argv[i], "-exec")) {
+        if (i + 1 >= argc) {
+            UseMsg();
+            return 0;
+        }
+        kdExecuteCommand = argv[i + 1];
+        return 2;
+    }
     if (!strcmp(argv[i], "-backend")) {
         if (i + 1 >= argc) {
             UseMsg();
@@ -1454,9 +1470,20 @@ static void sixelNotifyFd(int fd, int ready, void *data)
     sixelPollInput();
 }
 
-void OsVendorInit(void)
+static int sixelOsInit(void)
+{
+    return 1;
+}
+
+static const KdOsFuncs sixelOsFuncs = {
+    .Init = sixelOsInit,
+    .Bell = sixelBell,
+};
+
+void ddxInit(void)
 {
     /* Initialize terminal + sixel, then hook stdin for input */
+    KdOsInit(&sixelOsFuncs);
     sixelInit();
     SetNotifyFd(STDIN_FILENO, sixelNotifyFd, X_NOTIFY_READ, NULL);
 }

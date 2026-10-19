@@ -25,12 +25,14 @@
  * When allocating, the contiguous block of areas with the minimum eviction
  * cost is found and evicted in order to make room for the new allocation.
  */
+#include <dix-config.h>
 
-#include "exa_priv.h"
-
+#include <stdbool.h>
 #include <limits.h>
 #include <assert.h>
 #include <stdlib.h>
+
+#include "exa_priv.h"
 
 #if DEBUG_OFFSCREEN
 #define DBG_OFFSCREEN(a) ErrorF a
@@ -48,8 +50,8 @@ ExaOffscreenValidate(ScreenPtr pScreen)
     assert(pExaScr->info->offScreenAreas->base_offset ==
            pExaScr->info->offScreenBase);
     for (area = pExaScr->info->offScreenAreas; area; area = area->next) {
-        assert(area->offset >= area->base_offset &&
-               area->offset < (area->base_offset + area->size));
+        assert(area->offset >= area->base_offset);
+        assert(area->offset < (area->base_offset + area->size));
         if (prev)
             assert(prev->base_offset + prev->size == area->base_offset);
         prev = area;
@@ -150,7 +152,7 @@ exaFindAreaToEvict(ExaScreenPrivPtr pExaScr, int size, int align)
  * @param privdata private data for the save callback.
  *
  * Allocates offscreen memory from the device associated with pScreen.  size
- * and align deteremine where and how large the allocated area is, and locked
+ * and align determine where and how large the allocated area is, and locked
  * will mark whether it should be held in card memory.  privdata may be any
  * pointer for the save callback when the area is removed.
  *
@@ -230,14 +232,15 @@ exaOffscreenAlloc(ScreenPtr pScreen, int size, int align,
          * Now get the system to merge the other needed areas together
          */
         while (area->size < real_size) {
-            assert(area->next && area->next->state == ExaOffscreenRemovable);
+            assert(area->next);
+            assert(area->next->state == ExaOffscreenRemovable);
             (void) ExaOffscreenKickOut(pScreen, area->next);
         }
     }
 
     /* save extra space in new area */
     if (real_size < area->size) {
-        ExaOffscreenArea *new_area = malloc(sizeof(ExaOffscreenArea));
+        ExaOffscreenArea *new_area = calloc(1, sizeof(ExaOffscreenArea));
 
         if (!new_area)
             return NULL;
@@ -493,7 +496,7 @@ ExaOffscreenDefragment(ScreenPtr pScreen)
         ExaOffscreenArea *prev = area->prev;
         PixmapPtr pSrcPix;
         ExaPixmapPrivPtr pExaSrcPix;
-        Bool save_use_gpu_copy;
+        bool save_use_gpu_copy;
         int save_pitch;
 
         if (area->state != ExaOffscreenAvail ||
@@ -568,8 +571,8 @@ ExaOffscreenDefragment(ScreenPtr pScreen)
         area->base_offset = prev->base_offset;
         area->offset = area->base_offset;
         prev->offset += pExaDstPix->fb_ptr - pExaSrcPix->fb_ptr;
-        assert(prev->offset >= pExaScr->info->offScreenBase &&
-               prev->offset < pExaScr->info->memorySize);
+        assert(prev->offset >= pExaScr->info->offScreenBase);
+        assert(prev->offset < pExaScr->info->memorySize);
         prev->base_offset = prev->offset;
         if (area->next)
             prev->size = area->next->base_offset - prev->base_offset;
@@ -613,7 +616,7 @@ ExaOffscreenDefragment(ScreenPtr pScreen)
     pDstPix->drawable.depth = 0;
     pDstPix->drawable.bitsPerPixel = 0;
 
-    (*pScreen->DestroyPixmap) (pDstPix);
+    dixDestroyPixmap(pDstPix, 0);
 
     if (area->state == ExaOffscreenAvail && area->size > largest_size)
         return area;
@@ -633,11 +636,9 @@ Bool
 exaOffscreenInit(ScreenPtr pScreen)
 {
     ExaScreenPriv(pScreen);
-    ExaOffscreenArea *area;
 
     /* Allocate a big free area */
-    area = malloc(sizeof(ExaOffscreenArea));
-
+    ExaOffscreenArea *area = calloc(1, sizeof(ExaOffscreenArea));
     if (!area)
         return FALSE;
 

@@ -1,9 +1,10 @@
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
 #include <stdlib.h>
-#include "misc.h"
+
+#include "dix/resource_priv.h"
+#include "include/misc.h"
+
 #include "hashtable.h"
 
 /* HashResourceID */
@@ -41,7 +42,7 @@ ht_create(int             keySize,
 {
     int c;
     int numBuckets;
-    HashTable ht = malloc(sizeof(struct HashTableRec));
+    HashTable ht = calloc(1, sizeof(struct HashTableRec));
 
     if (!ht) {
         return NULL;
@@ -54,7 +55,7 @@ ht_create(int             keySize,
     ht->elements = 0;
     ht->bucketBits = INITHASHSIZE;
     numBuckets = 1 << ht->bucketBits;
-    ht->buckets = xallocarray(numBuckets, sizeof(*ht->buckets));
+    ht->buckets = calloc(numBuckets, sizeof(*ht->buckets));
     ht->cdata = cdata;
 
     if (ht->buckets) {
@@ -95,7 +96,7 @@ double_size(HashTable ht)
     int newNumBuckets = 1 << newBucketBits;
     int c;
 
-    newBuckets = xallocarray(newNumBuckets, sizeof(*ht->buckets));
+    newBuckets = calloc(newNumBuckets, sizeof(*ht->buckets));
     if (newBuckets) {
         for (c = 0; c < newNumBuckets; ++c) {
             xorg_list_init(&newBuckets[c]);
@@ -129,7 +130,7 @@ ht_add(HashTable ht, const void *key)
     if (!elem) {
         goto outOfMemory;
     }
-    elem->key = malloc(ht->keySize);
+    elem->key = calloc(1, ht->keySize);
     if (!elem->key) {
         goto outOfMemory;
     }
@@ -240,7 +241,7 @@ unsigned
 ht_generic_hash(void *cdata, const void *ptr, int numBits)
 {
     HtGenericHashSetupPtr setup = cdata;
-    return one_at_a_time_hash(ptr, setup->keySize) & ~((~0) << numBits);
+    return one_at_a_time_hash(ptr, setup->keySize) & ~((~0U) << numBits);
 }
 
 int

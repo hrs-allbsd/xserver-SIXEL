@@ -21,10 +21,8 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
-#include <dix-config.h>
+#include <kdrive-config.h>
 #include <xkb-config.h>
-#endif
 #include "kdrive.h"
 #include "inputstr.h"
 
@@ -34,28 +32,46 @@
 #include <X11/XF86keysym.h>
 #endif
 #include <stdio.h>
-#ifdef __sun
+#include <signal.h>
 #include <sys/file.h>           /* needed for FNONBLOCK & FASYNC */
-#endif
-
-#include "xkbsrv.h"
 
 #include <X11/extensions/XI.h>
 #include <X11/extensions/XIproto.h>
-#include "XIstubs.h"            /* even though we don't use stubs.  cute, no? */
+
+#include "config/hotplug_priv.h"
+#include "dix/dix_priv.h"
+#include "dix/input_priv.h"
+#include "dix/inpututils_priv.h"
+#include "dix/screenint_priv.h"
+#include "dix/settings_priv.h"
+#include "mi/mi_priv.h"
+#include "mi/mipointer_priv.h"
+#include "os/cmdline.h"
+
+#include "xkbsrv.h"
+#include "Xext/xinput/XIstubs.h"            /* even though we don't use stubs.  cute, no? */
 #include "exevents.h"
-#include "extinit.h"
-#include "exglobals.h"
+#include "Xext/xinput/exglobals.h"
 #include "eventstr.h"
 #include "xserver-properties.h"
-#include "inpututils.h"
 #include "optionstr.h"
 
 #if defined(CONFIG_UDEV) || defined(CONFIG_HAL)
-#include <hotplug.h>
+#include "config/hotplug_priv.h"
+#endif
+
+#ifdef KDRIVE_EVDEV
+#define DEV_INPUT_EVENT_PREFIX "/dev/input/event"
+#define DEV_INPUT_EVENT_PREFIX_LEN (sizeof(DEV_INPUT_EVENT_PREFIX) - 1)
 #endif
 
 #define AtomFromName(x) MakeAtom(x, strlen(x), 1)
+
+#define KD_KEY_COUNT    248
+#define KD_MIN_KEYCODE  8
+#define KD_MAX_KEYCODE  255
+#define KD_MAX_WIDTH    4
+#define KD_MAX_LENGTH   (KD_MAX_KEYCODE - KD_MIN_KEYCODE + 1)
 
 struct KdConfigDevice {
     char *line;
@@ -79,6 +95,19 @@ static KdPointerMatrix kdPointerMatrix = {
     {{1, 0, 0},
      {0, 1, 0}}
 };
+
+#define KD_MAX_INPUT_FDS    8
+
+typedef struct _kdInputFd {
+    int fd;
+    void (*read) (int fd, void *closure);
+    int (*enable) (int fd, void *closure);
+    void (*disable) (int fd, void *closure);
+    void *closure;
+} KdInputFd;
+
+static KdInputFd kdInputFds[KD_MAX_INPUT_FDS];
+static int kdNumInputFds = 0;
 
 extern Bool kdRawPointerCoordinates;
 
@@ -105,11 +134,110 @@ KdResetInputMachine(void)
     }
 }
 
+static void
+KdEnableNonBlockFd(int fd)
+{
+#ifndef WIN32
+    int flags = fcntl(fd, F_GETFL);
+    flags |= NOBLOCK;
+    fcntl(fd, F_SETFL, flags);
+#endif
+}
+
+static void
+KdDisableNotBlockFd(int fd)
+{
+#ifndef WIN32
+    int flags = fcntl(fd, F_GETFL);
+    flags &= ~NOBLOCK;
+    fcntl(fd, F_SETFL, flags);
+#endif
+}
+
+static void KdNotifyFd(int fd, int ready, void *data)
+{
+    int i = (int) (intptr_t) data;
+    (*kdInputFds[i].read)(fd, kdInputFds[i].closure);
+}
+
+static void KdAddFd(int fd, int i)
+{
+    KdEnableNonBlockFd(fd);
+    /* AddEnabledDevice(fd); No longer exists */
+    InputThreadRegisterDev(fd, KdNotifyFd, (void *) (intptr_t) i);
+}
+
+static void KdRemoveFd(int fd)
+{
+    /* RemoveEnabledDevice(fd); No longer exists */
+    InputThreadUnregisterDev(fd);
+    KdDisableNotBlockFd(fd);
+}
+
+Bool KdRegisterFd(int fd, void (*read) (int fd, void *closure), void *closure)
+{
+    if (kdNumInputFds == KD_MAX_INPUT_FDS)
+        return FALSE;
+    kdInputFds[kdNumInputFds].fd = fd;
+    kdInputFds[kdNumInputFds].read = read;
+    kdInputFds[kdNumInputFds].enable = 0;
+    kdInputFds[kdNumInputFds].disable = 0;
+    kdInputFds[kdNumInputFds].closure = closure;
+    if (kdInputEnabled)
+        KdAddFd(fd, kdNumInputFds);
+    kdNumInputFds++;
+    return TRUE;
+}
+
+void KdUnregisterFd(void *closure, int fd, Bool do_close)
+{
+    int i, j;
+
+    for (i = 0; i < kdNumInputFds; i++) {
+        if (kdInputFds[i].closure == closure &&
+            (fd == -1 || kdInputFds[i].fd == fd)) {
+            if (kdInputEnabled)
+                KdRemoveFd(kdInputFds[i].fd);
+            if (do_close)
+                close(kdInputFds[i].fd);
+            for (j = i; j < (kdNumInputFds - 1); j++)
+                kdInputFds[j] = kdInputFds[j + 1];
+            kdNumInputFds--;
+            break;
+        }
+    }
+}
+
+void KdUnregisterFds(void *closure, Bool do_close)
+{
+    KdUnregisterFd(closure, -1, do_close);
+}
+
 void
 KdDisableInput(void)
 {
     KdKeyboardInfo *ki;
     KdPointerInfo *pi;
+    int found = 0, i = 0;
+
+    if (!kdInputEnabled) {
+        return;
+    }
+
+    /**
+     * When we're doing something that causes a vt switch,
+     * if that action is a key press, the X server doesn't see
+     * the key release event.
+     *
+     * For example, if we start an X server from a terminal
+     * running inside another X server, the "host" server
+     * sees the "enter" key press, but not the key release.
+     *
+     * KdReleaseAllKeys does input_{lock,unlock} by itself.
+     */
+    KdReleaseAllKeys();
+
+    /* TODO: Do the same for any pressed mouse buttons */
 
     input_lock();
 
@@ -121,6 +249,49 @@ KdDisableInput(void)
     for (pi = kdPointers; pi; pi = pi->next) {
         if (pi->driver && pi->driver->Disable)
             (*pi->driver->Disable) (pi);
+    }
+
+    if (kdNumInputFds) {
+        ErrorF("[KdDisableInput] Buggy drivers: still %d input fds left!",
+               kdNumInputFds);
+        i = 0;
+        while (i < kdNumInputFds) {
+            found = 0;
+            for (ki = kdKeyboards; ki; ki = ki->next) {
+                if (ki == kdInputFds[i].closure) {
+                    ErrorF("    fd %d belongs to keybd driver %s\n",
+                           kdInputFds[i].fd,
+                           ki->driver && ki->driver->name ?
+                           ki->driver->name : "(unnamed!)");
+                    found = 1;
+                    break;
+                }
+            }
+
+            if (found) {
+                i++;
+                continue;
+            }
+
+            for (pi = kdPointers; pi; pi = pi->next) {
+                if (pi == kdInputFds[i].closure) {
+                    ErrorF("    fd %d belongs to pointer driver %s\n",
+                           kdInputFds[i].fd,
+                           pi->driver && pi->driver->name ?
+                           pi->driver->name : "(unnamed!)");
+                    break;
+                }
+            }
+
+            if (found) {
+                i++;
+                continue;
+            }
+
+            ErrorF("    fd %d not claimed by any active device!\n",
+                   kdInputFds[i].fd);
+            KdUnregisterFd(kdInputFds[i].closure, kdInputFds[i].fd, TRUE);
+        }
     }
 
     kdInputEnabled = FALSE;
@@ -256,18 +427,25 @@ KdPointerProc(DeviceIntPtr pDevice, int onoff)
         default:
         case 7:
             btn_labels[6] = XIGetKnownProperty(BTN_LABEL_PROP_BTN_HWHEEL_RIGHT);
+            /* fallthrough */
         case 6:
             btn_labels[5] = XIGetKnownProperty(BTN_LABEL_PROP_BTN_HWHEEL_LEFT);
+            /* fallthrough */
         case 5:
             btn_labels[4] = XIGetKnownProperty(BTN_LABEL_PROP_BTN_WHEEL_DOWN);
+            /* fallthrough */
         case 4:
             btn_labels[3] = XIGetKnownProperty(BTN_LABEL_PROP_BTN_WHEEL_UP);
+            /* fallthrough */
         case 3:
             btn_labels[2] = XIGetKnownProperty(BTN_LABEL_PROP_BTN_RIGHT);
+            /* fallthrough */
         case 2:
             btn_labels[1] = XIGetKnownProperty(BTN_LABEL_PROP_BTN_MIDDLE);
+            /* fallthrough */
         case 1:
             btn_labels[0] = XIGetKnownProperty(BTN_LABEL_PROP_BTN_LEFT);
+            /* fallthrough */
         case 0:
             break;
         }
@@ -354,14 +532,7 @@ KdPointerProc(DeviceIntPtr pDevice, int onoff)
     return BadImplementation;
 }
 
-Bool
-LegalModifier(unsigned int key, DeviceIntPtr pDev)
-{
-    return TRUE;
-}
-
-static void
-KdRingBell(KdKeyboardInfo * ki, int volume, int pitch, int duration)
+void KdRingBell(KdKeyboardInfo * ki, int volume, int pitch, int duration)
 {
     if (!ki || !ki->driver || !ki->driver->Bell)
         return;
@@ -392,6 +563,11 @@ DDXRingBell(int volume, int pitch, int duration)
 {
     KdKeyboardInfo *ki = NULL;
 
+    if (kdOsFuncs->Bell) {
+        kdOsFuncs->Bell(volume, pitch, duration);
+        return;
+    }
+
     for (ki = kdKeyboards; ki; ki = ki->next) {
         if (ki->dixdev->coreEvents)
             KdRingBell(ki, volume, pitch, duration);
@@ -410,8 +586,7 @@ KdSetLeds(KdKeyboardInfo * ki, int leds)
     }
 }
 
-static void
-KdSetLed(KdKeyboardInfo * ki, int led, Bool on)
+void KdSetLed(KdKeyboardInfo * ki, int led, Bool on)
 {
     if (!ki || !ki->dixdev || !ki->dixdev->kbdfeed)
         return;
@@ -472,6 +647,20 @@ KdComputePointerMatrix(KdPointerMatrix * m, Rotation randr, int width,
             if (m->matrix[i][j] < 0)
                 m->matrix[i][2] = size[j] - 1;
     }
+}
+
+void
+KdScreenToPointerCoords(int *x, int *y)
+{
+    int (*m)[3] = kdPointerMatrix.matrix;
+    int div = m[0][1] * m[1][0] - m[1][1] * m[0][0];
+    int sx = *x;
+    int sy = *y;
+
+    *x = (m[0][1] * sy - m[0][1] * m[1][2] + m[1][1] * m[0][2] -
+          m[1][1] * sx) / div;
+    *y = (m[1][0] * sx + m[0][0] * m[1][2] - m[1][0] * m[0][2] -
+          m[0][0] * sy) / div;
 }
 
 static void
@@ -539,6 +728,10 @@ KdKeyboardProc(DeviceIntPtr pDevice, int onoff)
         if (!ki->driver->Init) {
             ErrorF("Keyboard %s: no init function\n", ki->name);
             return BadImplementation;
+        }
+
+        if (ki->driver->PreInit) {
+            (*ki->driver->PreInit)(ki);
         }
 
         memset(&rmlvo, 0, sizeof(rmlvo));
@@ -683,7 +876,7 @@ KdRemoveKeyboardDriver(KdKeyboardDriver * driver)
 KdKeyboardInfo *
 KdNewKeyboard(void)
 {
-    KdKeyboardInfo *ki = calloc(sizeof(KdKeyboardInfo), 1);
+    KdKeyboardInfo *ki = calloc(1, sizeof(KdKeyboardInfo));
 
     if (!ki)
         return NULL;
@@ -707,14 +900,14 @@ KdNewKeyboard(void)
 }
 
 int
-KdAddConfigKeyboard(char *keyboard)
+KdAddConfigKeyboard(const char *keyboard)
 {
     struct KdConfigDevice **prev, *new;
 
     if (!keyboard)
         return Success;
 
-    new = (struct KdConfigDevice *) calloc(sizeof(struct KdConfigDevice), 1);
+    new = (struct KdConfigDevice *) calloc(1, sizeof(struct KdConfigDevice));
     if (!new)
         return BadAlloc;
 
@@ -725,6 +918,12 @@ KdAddConfigKeyboard(char *keyboard)
     *prev = new;
 
     return Success;
+}
+
+int
+KdAddDefaultKeyboard(const char *keyboard)
+{
+    return kdConfigKeyboards ? Success : KdAddConfigKeyboard(keyboard);
 }
 
 int
@@ -771,14 +970,14 @@ KdRemoveKeyboard(KdKeyboardInfo * ki)
 }
 
 int
-KdAddConfigPointer(char *pointer)
+KdAddConfigPointer(const char *pointer)
 {
     struct KdConfigDevice **prev, *new;
 
     if (!pointer)
         return Success;
 
-    new = (struct KdConfigDevice *) calloc(sizeof(struct KdConfigDevice), 1);
+    new = (struct KdConfigDevice *) calloc(1, sizeof(struct KdConfigDevice));
     if (!new)
         return BadAlloc;
 
@@ -789,6 +988,12 @@ KdAddConfigPointer(char *pointer)
     *prev = new;
 
     return Success;
+}
+
+int
+KdAddDefaultPointer(const char *pointer)
+{
+    return kdConfigPointers ? Success : KdAddConfigPointer(pointer);
 }
 
 int
@@ -932,10 +1137,19 @@ KdParseKbdOptions(KdKeyboardInfo * ki)
             ErrorF("Kbd option key (%s) of value (%s) not assigned!\n",
                    key, value);
     }
+
+#ifdef KDRIVE_EVDEV
+    if (!ki->driver && ki->path != NULL &&
+        strncasecmp(ki->path,
+                    DEV_INPUT_EVENT_PREFIX,
+                    DEV_INPUT_EVENT_PREFIX_LEN) == 0) {
+            ki->driver = KdFindKeyboardDriver("evdev");
+            ki->options = input_option_new(ki->options, "driver", "evdev");
+    }
+#endif
 }
 
-static KdKeyboardInfo *
-KdParseKeyboard(const char *arg)
+KdKeyboardInfo *KdParseKeyboard(const char *arg)
 {
     char save[1024];
     char delim;
@@ -946,6 +1160,8 @@ KdParseKeyboard(const char *arg)
     if (!ki)
         return NULL;
 
+    if (ki->name)
+        free(ki->name);
     ki->name = strdup("Unknown KDrive Keyboard");
     ki->path = NULL;
     ki->driver = NULL;
@@ -1040,10 +1256,29 @@ KdParsePointerOptions(KdPointerInfo * pi)
             ErrorF("Pointer option key (%s) of value (%s) not assigned!\n",
                    key, value);
     }
+
+#ifdef KDRIVE_EVDEV
+    if (!pi->driver && pi->path != NULL &&
+        strncasecmp(pi->path,
+                    DEV_INPUT_EVENT_PREFIX,
+                    DEV_INPUT_EVENT_PREFIX_LEN) == 0) {
+            pi->driver = KdFindPointerDriver("evdev");
+            pi->options = input_option_new(pi->options, "driver", "evdev");
+    }
+#endif
 }
 
-static KdPointerInfo *
-KdParsePointer(const char *arg)
+/*
+ * Mouse argument syntax:
+ *
+ *  device,protocol,options...
+ *
+ *  Options are any of:
+ *      1-5         n button mouse
+ *      2button     emulate middle button
+ *      {NMO}       Reorder buttons
+ */
+KdPointerInfo *KdParsePointer(const char *arg)
 {
     char save[1024];
     char delim;
@@ -1147,10 +1382,9 @@ KdInitInput(void)
     }
 
     mieqInit();
-    KdExecuteChildCommand();
 
 #if defined(CONFIG_UDEV) || defined(CONFIG_HAL)
-    if (SeatId) /* Enable input hot-plugging */
+    if (dixSettingSeatId) /* Enable input hot-plugging */
         config_init();
 #endif
 }
@@ -1159,7 +1393,7 @@ void
 KdCloseInput(void)
 {
 #if defined(CONFIG_UDEV) || defined(CONFIG_HAL)
-    if (SeatId) /* Input hot-plugging is enabled */
+    if (dixSettingSeatId) /* Input hot-plugging is enabled */
         config_fini();
 #endif
 
@@ -1200,7 +1434,7 @@ KdCloseInput(void)
  *	v1  -> (hold) (settimeout) button_1_pend
  *	^1  -> (deliver) start
  *	v2  -> (deliver) button_2_down
- *	^2  -> (deliever) start
+ *	^2  -> (deliver) start
  *	v3  -> (hold) (settimeout) button_3_pend
  *	^3  -> (deliver) start
  *	vo  -> (deliver) start
@@ -1519,9 +1753,6 @@ KdClassifyInput(KdPointerInfo * pi, int type, int x, int y, int z, int b)
     return keyboard;
 }
 
-static void
-_KdEnqueuePointerEvent(KdPointerInfo * pi, int type, int x, int y, int z,
-                       int b, int absrel, Bool force);
 /* We return true if we're stealing the event. */
 static Bool
 KdRunMouseMachine(KdPointerInfo * pi, KdInputClass c, int type, int x, int y,
@@ -1595,9 +1826,8 @@ KdHandlePointerEvent(KdPointerInfo * pi, int type, int x, int y, int z, int b,
     return FALSE;
 }
 
-static void
-_KdEnqueuePointerEvent(KdPointerInfo * pi, int type, int x, int y, int z,
-                       int b, int absrel, Bool force)
+void _KdEnqueuePointerEvent(KdPointerInfo * pi, int type, int x, int y, int z,
+                            int b, int absrel, Bool force)
 {
     int valuators[3] = { x, y, z };
     ValuatorMask mask;
@@ -1617,7 +1847,26 @@ KdReceiveTimeout(KdPointerInfo * pi)
     KdRunMouseMachine(pi, timeout, 0, 0, 0, 0, 0, 0);
 }
 
-extern int nClients;
+void
+KdReleaseAllKeys(void)
+{
+    input_lock();
+
+    for (KdKeyboardInfo *ki = kdKeyboards; ki; ki = ki->next) {
+        if (!ki->dixdev || !ki->dixdev->key) {
+            continue;
+        }
+
+        for (int key = ki->dixdev->key->xkbInfo->desc->min_key_code;
+             key <= ki->dixdev->key->xkbInfo->desc->max_key_code; key++) {
+            if (key_is_down(ki->dixdev, key, KEY_POSTED | KEY_PROCESSED)) {
+                QueueKeyboardEvents(ki->dixdev, KeyRelease, key);
+            }
+        }
+    }
+
+    input_unlock();
+}
 
 static void
 KdCheckLock(void)
@@ -1639,6 +1888,72 @@ KdCheckLock(void)
     }
 }
 
+static KeySym
+KdKeyCodeToKeySym(KdKeyboardInfo *ki, unsigned char key_code)
+{
+    KeySym* syms = XkbKeySymsPtr(ki->dixdev->key->xkbInfo->desc, key_code);
+    int num_syms = XkbKeyNumSyms(ki->dixdev->key->xkbInfo->desc, key_code);
+
+    /* XXX Should we loop through the symbols? XXX */
+    return num_syms >= 1 ? syms[0] : NoSymbol;
+}
+
+/**
+ * Returns FALSE if we should treat this like a regular keyboard event
+ * Returns TRUE if we should fixup the event
+ */
+static Bool
+KdCheckSpecialKeys(KdKeyboardInfo *ki, int type, unsigned char key_code)
+{
+    KeySym sym;
+
+    /*
+     * Ignore key releases
+     */
+
+    if (type == KeyRelease) {
+        return FALSE;
+    }
+
+    /*
+     * Check for control/alt pressed
+     */
+    if ((XkbStateFieldFromRec(&ki->dixdev->key->xkbInfo->state) & (ControlMask | Mod1Mask)) !=
+        (ControlMask | Mod1Mask)) {
+        return FALSE;
+    }
+
+    sym = KdKeyCodeToKeySym(ki, key_code);
+
+    /*
+     * Let OS function see keysym first
+     */
+
+    if (kdOsFuncs->SpecialKey)
+        if ((*kdOsFuncs->SpecialKey) (sym))
+            return TRUE;
+
+    /*
+     * Now check for backspace or delete; these signal the
+     * X server to terminate
+     */
+    switch (sym) {
+    case XK_BackSpace:
+    case XK_Delete:
+    case XK_KP_Delete:
+        /*
+         * Set the dispatch exception flag so the server will terminate the
+         * next time through the dispatch loop.
+         */
+        if (kdAllowZap) {
+            dispatchException |= DE_TERMINATE;
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
 void
 KdEnqueueKeyboardEvent(KdKeyboardInfo * ki,
                        unsigned char scan_code, unsigned char is_up)
@@ -1655,12 +1970,11 @@ KdEnqueueKeyboardEvent(KdKeyboardInfo * ki,
         /*
          * Set up this event -- the type may be modified below
          */
-        if (is_up)
-            type = KeyRelease;
-        else
-            type = KeyPress;
+        type = is_up ? KeyRelease : KeyPress;
 
-        QueueKeyboardEvents(ki->dixdev, type, key_code);
+        if (!KdCheckSpecialKeys(ki, type, key_code)) {
+            QueueKeyboardEvents(ki->dixdev, type, key_code);
+        }
     }
     else {
         ErrorF("driver %s wanted to post scancode %d outside of [%d, %d]!\n",
@@ -1769,6 +2083,11 @@ KdBlockHandler(ScreenPtr pScreen, void *timeo)
                 myTimeout = ms;
         }
     }
+    /* if we need to poll for events, do that */
+    if (kdOsFuncs->pollEvents) {
+        kdOsFuncs->pollEvents();
+        myTimeout = 20;
+    }
     if (myTimeout > 0)
         AdjustWaitForDelay(timeo, myTimeout);
 }
@@ -1788,6 +2107,8 @@ KdWakeupHandler(ScreenPtr pScreen, int result)
             }
         }
     }
+    if (kdSwitchPending)
+        KdProcessSwitch();
 }
 
 #define KdScreenOrigin(pScreen) (&(KdGetScreenPriv(pScreen)->screen->origin))
@@ -1796,14 +2117,11 @@ static Bool
 KdCursorOffScreen(ScreenPtr *ppScreen, int *x, int *y)
 {
     ScreenPtr pScreen = *ppScreen;
-    ScreenPtr pNewScreen;
-    int n;
-    int dx, dy;
     int best_x, best_y;
     int n_best_x, n_best_y;
     CARD32 ms;
 
-    if (kdDisableZaphod || screenInfo.numScreens <= 1)
+    if (kdDisableZaphod || (!dixScreenExists(1)))
         return FALSE;
 
     if (0 <= *x && *x < pScreen->width && 0 <= *y && *y < pScreen->height)
@@ -1818,51 +2136,53 @@ KdCursorOffScreen(ScreenPtr *ppScreen, int *x, int *y)
     best_x = 32767;
     n_best_y = -1;
     best_y = 32767;
-    for (n = 0; n < screenInfo.numScreens; n++) {
-        pNewScreen = screenInfo.screens[n];
-        if (pNewScreen == pScreen)
+
+    DIX_FOR_EACH_SCREEN({
+        if (walkScreen == pScreen)
             continue;
-        dx = KdScreenOrigin(pNewScreen)->x - KdScreenOrigin(pScreen)->x;
-        dy = KdScreenOrigin(pNewScreen)->y - KdScreenOrigin(pScreen)->y;
+        int dx = KdScreenOrigin(walkScreen)->x - KdScreenOrigin(pScreen)->x;
+        int dy = KdScreenOrigin(walkScreen)->y - KdScreenOrigin(pScreen)->y;
         if (*x < 0) {
             if (dx < 0 && -dx < best_x) {
                 best_x = -dx;
-                n_best_x = n;
+                n_best_x = walkScreenIdx;
             }
         }
         else if (*x >= pScreen->width) {
             if (dx > 0 && dx < best_x) {
                 best_x = dx;
-                n_best_x = n;
+                n_best_x = walkScreenIdx;
             }
         }
         if (*y < 0) {
             if (dy < 0 && -dy < best_y) {
                 best_y = -dy;
-                n_best_y = n;
+                n_best_y = walkScreenIdx;
             }
         }
         else if (*y >= pScreen->height) {
             if (dy > 0 && dy < best_y) {
                 best_y = dy;
-                n_best_y = n;
+                n_best_y = walkScreenIdx;
             }
         }
-    }
+    });
+
     if (best_y < best_x)
         n_best_x = n_best_y;
     if (n_best_x == -1)
         return FALSE;
-    pNewScreen = screenInfo.screens[n_best_x];
+
+    ScreenPtr pNewScreen = dixGetScreenPtr(n_best_x);
 
     if (*x < 0)
         *x += pNewScreen->width;
+    else if (*x >= pScreen->width)
+        *x -= pScreen->width;
+
     if (*y < 0)
         *y += pNewScreen->height;
-
-    if (*x >= pScreen->width)
-        *x -= pScreen->width;
-    if (*y >= pScreen->height)
+    else if (*y >= pScreen->height)
         *y -= pScreen->height;
 
     *ppScreen = pNewScreen;
@@ -1874,10 +2194,13 @@ KdCrossScreen(ScreenPtr pScreen, Bool entering)
 {
 }
 
+int KdCurScreen;                /* current event screen */
+
 static void
 KdWarpCursor(DeviceIntPtr pDev, ScreenPtr pScreen, int x, int y)
 {
     input_lock();
+    KdCurScreen = pScreen->myNum;
     miPointerWarpCursor(pDev, pScreen, x, y);
     input_unlock();
 }
@@ -1892,6 +2215,8 @@ void
 ProcessInputEvents(void)
 {
     mieqProcessInputEvents();
+    if (kdSwitchPending)
+        KdProcessSwitch();
     KdCheckLock();
 }
 
@@ -1969,7 +2294,7 @@ NewInputDeviceRequest(InputOption *options, InputAttributes * attrs,
 #ifdef CONFIG_HAL
         else if (strcmp(key, "_source") == 0 &&
                  strcmp(value, "server/hal") == 0) {
-            if (SeatId) {
+            if (dixSettingSeatId) {
                 /* Input hot-plugging is enabled */
                 if (attrs->flags & ATTR_POINTER) {
                     pi = KdNewPointer();
@@ -1996,7 +2321,7 @@ NewInputDeviceRequest(InputOption *options, InputAttributes * attrs,
 #ifdef CONFIG_UDEV
         else if (strcmp(key, "_source") == 0 &&
                  strcmp(value, "server/udev") == 0) {
-            if (SeatId) {
+            if (dixSettingSeatId) {
                 /* Input hot-plugging is enabled */
                 if (attrs->flags & ATTR_POINTER) {
                     pi = KdNewPointer();

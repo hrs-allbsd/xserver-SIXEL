@@ -31,12 +31,15 @@
  *		Harold L Hunt II
  *		MATSUZAKI Kensuke
  */
-
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
+
+#include <stdbool.h>
+
 #include "win.h"
 #include <commctrl.h>
+
+#include "mi/mipointer_priv.h"
+
 #include "winprefs.h"
 #include "winconfig.h"
 #include "winmsg.h"
@@ -48,8 +51,8 @@
  * Global variables
  */
 
-Bool g_fCursor = TRUE;
-Bool g_fButton[3] = { FALSE, FALSE, FALSE };
+bool g_fCursor = TRUE;
+bool g_fButton[3] = { FALSE, FALSE, FALSE };
 
 /*
  * Called by winWakeupHandler
@@ -64,12 +67,12 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     static ScreenPtr s_pScreen = NULL;
     static HWND s_hwndLastPrivates = NULL;
     static Bool s_fTracking = FALSE;
-    static unsigned long s_ulServerGeneration = 0;
+    static x_server_generation_t s_ulServerGeneration = 0;
     static UINT s_uTaskbarRestart = 0;
     int iScanCode;
     int i;
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
     winDebugWin32Message("winWindowProc", hwnd, message, wParam, lParam);
 #endif
 
@@ -82,7 +85,7 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     /* Only retrieve new privates pointers if window handle is null or changed */
     if ((s_pScreenPriv == NULL || hwnd != s_hwndLastPrivates)
         && (s_pScreenPriv = GetProp(hwnd, WIN_SCR_PROP)) != NULL) {
-#if CYGDEBUG
+#if ENABLE_DEBUG
         winDebug("winWindowProc - Setting privates handle\n");
 #endif
         s_pScreenInfo = s_pScreenPriv->pScreenInfo;
@@ -103,7 +106,7 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
                                     s_pScreenPriv);
 
     case WM_CREATE:
-#if CYGDEBUG
+#if ENABLE_DEBUG
         winDebug("winWindowProc - WM_CREATE\n");
 #endif
 
@@ -143,7 +146,7 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_DISPLAYCHANGE:
         /*
            WM_DISPLAYCHANGE seems to be sent when the monitor layout or
-           any monitor's resolution or depth changes, but it's lParam and
+           any monitor's resolution or depth changes, but its lParam and
            wParam always indicate the resolution and bpp for the primary
            monitor (so ignore that as we could be on any monitor...)
          */
@@ -151,7 +154,7 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         /* We cannot handle a display mode change during initialization */
         if (s_pScreenInfo == NULL)
             FatalError("winWindowProc - WM_DISPLAYCHANGE - The display "
-                       "mode changed while we were intializing.  This is "
+                       "mode changed while we were initializing.  This is "
                        "very bad and unexpected.  Exiting.\n");
 
         /*
@@ -220,14 +223,7 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
                use RandR to resize the X screen
              */
             if ((!s_pScreenInfo->fUserGaveHeightAndWidth) &&
-                (s_pScreenInfo->iResizeMode == resizeWithRandr) && (FALSE
-#ifdef XWIN_MULTIWINDOWEXTWM
-                                                                    ||
-                                                                    s_pScreenInfo->
-                                                                    fMWExtWM
-#endif
-                                                                    ||
-                                                                    s_pScreenInfo->
+                (s_pScreenInfo->iResizeMode == resizeWithRandr) && (s_pScreenInfo->
                                                                     fRootless
                                                                     ||
                                                                     s_pScreenInfo->
@@ -245,7 +241,6 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
                     struct GetMonitorInfoData data;
 
                     if (QueryMonitor(s_pScreenInfo->iMonitor, &data)) {
-                        if (data.bMonitorSpecifiedExists == TRUE) {
                             dwWidth = data.monitorWidth;
                             dwHeight = data.monitorHeight;
                             /*
@@ -257,7 +252,6 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
                             ErrorF("Monitor number %d no longer exists!\n",
                                    s_pScreenInfo->iMonitor);
                         }
-                    }
                 }
 
                 /*
@@ -308,16 +302,13 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         RECT rcWindow;
         int iWidth, iHeight;
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
         winDebug("winWindowProc - WM_SIZE\n");
 #endif
 
         /* Break if we do not allow resizing */
         if ((s_pScreenInfo->iResizeMode == resizeNotAllowed)
             || !s_pScreenInfo->fDecoration
-#ifdef XWIN_MULTIWINDOWEXTWM
-            || s_pScreenInfo->fMWExtWM
-#endif
             || s_pScreenInfo->fRootless
             || s_pScreenInfo->fMultiWindow
             || s_pScreenInfo->fFullScreen)
@@ -449,7 +440,7 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         SCROLLINFO si;
         int iVertPos;
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
         winDebug("winWindowProc - WM_VSCROLL\n");
 #endif
 
@@ -528,7 +519,7 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         SCROLLINFO si;
         int iHorzPos;
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
         winDebug("winWindowProc - WM_HSCROLL\n");
 #endif
 
@@ -607,7 +598,7 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         int iCaptionHeight;
         int iBorderHeight, iBorderWidth;
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
         winDebug("winWindowProc - WM_GETMINMAXINFO - pScreenInfo: %p\n",
                  s_pScreenInfo);
 #endif
@@ -616,9 +607,6 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         if (s_pScreenInfo == NULL
             || (s_pScreenInfo->iResizeMode != resizeWithScrollbars)
             || s_pScreenInfo->fFullScreen || !s_pScreenInfo->fDecoration
-#ifdef XWIN_MULTIWINDOWEXTWM
-            || s_pScreenInfo->fMWExtWM
-#endif
             || s_pScreenInfo->fRootless
             || s_pScreenInfo->fMultiWindow
             )
@@ -649,7 +637,7 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         return 0;
 
     case WM_ERASEBKGND:
-#if CYGDEBUG
+#if ENABLE_DEBUG
         winDebug("winWindowProc - WM_ERASEBKGND\n");
 #endif
         /*
@@ -660,7 +648,7 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         return TRUE;
 
     case WM_PAINT:
-#if CYGDEBUG
+#if ENABLE_DEBUG
         winDebug("winWindowProc - WM_PAINT\n");
 #endif
         /* Only paint if we have privates and the server is enabled */
@@ -682,7 +670,7 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 
     case WM_PALETTECHANGED:
     {
-#if CYGDEBUG
+#if ENABLE_DEBUG
         winDebug("winWindowProc - WM_PALETTECHANGED\n");
 #endif
         /*
@@ -726,13 +714,11 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 
         /* Are we tracking yet? */
         if (!s_fTracking) {
-            TRACKMOUSEEVENT tme;
-
-            /* Setup data structure */
-            ZeroMemory(&tme, sizeof(tme));
-            tme.cbSize = sizeof(tme);
-            tme.dwFlags = TME_LEAVE;
-            tme.hwndTrack = hwnd;
+            TRACKMOUSEEVENT tme = (TRACKMOUSEEVENT) {
+                tme.cbSize = sizeof(tme),
+                tme.dwFlags = TME_LEAVE,
+                tme.hwndTrack = hwnd
+            };
 
             /* Call the tracking function */
             if (!TrackMouseEvent(&tme))
@@ -799,22 +785,14 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_LBUTTONDOWN:
         if (s_pScreenPriv == NULL || s_pScreenInfo->fIgnoreInput)
             break;
-        if (s_pScreenInfo->fRootless
-#ifdef XWIN_MULTIWINDOWEXTWM
-            || s_pScreenInfo->fMWExtWM
-#endif
-            )
+        if (s_pScreenInfo->fRootless)
             SetCapture(hwnd);
         return winMouseButtonsHandle(s_pScreen, ButtonPress, Button1, wParam);
 
     case WM_LBUTTONUP:
         if (s_pScreenPriv == NULL || s_pScreenInfo->fIgnoreInput)
             break;
-        if (s_pScreenInfo->fRootless
-#ifdef XWIN_MULTIWINDOWEXTWM
-            || s_pScreenInfo->fMWExtWM
-#endif
-            )
+        if (s_pScreenInfo->fRootless)
             ReleaseCapture();
         return winMouseButtonsHandle(s_pScreen, ButtonRelease, Button1, wParam);
 
@@ -822,22 +800,14 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_MBUTTONDOWN:
         if (s_pScreenPriv == NULL || s_pScreenInfo->fIgnoreInput)
             break;
-        if (s_pScreenInfo->fRootless
-#ifdef XWIN_MULTIWINDOWEXTWM
-            || s_pScreenInfo->fMWExtWM
-#endif
-            )
+        if (s_pScreenInfo->fRootless)
             SetCapture(hwnd);
         return winMouseButtonsHandle(s_pScreen, ButtonPress, Button2, wParam);
 
     case WM_MBUTTONUP:
         if (s_pScreenPriv == NULL || s_pScreenInfo->fIgnoreInput)
             break;
-        if (s_pScreenInfo->fRootless
-#ifdef XWIN_MULTIWINDOWEXTWM
-            || s_pScreenInfo->fMWExtWM
-#endif
-            )
+        if (s_pScreenInfo->fRootless)
             ReleaseCapture();
         return winMouseButtonsHandle(s_pScreen, ButtonRelease, Button2, wParam);
 
@@ -845,22 +815,14 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_RBUTTONDOWN:
         if (s_pScreenPriv == NULL || s_pScreenInfo->fIgnoreInput)
             break;
-        if (s_pScreenInfo->fRootless
-#ifdef XWIN_MULTIWINDOWEXTWM
-            || s_pScreenInfo->fMWExtWM
-#endif
-            )
+        if (s_pScreenInfo->fRootless)
             SetCapture(hwnd);
         return winMouseButtonsHandle(s_pScreen, ButtonPress, Button3, wParam);
 
     case WM_RBUTTONUP:
         if (s_pScreenPriv == NULL || s_pScreenInfo->fIgnoreInput)
             break;
-        if (s_pScreenInfo->fRootless
-#ifdef XWIN_MULTIWINDOWEXTWM
-            || s_pScreenInfo->fMWExtWM
-#endif
-            )
+        if (s_pScreenInfo->fRootless)
             ReleaseCapture();
         return winMouseButtonsHandle(s_pScreen, ButtonRelease, Button3, wParam);
 
@@ -868,22 +830,14 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_XBUTTONDOWN:
         if (s_pScreenPriv == NULL || s_pScreenInfo->fIgnoreInput)
             break;
-        if (s_pScreenInfo->fRootless
-#ifdef XWIN_MULTIWINDOWEXTWM
-            || s_pScreenInfo->fMWExtWM
-#endif
-            )
+        if (s_pScreenInfo->fRootless)
             SetCapture(hwnd);
         return winMouseButtonsHandle(s_pScreen, ButtonPress, HIWORD(wParam) + 7,
                                      wParam);
     case WM_XBUTTONUP:
         if (s_pScreenPriv == NULL || s_pScreenInfo->fIgnoreInput)
             break;
-        if (s_pScreenInfo->fRootless
-#ifdef XWIN_MULTIWINDOWEXTWM
-            || s_pScreenInfo->fMWExtWM
-#endif
-            )
+        if (s_pScreenInfo->fRootless)
             ReleaseCapture();
         return winMouseButtonsHandle(s_pScreen, ButtonRelease,
                                      HIWORD(wParam) + 7, wParam);
@@ -953,7 +907,7 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_MOUSEWHEEL:
         if (s_pScreenPriv == NULL || s_pScreenInfo->fIgnoreInput)
             break;
-#if CYGDEBUG
+#if ENABLE_DEBUG
         winDebug("winWindowProc - WM_MOUSEWHEEL\n");
 #endif
         /* Button4 = WheelUp */
@@ -964,7 +918,7 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_MOUSEHWHEEL:
         if (s_pScreenPriv == NULL || s_pScreenInfo->fIgnoreInput)
             break;
-#if CYGDEBUG
+#if ENABLE_DEBUG
         winDebug("winWindowProc - WM_MOUSEHWHEEL\n");
 #endif
         /* Button7 = TiltRight */
@@ -1120,7 +1074,7 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
         winDebug("winWindowProc - WM_ACTIVATE\n");
 #endif
 
@@ -1146,7 +1100,7 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         if (s_pScreenPriv == NULL || s_pScreenInfo->fIgnoreInput)
             break;
 
-#if CYGDEBUG || TRUE
+#if ENABLE_DEBUG || TRUE
         winDebug("winWindowProc - WM_ACTIVATEAPP\n");
 #endif
 
@@ -1160,19 +1114,8 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
             ShowCursor(TRUE);
         }
 
-        /* Make sure the clipboard chain is ok. */
-        winFixClipboardChain();
-
         /* Call engine specific screen activation/deactivation function */
         (*s_pScreenPriv->pwinActivateApp) (s_pScreen);
-
-#ifdef XWIN_MULTIWINDOWEXTWM
-        if (s_pScreenPriv->fActive) {
-            /* Restack all window unless using built-in wm. */
-            if (s_pScreenInfo->fMWExtWM)
-                winMWExtWMRestackWindows(s_pScreen);
-        }
-#endif
 
         return 0;
 
@@ -1228,7 +1171,7 @@ winWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
 
     default:
-        if (message == s_uTaskbarRestart) {
+        if ((message == s_uTaskbarRestart) && !s_pScreenInfo->fNoTrayIcon)  {
             winInitNotifyIcon(s_pScreenPriv);
         }
         break;

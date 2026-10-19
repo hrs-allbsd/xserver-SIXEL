@@ -21,14 +21,18 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
-#include "os.h"
-#include "misc.h"
 #include <errno.h>
 #include <string.h>
+
+#include "include/misc.h"
+
+#include "os.h"
+
+#ifndef WIN32
+#include <sys/wait.h>
+#endif
 
 #ifdef HAVE_LIBUNWIND
 
@@ -40,15 +44,73 @@
 #endif
 #include <dlfcn.h>
 
+static void
+print_registers(int frame, unw_cursor_t cursor)
+{
+    const struct {
+        const char *name;
+        int regnum;
+    } regs[] = {
+#if UNW_TARGET_X86_64
+        { "rax", UNW_X86_64_RAX },
+        { "rbx", UNW_X86_64_RBX },
+        { "rcx", UNW_X86_64_RCX },
+        { "rdx", UNW_X86_64_RDX },
+        { "rsi", UNW_X86_64_RSI },
+        { "rdi", UNW_X86_64_RDI },
+        { "rbp", UNW_X86_64_RBP },
+        { "rsp", UNW_X86_64_RSP },
+        { " r8", UNW_X86_64_R8  },
+        { " r9", UNW_X86_64_R9  },
+        { "r10", UNW_X86_64_R10 },
+        { "r11", UNW_X86_64_R11 },
+        { "r12", UNW_X86_64_R12 },
+        { "r13", UNW_X86_64_R13 },
+        { "r14", UNW_X86_64_R14 },
+        { "r15", UNW_X86_64_R15 },
+#endif
+    };
+    const int num_regs = sizeof(regs) / sizeof(*regs);
+    int ret, i;
+
+    if (num_regs == 0)
+        return;
+
+    /*
+     * Advance the cursor from the signal frame to the one that triggered the
+     * signal.
+     */
+    frame++;
+    ret = unw_step(&cursor);
+    if (ret < 0) {
+        ErrorF("unw_step failed: %s [%d]\n", unw_strerror(ret), ret);
+        return;
+    }
+
+    ErrorF("\n");
+    ErrorF("Registers at frame #%d:\n", frame);
+
+    for (i = 0; i < num_regs; i++) {
+        unw_word_t val;
+        ret = unw_get_reg(&cursor, regs[i].regnum, &val);
+        if (ret < 0) {
+            ErrorF("unw_get_reg(%s) failed: %s [%d]\n",
+                          regs[i].name, unw_strerror(ret), ret);
+        } else {
+            ErrorF("  %s: 0x%" PRIxPTR "\n", regs[i].name, val);
+        }
+    }
+}
+
 void
 xorg_backtrace(void)
 {
-    unw_cursor_t cursor;
+    unw_cursor_t cursor, signal_cursor;
     unw_context_t context;
     unw_word_t ip;
     unw_word_t off;
     unw_proc_info_t pip;
-    int ret, i = 0;
+    int ret, i = 0, signal_frame = -1;
     char procname[256];
     const char *filename;
     Dl_info dlinfo;
@@ -56,26 +118,23 @@ xorg_backtrace(void)
     pip.unwind_info = NULL;
     ret = unw_getcontext(&context);
     if (ret) {
-        ErrorFSigSafe("unw_getcontext failed: %s [%d]\n", unw_strerror(ret),
-                ret);
+        ErrorF("unw_getcontext failed: %s [%d]\n", unw_strerror(ret), ret);
         return;
     }
 
     ret = unw_init_local(&cursor, &context);
     if (ret) {
-        ErrorFSigSafe("unw_init_local failed: %s [%d]\n", unw_strerror(ret),
-                ret);
+        ErrorF("unw_init_local failed: %s [%d]\n", unw_strerror(ret), ret);
         return;
     }
 
-    ErrorFSigSafe("\n");
-    ErrorFSigSafe("Backtrace:\n");
+    ErrorF("\n");
+    ErrorF("Backtrace:\n");
     ret = unw_step(&cursor);
     while (ret > 0) {
         ret = unw_get_proc_info(&cursor, &pip);
         if (ret) {
-            ErrorFSigSafe("unw_get_proc_info failed: %s [%d]\n",
-                    unw_strerror(ret), ret);
+            ErrorF("unw_get_proc_info failed: %s [%d]\n", unw_strerror(ret), ret);
             break;
         }
 
@@ -83,8 +142,7 @@ xorg_backtrace(void)
         ret = unw_get_proc_name(&cursor, procname, 256, &off);
         if (ret && ret != -UNW_ENOMEM) {
             if (ret != -UNW_EUNSPEC)
-                ErrorFSigSafe("unw_get_proc_name failed: %s [%d]\n",
-                        unw_strerror(ret), ret);
+                ErrorF("unw_get_proc_name failed: %s [%d]\n", unw_strerror(ret), ret);
             procname[0] = '?';
             procname[1] = 0;
         }
@@ -97,15 +155,27 @@ xorg_backtrace(void)
         else
             filename = "?";
 
-        ErrorFSigSafe("%u: %s (%s%s+0x%x) [%p]\n", i++, filename, procname,
-            ret == -UNW_ENOMEM ? "..." : "", (int)off,
-            (void *)(uintptr_t)(ip));
+
+        if (unw_is_signal_frame(&cursor)) {
+            signal_cursor = cursor;
+            signal_frame = i;
+
+            ErrorF("%u: <signal handler called>\n", i++);
+        } else {
+            ErrorF("%u: %s (%s%s+0x%x) [%p]\n", i++, filename, procname,
+                   ret == -UNW_ENOMEM ? "..." : "", (int)off,
+                (void *)(uintptr_t)(ip));
+        }
 
         ret = unw_step(&cursor);
         if (ret < 0)
-            ErrorFSigSafe("unw_step failed: %s [%d]\n", unw_strerror(ret), ret);
+            ErrorF("unw_step failed: %s [%d]\n", unw_strerror(ret), ret);
     }
-    ErrorFSigSafe("\n");
+
+    if (signal_frame >= 0)
+        print_registers(signal_frame, signal_cursor);
+
+    ErrorF("\n");
 }
 #else /* HAVE_LIBUNWIND */
 #ifdef HAVE_BACKTRACE
@@ -115,28 +185,28 @@ xorg_backtrace(void)
 #include <dlfcn.h>
 #include <execinfo.h>
 
+#define BT_SIZE 64
 void
 xorg_backtrace(void)
 {
-    const int BT_SIZE = 64;
     void *array[BT_SIZE];
     const char *mod;
     int size, i;
     Dl_info info;
 
-    ErrorFSigSafe("\n");
-    ErrorFSigSafe("Backtrace:\n");
+    ErrorF("\n");
+    ErrorF("Backtrace:\n");
     size = backtrace(array, BT_SIZE);
     for (i = 0; i < size; i++) {
         int rc = dladdr(array[i], &info);
 
         if (rc == 0) {
-            ErrorFSigSafe("%u: ?? [%p]\n", i, array[i]);
+            ErrorF("%u: ?? [%p]\n", i, array[i]);
             continue;
         }
         mod = (info.dli_fname && *info.dli_fname) ? info.dli_fname : "(vdso)";
         if (info.dli_saddr)
-            ErrorFSigSafe(
+            ErrorF(
                 "%u: %s (%s+0x%x) [%p]\n",
                 i,
                 mod,
@@ -145,7 +215,7 @@ xorg_backtrace(void)
                                (char *) info.dli_saddr),
                 array[i]);
         else
-            ErrorFSigSafe(
+            ErrorF(
                 "%u: %s (%p+0x%x) [%p]\n",
                 i,
                 mod,
@@ -154,7 +224,7 @@ xorg_backtrace(void)
                                (char *) info.dli_fbase),
                 array[i]);
     }
-    ErrorFSigSafe("\n");
+    ErrorF("\n");
 }
 
 #else                           /* not glibc or glibc < 2.1 */
@@ -176,7 +246,7 @@ xorg_backtrace(void)
 #define ElfSym Elf32_Sym
 #endif
 
-/* Called for each frame on the stack to print it's contents */
+/* Called for each frame on the stack to print its contents */
 static int
 xorg_backtrace_frame(uintptr_t pc, int signo, void *arg)
 {
@@ -192,7 +262,7 @@ xorg_backtrace_frame(uintptr_t pc, int signo, void *arg)
             strcpy(signame, "unknown");
         }
 
-        ErrorFSigSafe("** Signal %u (%s)\n", signo, signame);
+        ErrorF("** Signal %u (%s)\n", signo, signame);
     }
 
     snprintf(header, sizeof(header), "%d: 0x%lx", depth, pc);
@@ -210,8 +280,7 @@ xorg_backtrace_frame(uintptr_t pc, int signo, void *arg)
             symname = "<section start>";
             offset = pc - (uintptr_t) dlinfo.dli_fbase;
         }
-        ErrorFSigSafe("%s: %s:%s+0x%x\n", header, dlinfo.dli_fname, symname,
-                     offset);
+        ErrorF("%s: %s:%s+0x%x\n", header, dlinfo.dli_fname, symname, offset);
 
     }
     else {
@@ -219,7 +288,7 @@ xorg_backtrace_frame(uintptr_t pc, int signo, void *arg)
          * probably poke elfloader here, but haven't written that code yet,
          * so we just print the pc.
          */
-        ErrorFSigSafe("%s\n", header);
+        ErrorF("%s\n", header);
     }
 
     return 0;
@@ -227,6 +296,8 @@ xorg_backtrace_frame(uintptr_t pc, int signo, void *arg)
 #endif                          /* HAVE_WALKCONTEXT */
 
 #ifdef HAVE_PSTACK
+#include <unistd.h>
+
 static int
 xorg_backtrace_pstack(void)
 {
@@ -271,7 +342,7 @@ xorg_backtrace_pstack(void)
 
             if (bytesread > 0) {
                 btline[bytesread] = 0;
-                ErrorFSigSafe("%s", btline);
+                ErrorF("%s", btline);
             }
             else if ((bytesread < 0) || ((errno != EINTR) && (errno != EAGAIN)))
                 done = 1;
@@ -291,8 +362,8 @@ void
 xorg_backtrace(void)
 {
 
-    ErrorFSigSafe("\n");
-    ErrorFSigSafe("Backtrace:\n");
+    ErrorF("\n");
+    ErrorF("Backtrace:\n");
 
 #ifdef HAVE_PSTACK
 /* First try fork/exec of pstack - otherwise fall back to walkcontext
@@ -309,9 +380,9 @@ xorg_backtrace(void)
             walkcontext(&u, xorg_backtrace_frame, &depth);
         else
 #endif
-            ErrorFSigSafe("Failed to get backtrace info: %s\n", strerror(errno));
+            ErrorF("Failed to get backtrace info: %s\n", strerror(errno));
     }
-    ErrorFSigSafe("\n");
+    ErrorF("\n");
 }
 
 #else

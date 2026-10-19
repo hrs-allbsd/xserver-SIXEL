@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, Oracle and/or its affiliates.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -20,15 +20,13 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
 #include <X11/X.h>
 
 #include "xf86.h"
 #include "xf86Priv.h"
+#include "xf86_os_support.h"
 #include "xf86_OSlib.h"
 
 #include <door.h>
@@ -68,8 +66,7 @@ xf86VTSwitchPending(void)
     return xf86Info.vtRequestsPending ? TRUE : FALSE;
 }
 
-Bool
-xf86VTSwitchAway(void)
+bool xf86VTSwitchAway(void)
 {
     int door_fd;
     vt_cmd_arg_t vt_door_arg;
@@ -80,7 +77,7 @@ xf86VTSwitchAway(void)
     if (xf86VTPruneDoor) {
         xf86VTPruneDoor = 0;
         ioctl(xf86Info.consoleFd, VT_RELDISP, 1);
-        return TRUE;
+        return true;
     }
 
     vt_door_arg.vt_ev = VT_EV_HOTKEYS;
@@ -93,11 +90,11 @@ xf86VTSwitchAway(void)
     door_arg.desc_num = 0;
 
     if ((door_fd = open(VT_DAEMON_DOOR_FILE, O_RDONLY)) < 0)
-        return FALSE;
+        return false;
 
     if (door_call(door_fd, &door_arg) != 0) {
         close(door_fd);
-        return FALSE;
+        return false;
     }
 
     close(door_fd);

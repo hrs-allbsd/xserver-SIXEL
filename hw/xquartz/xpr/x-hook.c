@@ -28,13 +28,10 @@
  * prior written authorization.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
 #include "x-hook.h"
 #include <stdlib.h>
-#include <assert.h>
 #include "os.h"
 
 #define CELL_NEW(f, d) X_PFX(list_prepend) ((x_list *)(f), (d))

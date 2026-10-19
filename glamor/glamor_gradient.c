@@ -29,6 +29,7 @@
  *
  * Gradient acceleration implementation
  */
+#include <dix-config.h>
 
 #include "glamor_priv.h"
 
@@ -168,8 +169,11 @@ _glamor_create_getcolor_fs_source(ScreenPtr screen, int stops_count,
         "}\n";
 
     if (use_array) {
-        XNFasprintf(&gradient_fs,
-                    gradient_fs_getcolor, stops_count, stops_count);
+        if (asprintf(&gradient_fs,
+                     gradient_fs_getcolor, stops_count, stops_count) == -1) {
+            ErrorF("Failed to allocate gradient_fs memory.\n");
+            return NULL;
+        }
         return gradient_fs;
     }
     else {
@@ -177,7 +181,7 @@ _glamor_create_getcolor_fs_source(ScreenPtr screen, int stops_count,
     }
 }
 
-static void
+static Bool
 _glamor_create_radial_gradient_program(ScreenPtr screen, int stops_count,
                                        int dyn_gen)
 {
@@ -204,10 +208,10 @@ _glamor_create_radial_gradient_program(ScreenPtr screen, int stops_count,
      *     Refer to pixman radial gradient.
      *
      *     The problem is given the two circles of c1 and c2 with the radius of r1 and
-     *     r1, we need to caculate the t, which is used to do interpolate with stops,
-     *     using the fomula:
+     *     r1, we need to calculate the t, which is used to do interpolate with stops,
+     *     using the formula:
      *     length((1-t)*c1 + t*c2 - p) = (1-t)*r1 + t*r2
-     *     expand the fomula with xy coond, get the following:
+     *     expand the formula with xy coond, get the following:
      *     sqrt(sqr((1-t)*c1.x + t*c2.x - p.x) + sqr((1-t)*c1.y + t*c2.y - p.y))
      *           = (1-t)r1 + t*r2
      *     <====> At*t- 2Bt + C = 0
@@ -215,7 +219,7 @@ _glamor_create_radial_gradient_program(ScreenPtr screen, int stops_count,
      *           B = (p.x - c1.x)*(c2.x - c1.x) + (p.y - c1.y)*(c2.y - c1.y) + r1*(r2 -r1)
      *           C = sqr(p.x - c1.x) + sqr(p.y - c1.y) - r1*r1
      *
-     *     solve the fomula and we get the result of
+     *     solve the formula and we get the result of
      *     t = (B + sqrt(B*B - A*C)) / A  or
      *     t = (B - sqrt(B*B - A*C)) / A  (quadratic equation have two solutions)
      *
@@ -316,7 +320,7 @@ _glamor_create_radial_gradient_program(ScreenPtr screen, int stops_count,
 
     if ((glamor_priv->radial_max_nstops >= stops_count) && (dyn_gen)) {
         /* Very Good, not to generate again. */
-        return;
+        return TRUE;
     }
 
     glamor_make_current(glamor_priv);
@@ -334,11 +338,12 @@ _glamor_create_radial_gradient_program(ScreenPtr screen, int stops_count,
         _glamor_create_getcolor_fs_source(screen, stops_count,
                                           (stops_count > 0));
 
-    XNFasprintf(&gradient_fs,
-                gradient_radial_fs_template,
-                PIXMAN_REPEAT_NONE, PIXMAN_REPEAT_NORMAL,
-                PIXMAN_REPEAT_REFLECT,
-                fs_getcolor_source);
+    if (asprintf(&gradient_fs,
+                 gradient_radial_fs_template,
+                 PIXMAN_REPEAT_NONE, PIXMAN_REPEAT_NORMAL,
+                 PIXMAN_REPEAT_REFLECT,
+                 fs_getcolor_source) == -1)
+        return FALSE;
 
     fs_prog = glamor_compile_glsl_prog(GL_FRAGMENT_SHADER, gradient_fs);
 
@@ -353,7 +358,10 @@ _glamor_create_radial_gradient_program(ScreenPtr screen, int stops_count,
     glBindAttribLocation(gradient_prog, GLAMOR_VERTEX_POS, "v_position");
     glBindAttribLocation(gradient_prog, GLAMOR_VERTEX_SOURCE, "v_texcoord");
 
-    glamor_link_glsl_prog(screen, gradient_prog, "radial gradient");
+    if (!glamor_link_glsl_prog(screen, gradient_prog, "radial gradient")) {
+        glDeleteProgram(gradient_prog);
+        return FALSE;
+    }
 
     if (dyn_gen) {
         index = 2;
@@ -367,9 +375,11 @@ _glamor_create_radial_gradient_program(ScreenPtr screen, int stops_count,
     }
 
     glamor_priv->gradient_prog[SHADER_GRADIENT_RADIAL][index] = gradient_prog;
+
+    return TRUE;
 }
 
-static void
+static Bool
 _glamor_create_linear_gradient_program(ScreenPtr screen, int stops_count,
                                        int dyn_gen)
 {
@@ -428,16 +438,16 @@ _glamor_create_linear_gradient_program(ScreenPtr screen, int stops_count,
      *                                      |
      *
      *      step 1: compute the distance of p, pt1 and pt2 in the slope direction.
-     *              Caculate the distance on Y axis first and multiply cos_val to
+     *              Calculate the distance on Y axis first and multiply cos_val to
      *              get the value on slope direction(pd, p1d and p2d represent the
      *              distance of p, pt1, and pt2 respectively).
      *
-     *      step 2: caculate the percentage of (pd - p1d)/(p2d - p1d).
+     *      step 2: calculate the percentage of (pd - p1d)/(p2d - p1d).
      *              If (pd - p1d) > (p2d - p1d) or < 0, then sub or add (p2d - p1d)
      *              to make it in the range of [0, (p2d - p1d)].
      *
      *      step 3: compare the percentage to every stop and find the stpos just
-     *              before and after it. Use the interpolation fomula to compute RGBA.
+     *              before and after it. Use the interpolation formula to compute RGBA.
      */
 
 #define gradient_fs_template	\
@@ -500,7 +510,7 @@ _glamor_create_linear_gradient_program(ScreenPtr screen, int stops_count,
 
     if ((glamor_priv->linear_max_nstops >= stops_count) && (dyn_gen)) {
         /* Very Good, not to generate again. */
-        return;
+        return TRUE;
     }
 
     glamor_make_current(glamor_priv);
@@ -516,10 +526,11 @@ _glamor_create_linear_gradient_program(ScreenPtr screen, int stops_count,
     fs_getcolor_source =
         _glamor_create_getcolor_fs_source(screen, stops_count, stops_count > 0);
 
-    XNFasprintf(&gradient_fs,
-                gradient_fs_template,
-                PIXMAN_REPEAT_NORMAL, PIXMAN_REPEAT_REFLECT,
-                fs_getcolor_source);
+    if (asprintf(&gradient_fs,
+                 gradient_fs_template,
+                 PIXMAN_REPEAT_NORMAL, PIXMAN_REPEAT_REFLECT,
+                 fs_getcolor_source) == -1)
+        return FALSE;
 
     fs_prog = glamor_compile_glsl_prog(GL_FRAGMENT_SHADER, gradient_fs);
     free(gradient_fs);
@@ -533,7 +544,10 @@ _glamor_create_linear_gradient_program(ScreenPtr screen, int stops_count,
     glBindAttribLocation(gradient_prog, GLAMOR_VERTEX_POS, "v_position");
     glBindAttribLocation(gradient_prog, GLAMOR_VERTEX_SOURCE, "v_texcoord");
 
-    glamor_link_glsl_prog(screen, gradient_prog, "linear gradient");
+    if (!glamor_link_glsl_prog(screen, gradient_prog, "linear gradient")) {
+        glDeleteProgram(gradient_prog);
+        return FALSE;
+    }
 
     if (dyn_gen) {
         index = 2;
@@ -547,9 +561,11 @@ _glamor_create_linear_gradient_program(ScreenPtr screen, int stops_count,
     }
 
     glamor_priv->gradient_prog[SHADER_GRADIENT_LINEAR][index] = gradient_prog;
+
+    return TRUE;
 }
 
-void
+Bool
 glamor_init_gradient_shader(ScreenPtr screen)
 {
     glamor_screen_private *glamor_priv;
@@ -564,11 +580,15 @@ glamor_init_gradient_shader(ScreenPtr screen)
     glamor_priv->linear_max_nstops = 0;
     glamor_priv->radial_max_nstops = 0;
 
-    _glamor_create_linear_gradient_program(screen, 0, 0);
-    _glamor_create_linear_gradient_program(screen, LINEAR_LARGE_STOPS, 0);
+    if (!_glamor_create_linear_gradient_program(screen, 0, 0) ||
+        !_glamor_create_linear_gradient_program(screen, LINEAR_LARGE_STOPS, 0))
+        return FALSE;
 
-    _glamor_create_radial_gradient_program(screen, 0, 0);
-    _glamor_create_radial_gradient_program(screen, RADIAL_LARGE_STOPS, 0);
+    if (!_glamor_create_radial_gradient_program(screen, 0, 0) ||
+        !_glamor_create_radial_gradient_program(screen, RADIAL_LARGE_STOPS, 0))
+        return FALSE;
+
+    return TRUE;
 }
 
 static void
@@ -584,7 +604,7 @@ _glamor_gradient_convert_trans_matrix(PictTransform *from, float to[3][3],
      * T: The transform matrix.
      * v: point vector in width X height space.
      *
-     * result is OK if we use this fomula. But for every point in width X height space,
+     * result is OK if we use this formula. But for every point in width X height space,
      * we can just use their normalized point vector in shader, namely we can just
      * use the result of A*v in shader. So we have no chance to insert T in A*v.
      * We can just convert v_s = A*T*v to v_s = A*T*inv(A)*A*v, where inv(A) is the
@@ -605,27 +625,35 @@ _glamor_gradient_convert_trans_matrix(PictTransform *from, float to[3][3],
      * T_s = | w*t21/h  t22      t23/h|
      *       | w*t31    h*t32    t33  |
      *       --                      --
+     *
+     * Because GLES2 cannot do transposed mat by spec, we did transposing inside this function
+     * already, and matrix becoming look like this:
+     *       --                      --
+     *       | t11      w*t21/h  t31*w|
+     * T_s = | h*t12/w  t22      t32*h|
+     *       | t13/w    t23/h    t33  |
+     *       --                      --
      */
 
     to[0][0] = (float) pixman_fixed_to_double(from->matrix[0][0]);
-    to[0][1] = (float) pixman_fixed_to_double(from->matrix[0][1])
+    to[1][0] = (float) pixman_fixed_to_double(from->matrix[0][1])
         * (normalize ? (((float) height) / ((float) width)) : 1.0);
-    to[0][2] = (float) pixman_fixed_to_double(from->matrix[0][2])
+    to[2][0] = (float) pixman_fixed_to_double(from->matrix[0][2])
         / (normalize ? ((float) width) : 1.0);
 
-    to[1][0] = (float) pixman_fixed_to_double(from->matrix[1][0])
+    to[0][1] = (float) pixman_fixed_to_double(from->matrix[1][0])
         * (normalize ? (((float) width) / ((float) height)) : 1.0);
     to[1][1] = (float) pixman_fixed_to_double(from->matrix[1][1]);
-    to[1][2] = (float) pixman_fixed_to_double(from->matrix[1][2])
+    to[2][1] = (float) pixman_fixed_to_double(from->matrix[1][2])
         / (normalize ? ((float) height) : 1.0);
 
-    to[2][0] = (float) pixman_fixed_to_double(from->matrix[2][0])
+    to[0][2] = (float) pixman_fixed_to_double(from->matrix[2][0])
         * (normalize ? ((float) width) : 1.0);
-    to[2][1] = (float) pixman_fixed_to_double(from->matrix[2][1])
+    to[1][2] = (float) pixman_fixed_to_double(from->matrix[2][1])
         * (normalize ? ((float) height) : 1.0);
     to[2][2] = (float) pixman_fixed_to_double(from->matrix[2][2]);
 
-    DEBUGF("the transform matrix is:\n%f\t%f\t%f\n%f\t%f\t%f\n%f\t%f\t%f\n",
+    DEBUGF("the transposed transform matrix is:\n%f\t%f\t%f\n%f\t%f\t%f\n%f\t%f\t%f\n",
            to[0][0], to[0][1], to[0][2],
            to[1][0], to[1][1], to[1][2], to[2][0], to[2][1], to[2][2]);
 }
@@ -797,7 +825,7 @@ glamor_generate_radial_gradient_picture(ScreenPtr screen,
                                         PicturePtr src_picture,
                                         int x_source, int y_source,
                                         int width, int height,
-                                        PictFormatShort format)
+                                        pixman_format_code_t format)
 {
     glamor_screen_private *glamor_priv;
     PicturePtr dst_picture = NULL;
@@ -950,11 +978,12 @@ glamor_generate_radial_gradient_picture(ScreenPtr screen,
         _glamor_gradient_convert_trans_matrix(src_picture->transform,
                                               transform_mat, width, height, 0);
         glUniformMatrix3fv(transform_mat_uniform_location,
-                           1, 1, &transform_mat[0][0]);
+                           1, GL_FALSE, &transform_mat[0][0]);
     }
     else {
+        /* identity matrix dont need to be transposed */
         glUniformMatrix3fv(transform_mat_uniform_location,
-                           1, 1, &identity_mat[0][0]);
+                           1, GL_FALSE, &identity_mat[0][0]);
     }
 
     if (!_glamor_gradient_set_pixmap_destination
@@ -962,17 +991,17 @@ glamor_generate_radial_gradient_picture(ScreenPtr screen,
          0))
         goto GRADIENT_FAIL;
 
-    glamor_set_alu(screen, GXcopy);
+    glamor_set_alu(&pixmap->drawable, GXcopy);
 
     /* Set all the stops and colors to shader. */
     if (stops_count > RADIAL_SMALL_STOPS) {
-        stop_colors = xallocarray(stops_count, 4 * sizeof(float));
+        stop_colors = calloc(stops_count, 4 * sizeof(float));
         if (stop_colors == NULL) {
             ErrorF("Failed to allocate stop_colors memory.\n");
             goto GRADIENT_FAIL;
         }
 
-        n_stops = xallocarray(stops_count, sizeof(float));
+        n_stops = calloc(stops_count, sizeof(float));
         if (n_stops == NULL) {
             ErrorF("Failed to allocate n_stops memory.\n");
             goto GRADIENT_FAIL;
@@ -1087,10 +1116,8 @@ glamor_generate_radial_gradient_picture(ScreenPtr screen,
     }
 
     if (stops_count > RADIAL_SMALL_STOPS) {
-        if (n_stops)
-            free(n_stops);
-        if (stop_colors)
-            free(stop_colors);
+        free(n_stops);
+        free(stop_colors);
     }
 
     glDisableVertexAttribArray(GLAMOR_VERTEX_POS);
@@ -1103,7 +1130,7 @@ glamor_generate_linear_gradient_picture(ScreenPtr screen,
                                         PicturePtr src_picture,
                                         int x_source, int y_source,
                                         int width, int height,
-                                        PictFormatShort format)
+                                        pixman_format_code_t format)
 {
     glamor_screen_private *glamor_priv;
     PicturePtr dst_picture = NULL;
@@ -1266,11 +1293,12 @@ glamor_generate_linear_gradient_picture(ScreenPtr screen,
         _glamor_gradient_convert_trans_matrix(src_picture->transform,
                                               transform_mat, width, height, 1);
         glUniformMatrix3fv(transform_mat_uniform_location,
-                           1, 1, &transform_mat[0][0]);
+                           1, GL_FALSE, &transform_mat[0][0]);
     }
     else {
+        /* identity matrix dont need to be transposed */
         glUniformMatrix3fv(transform_mat_uniform_location,
-                           1, 1, &identity_mat[0][0]);
+                           1, GL_FALSE, &identity_mat[0][0]);
     }
 
     if (!_glamor_gradient_set_pixmap_destination
@@ -1278,7 +1306,7 @@ glamor_generate_linear_gradient_picture(ScreenPtr screen,
          1))
         goto GRADIENT_FAIL;
 
-    glamor_set_alu(screen, GXcopy);
+    glamor_set_alu(&pixmap->drawable, GXcopy);
 
     /* Normalize the PTs. */
     glamor_set_normalize_pt(xscale, yscale,
@@ -1305,13 +1333,13 @@ glamor_generate_linear_gradient_picture(ScreenPtr screen,
 
     /* Set all the stops and colors to shader. */
     if (stops_count > LINEAR_SMALL_STOPS) {
-        stop_colors = xallocarray(stops_count, 4 * sizeof(float));
+        stop_colors = calloc(stops_count, 4 * sizeof(float));
         if (stop_colors == NULL) {
             ErrorF("Failed to allocate stop_colors memory.\n");
             goto GRADIENT_FAIL;
         }
 
-        n_stops = xallocarray(stops_count, sizeof(float));
+        n_stops = calloc(stops_count, sizeof(float));
         if (n_stops == NULL) {
             ErrorF("Failed to allocate n_stops memory.\n");
             goto GRADIENT_FAIL;
@@ -1430,10 +1458,8 @@ glamor_generate_linear_gradient_picture(ScreenPtr screen,
     }
 
     if (stops_count > LINEAR_SMALL_STOPS) {
-        if (n_stops)
-            free(n_stops);
-        if (stop_colors)
-            free(stop_colors);
+        free(n_stops);
+        free(stop_colors);
     }
 
     glDisableVertexAttribArray(GLAMOR_VERTEX_POS);

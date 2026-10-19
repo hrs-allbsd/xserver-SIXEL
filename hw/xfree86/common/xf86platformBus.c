@@ -25,33 +25,41 @@
 /*
  * This file contains the interfaces to the bus-specific code
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
 #ifdef XSERVER_PLATFORM_BUS
+
+#include <stdbool.h>
+#include <assert.h>
 #include <errno.h>
 
 #include <pciaccess.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include "os.h"
-#include "hotplug.h"
-#include "systemd-logind.h"
 
+#include "config/hotplug_priv.h"
+#include "dix/screenint_priv.h"
+#include "os/osdep.h"
+#include "Xext/randr/randrstr_priv.h"
+
+#include "os.h"
+#include "../os-support/linux/systemd-logind.h"
+
+#include "xf86_pci_priv.h"
 #include "loaderProcs.h"
-#include "xf86.h"
+#include "xf86_priv.h"
+#include "xf86_os_support.h"
 #include "xf86_OSproc.h"
+#include "xf86Opt_priv.h"
 #include "xf86Priv.h"
 #include "xf86str.h"
 #include "xf86Bus.h"
 #include "Pci.h"
-#include "xf86platformBus.h"
+#include "xf86platformBus_priv.h"
+#include "xf86Xinput_priv.h"
 #include "xf86Config.h"
-
-#include "randrstr.h"
-int platformSlotClaimed;
+#include "xf86Crtc.h"
+#include "seatd-libseat.h"
 
 int xf86_num_platform_devices;
 
@@ -60,7 +68,7 @@ struct xf86_platform_device *xf86_platform_devices;
 int
 xf86_add_platform_device(struct OdevAttributes *attribs, Bool unowned)
 {
-    xf86_platform_devices = xnfreallocarray(xf86_platform_devices,
+    xf86_platform_devices = XNFreallocarray(xf86_platform_devices,
                                             xf86_num_platform_devices + 1,
                                             sizeof(struct xf86_platform_device));
 
@@ -94,13 +102,11 @@ xf86_get_platform_device_unowned(int index)
 }
 
 struct xf86_platform_device *
-xf86_find_platform_device_by_devnum(int major, int minor)
+xf86_find_platform_device_by_devnum(unsigned int major, unsigned int minor)
 {
-    int i, attr_major, attr_minor;
-
-    for (i = 0; i < xf86_num_platform_devices; i++) {
-        attr_major = xf86_platform_odev_attributes(i)->major;
-        attr_minor = xf86_platform_odev_attributes(i)->minor;
+    for (unsigned int i = 0; i < xf86_num_platform_devices; i++) {
+        unsigned int attr_major = xf86_platform_odev_attributes(i)->major;
+        unsigned int attr_minor = xf86_platform_odev_attributes(i)->minor;
         if (attr_major == major && attr_minor == minor)
             return &xf86_platform_devices[i];
     }
@@ -152,69 +158,26 @@ platform_find_pci_info(struct xf86_platform_device *pd, char *busid)
 }
 
 static Bool
-xf86_check_platform_slot(const struct xf86_platform_device *pd)
-{
-    int i;
-
-    for (i = 0; i < xf86NumEntities; i++) {
-        const EntityPtr u = xf86Entities[i];
-
-        if (pd->pdev && u->bus.type == BUS_PCI &&
-            MATCH_PCI_DEVICES(pd->pdev, u->bus.id.pci)) {
-            return FALSE;
-        }
-        if ((u->bus.type == BUS_PLATFORM) && (pd == u->bus.id.plat)) {
-            return FALSE;
-        }
-    }
-    return TRUE;
-}
-
-static Bool
-MatchToken(const char *value, struct xorg_list *patterns,
-           int (*compare)(const char *, const char *))
-{
-    const xf86MatchGroup *group;
-
-    /* If there are no patterns, accept the match */
-    if (xorg_list_is_empty(patterns))
-        return TRUE;
-
-    /* If there are patterns but no attribute, reject the match */
-    if (!value)
-        return FALSE;
-
-    /*
-     * Otherwise, iterate the list of patterns ensuring each entry has a
-     * match. Each list entry is a separate Match line of the same type.
-     */
-    xorg_list_for_each_entry(group, patterns, entry) {
-        Bool match = FALSE;
-        char *const *cur;
-
-        for (cur = group->values; *cur; cur++) {
-            if ((*compare)(value, *cur) == 0) {
-                match = TRUE;
-                break;
-            }
-        }
-
-        if (!match)
-            return FALSE;
-    }
-
-    /* All the entries in the list matched the attribute */
-    return TRUE;
-}
-
-static Bool
 OutputClassMatches(const XF86ConfOutputClassPtr oclass,
                    struct xf86_platform_device *dev)
 {
     char *driver = dev->attribs->driver;
+    const char *layout;
 
-    if (!MatchToken(driver, &oclass->match_driver, strcmp))
+    if (!MatchAttrToken(driver, &oclass->match_driver))
         return FALSE;
+
+    /* MatchLayout string
+     *
+     * If no Layout section is found, xf86ServerLayout.id becomes "(implicit)"
+     * It is convenient that "" in patterns means "no explicit layout"
+     */
+    if (strcmp(xf86ConfigLayout.id,"(implicit)"))
+        layout = xf86ConfigLayout.id;
+    else
+        layout = "";
+    if (!MatchAttrToken(layout, &oclass->match_layout))
+            return FALSE;
 
     return TRUE;
 }
@@ -228,11 +191,13 @@ xf86OutputClassDriverList(int index, XF86MatchedDrivers *md)
         if (OutputClassMatches(cl, &xf86_platform_devices[index])) {
             char *path = xf86_platform_odev_attributes(index)->path;
 
-            xf86Msg(X_INFO, "Applying OutputClass \"%s\" to %s\n",
-                    cl->identifier, path);
-            xf86Msg(X_NONE, "\tloading driver: %s\n", cl->driver);
-
-            xf86AddMatchedDriver(md, cl->driver);
+            LogMessageVerb(X_INFO, 1, "Applying OutputClass \"%s\" to %s\n",
+                           cl->identifier, path);
+            if (cl->driver != NULL && *(cl->driver)) {
+                LogMessageVerb(X_NONE, 1, "\tloading driver: %s\n", cl->driver);
+                xf86AddMatchedDriver(md, cl->driver);
+            } else
+                LogMessageVerb(X_NONE, 1, "\tno driver specified\n");
         }
     }
 }
@@ -271,14 +236,29 @@ xf86PlatformMatchDriver(XF86MatchedDrivers *md)
     }
 }
 
+void xf86PlatformScanPciDev(void)
+{
+    int i;
+
+    if (!xf86scanpci())
+        return;
+
+    LogMessageVerb(X_CONFIG, 1, "Scanning the platform PCI devices\n");
+    for (i = 0; i < xf86_num_platform_devices; i++) {
+        char *busid = xf86_platform_odev_attributes(i)->busid;
+
+        if (strncmp(busid, "pci:", 4) == 0)
+            platform_find_pci_info(&xf86_platform_devices[i], busid);
+    }
+}
+
 int
 xf86platformProbe(void)
 {
     int i;
-    Bool pci = TRUE;
+    bool pci = TRUE;
     XF86ConfOutputClassPtr cl, cl_head = (xf86configptr) ?
             xf86configptr->conf_outputclass_lst : NULL;
-    char *old_path, *path = NULL;
 
     config_odev_probe(xf86PlatformDeviceProbe);
 
@@ -286,10 +266,11 @@ xf86platformProbe(void)
         pci = FALSE;
     }
 
+    char *path = NULL;
     for (i = 0; i < xf86_num_platform_devices; i++) {
         char *busid = xf86_platform_odev_attributes(i)->busid;
 
-        if (pci && (strncmp(busid, "pci:", 4) == 0)) {
+        if (pci && busid && (strncmp(busid, "pci:", 4) == 0)) {
             platform_find_pci_info(&xf86_platform_devices[i], busid);
         }
 
@@ -301,19 +282,97 @@ xf86platformProbe(void)
             if (!OutputClassMatches(cl, &xf86_platform_devices[i]))
                 continue;
 
-            if (cl->modulepath && xf86ModPathFrom != X_CMDLINE) {
-                old_path = path;
-                XNFasprintf(&path, "%s,%s", cl->modulepath,
-                            path ? path : xf86ModulePath);
-                free(old_path);
-                xf86Msg(X_CONFIG, "OutputClass \"%s\" ModulePath extended to \"%s\"\n",
-                        cl->identifier, path);
-                LoaderSetPath(path);
+            if (xf86ModPathFrom != X_CMDLINE) {
+                if (cl->driver) {
+                    char driver_path[PATH_MAX] = { 0 };
+                    if (cl->modulepath) {
+                        if (*(cl->modulepath)) {
+                            snprintf(driver_path, sizeof(driver_path)-1, "%s,%s", cl->modulepath, xf86ModulePath);
+                            LogMessageVerb(X_CONFIG, 1, "OutputClass \"%s\" ModulePath for driver %s overridden with \"%s\"\n",
+                                    cl->identifier, cl->driver, driver_path);
+                        } else {
+                            snprintf(driver_path, sizeof(driver_path)-1, "%s", xf86ModulePath);
+                            LogMessageVerb(X_CONFIG, 1, "OutputClass \"%s\" ModulePath for driver %s reset to standard \"%s\"\n",
+                                    cl->identifier, cl->driver, driver_path);
+                        }
+                    } else {
+                        LogMessageVerb(X_CONFIG, 1, "OutputClass \"%s\" ModulePath for driver %s reset to default\n",
+                                cl->identifier, cl->driver);
+                    }
+                    if (*(cl->driver)) LoaderSetPath(cl->driver, driver_path);
+                    if (cl->modules) {
+                        LogMessageVerb(X_CONFIG, 1, "    and for modules \"%s\" as well\n",
+                                cl->modules);
+                        char *copy = strdup(cl->modules ? cl->modules : "");
+                        char *curr = copy;
+                        char *next;
+                        while ((curr = strtok_r(curr, ",", &next))) {
+                            if (*curr) LoaderSetPath(curr, driver_path);
+                            curr = NULL;
+                        }
+                        free(copy);
+                    }
+                }
+                else if (cl->modules) {
+                    char driver_path[PATH_MAX] = { 0 };
+                    if (cl->modulepath) {
+                        if (*(cl->modulepath)) {
+                            snprintf(driver_path, sizeof(driver_path)-1, "%s,%s", cl->modulepath, xf86ModulePath);
+                            LogMessageVerb(X_CONFIG, 1, "OutputClass \"%s\" ModulePath for modules %s overridden with \"%s\"\n",
+                                    cl->identifier, cl->modules, driver_path);
+                        } else {
+                            snprintf(driver_path, sizeof(driver_path)-1, "%s", xf86ModulePath);
+                            LogMessageVerb(X_CONFIG, 1, "OutputClass \"%s\" ModulePath for modules %s reset to standard \"%s\"\n",
+                                    cl->identifier, cl->modules, driver_path);
+                        }
+                    } else {
+                        LogMessageVerb(X_CONFIG, 1, "OutputClass \"%s\" ModulePath for modules %s reset to default\n",
+                                cl->identifier, cl->modules);
+                    }
+                    char *copy = strdup(cl->modules ? cl->modules : "");
+                    char *curr = copy;
+                    char *next;
+                    while ((curr = strtok_r(curr, ",", &next))) {
+                        if (*curr) LoaderSetPath(curr, driver_path);
+                        curr = NULL;
+                    }
+                    free(copy);
+                } else if (cl->modulepath) {
+                    if (*(cl->modulepath)) {
+                        char *path2;
+                        if (asprintf(&path2, "%s,%s", cl->modulepath,
+                                path ? path : xf86ModulePath) == -1)
+                            LogMessageVerb(X_ERROR, 1, "memory allocation failed\n");
+                        else {
+                            LogMessageVerb(X_CONFIG, 1, "OutputClass \"%s\" default ModulePath extended to \"%s\"\n",
+                                cl->identifier, path2);
+                            free(path);
+                            path = path2;
+                        }
+                    } else {
+                        char *path2 = strdup(xf86ModulePath);
+                        if (!path2)
+                            LogMessageVerb(X_ERROR, 1, "memory allocation failed\n");
+                        else {
+                            LogMessageVerb(X_CONFIG, 1, "OutputClass \"%s\" default ModulePath reset to standard \"%s\"\n",
+                                cl->identifier, path2);
+                            free(path);
+                            path = path2;
+                        }
+                    }
+                }
+                /* Otherwise global module search path is left unchanged */
             }
         }
     }
 
-    free(path);
+    if (xf86ModPathFrom != X_CMDLINE) {
+        if (path) {
+            LoaderSetPath(NULL, path);
+            free(path);
+        } else
+            LoaderSetPath(NULL, xf86ModulePath);
+    }
 
     /* First see if there is an OutputClass match marking a device as primary */
     for (i = 0; i < xf86_num_platform_devices; i++) {
@@ -323,8 +382,8 @@ xf86platformProbe(void)
                 continue;
 
             if (xf86CheckBoolOption(cl->option_lst, "PrimaryGPU", FALSE)) {
-                xf86Msg(X_CONFIG, "OutputClass \"%s\" setting %s as PrimaryGPU\n",
-                        cl->identifier, dev->attribs->path);
+                LogMessageVerb(X_CONFIG, 1, "OutputClass \"%s\" setting %s as PrimaryGPU\n",
+                               cl->identifier, dev->attribs->path);
                 primaryBus.type = BUS_PLATFORM;
                 primaryBus.id.plat = dev;
                 return 0;
@@ -332,7 +391,8 @@ xf86platformProbe(void)
         }
     }
 
-    /* Then check for pci_device_is_boot_vga() */
+    /* After the OutputClass loop above, scan for the primary device via
+     * various methods, preferring boot display over boot VGA. */
     for (i = 0; i < xf86_num_platform_devices; i++) {
         struct xf86_platform_device *dev = &xf86_platform_devices[i];
 
@@ -340,12 +400,28 @@ xf86platformProbe(void)
             continue;
 
         pci_device_probe(dev->pdev);
-        if (pci_device_is_boot_vga(dev->pdev)) {
+        if (pci_device_is_boot_display(dev->pdev)) {
             primaryBus.type = BUS_PLATFORM;
             primaryBus.id.plat = dev;
+            return 0;
         }
     }
 
+    /* Fall back to boot VGA if no boot display was found. */
+    for (i = 0; i < xf86_num_platform_devices; i++) {
+        struct xf86_platform_device *dev = &xf86_platform_devices[i];
+
+        if (!dev->pdev)
+            continue;
+
+        if (pci_device_is_boot_vga(dev->pdev)) {
+            primaryBus.type = BUS_PLATFORM;
+            primaryBus.id.plat = dev;
+            return 0;
+        }
+    }
+
+    /* No primary device found. */
     return 0;
 }
 
@@ -364,16 +440,18 @@ xf86MergeOutputClassOptions(int entityIndex, void **options)
         break;
     case BUS_PCI:
         for (i = 0; i < xf86_num_platform_devices; i++) {
-            if (MATCH_PCI_DEVICES(xf86_platform_devices[i].pdev,
-                                  entity->bus.id.pci)) {
-                dev = &xf86_platform_devices[i];
-                break;
+            if (xf86_platform_devices[i].pdev) {
+                if (MATCH_PCI_DEVICES(xf86_platform_devices[i].pdev,
+                                      entity->bus.id.pci)) {
+                    dev = &xf86_platform_devices[i];
+                    break;
+                }
             }
         }
         break;
     default:
-        xf86Msg(X_DEBUG, "xf86MergeOutputClassOptions unsupported bus type %d\n",
-                entity->bus.type);
+        LogMessageVerb(X_DEBUG, 1, "xf86MergeOutputClassOptions unsupported bus type %d\n",
+                       entity->bus.type);
     }
 
     if (!dev)
@@ -383,8 +461,8 @@ xf86MergeOutputClassOptions(int entityIndex, void **options)
         if (!OutputClassMatches(cl, dev) || !cl->option_lst)
             continue;
 
-        xf86Msg(X_INFO, "Applying OutputClass \"%s\" options to %s\n",
-                cl->identifier, dev->attribs->path);
+        LogMessageVerb(X_INFO, 1, "Applying OutputClass \"%s\" options to %s\n",
+                       cl->identifier, dev->attribs->path);
 
         classopts = xf86optionListDup(cl->option_lst);
         *options = xf86optionListMerge(*options, classopts);
@@ -398,7 +476,7 @@ xf86ClaimPlatformSlot(struct xf86_platform_device * d, DriverPtr drvp,
     EntityPtr p = NULL;
     int num;
 
-    if (xf86_check_platform_slot(d)) {
+    if (xf86CheckSlot(d, BUS_PLATFORM)) {
         num = xf86AllocateEntity();
         p = xf86Entities[num];
         p->driver = drvp;
@@ -410,7 +488,6 @@ xf86ClaimPlatformSlot(struct xf86_platform_device * d, DriverPtr drvp,
         if (dev)
             xf86AddDevToEntity(num, dev);
 
-        platformSlotClaimed++;
         return num;
     }
     else
@@ -428,7 +505,6 @@ xf86UnclaimPlatformSlot(struct xf86_platform_device *d, GDevPtr dev)
         if ((p->bus.type == BUS_PLATFORM) && (p->bus.id.plat == d)) {
             if (dev)
                 xf86RemoveDevFromEntity(i, dev);
-            platformSlotClaimed--;
             p->bus.type = BUS_NONE;
             return 0;
         }
@@ -443,33 +519,36 @@ xf86UnclaimPlatformSlot(struct xf86_platform_device *d, GDevPtr dev)
 static Bool doPlatformProbe(struct xf86_platform_device *dev, DriverPtr drvp,
                             GDevPtr gdev, int flags, intptr_t match_data)
 {
-    Bool foundScreen = FALSE;
+    bool foundScreen = FALSE;
     int entity;
-
-    if (gdev && gdev->screen == 0 && !xf86_check_platform_slot(dev))
-        return FALSE;
 
     entity = xf86ClaimPlatformSlot(dev, drvp, 0,
                                    gdev, gdev ? gdev->active : 0);
 
-    if ((entity == -1) && gdev && (gdev->screen > 0)) {
-        unsigned nent;
+    if ((entity == -1) && gdev) {
+        if (gdev->screen == 0)
+            return FALSE;
+        else { /* gdev->screen > 0 */
+            unsigned nent;
 
-        for (nent = 0; nent < xf86NumEntities; nent++) {
-            EntityPtr pEnt = xf86Entities[nent];
+            for (nent = 0; nent < xf86NumEntities; nent++) {
+                EntityPtr pEnt = xf86Entities[nent];
 
-            if (pEnt->bus.type != BUS_PLATFORM)
-                continue;
-            if (pEnt->bus.id.plat == dev) {
-                entity = nent;
-                xf86AddDevToEntity(nent, gdev);
-                break;
+                if (pEnt->bus.type != BUS_PLATFORM)
+                    continue;
+                if (pEnt->bus.id.plat == dev) {
+                    entity = nent;
+                    xf86AddDevToEntity(nent, gdev);
+                    break;
+                }
             }
         }
     }
+
     if (entity != -1) {
         if ((dev->flags & XF86_PDEV_SERVER_FD) && (!drvp->driverFunc ||
                 !drvp->driverFunc(NULL, SUPPORTS_SERVER_FDS, NULL))) {
+            seatd_libseat_close_graphics(dev->attribs->fd);
             systemd_logind_release_fd(dev->attribs->major, dev->attribs->minor, dev->attribs->fd);
             dev->attribs->fd = -1;
             dev->flags &= ~XF86_PDEV_SERVER_FD;
@@ -487,7 +566,7 @@ static Bool
 probeSingleDevice(struct xf86_platform_device *dev, DriverPtr drvp, GDevPtr gdev, int flags)
 {
     int k;
-    Bool foundScreen = FALSE;
+    bool foundScreen = FALSE;
     struct pci_device *pPci;
     const struct pci_id_match *const devices = drvp->supported_devices;
 
@@ -528,26 +607,54 @@ isGPUDevice(GDevPtr gdev)
 int
 xf86platformProbeDev(DriverPtr drvp)
 {
-    Bool foundScreen = FALSE;
+    bool foundScreen = FALSE;
     GDevPtr *devList;
     const unsigned numDevs = xf86MatchDevice(drvp->driverName, &devList);
     int i, j;
 
-    /* find the main device or any device specificed in xorg.conf */
+    /* find the main device or any device specified in xorg.conf */
     for (i = 0; i < numDevs; i++) {
+        const char *devpath;
+
         /* skip inactive devices */
         if (!devList[i]->active)
             continue;
 
+        /* This is specific to modesetting. */
+        devpath = xf86FindOptionValue(devList[i]->options, "kmsdev");
+
         for (j = 0; j < xf86_num_platform_devices; j++) {
-            if (devList[i]->busID && *devList[i]->busID) {
+            if (devpath && *devpath) {
+                if (strcmp(xf86_platform_devices[j].attribs->path, devpath) == 0)
+                    break;
+            } else if (devList[i]->busID && *devList[i]->busID) {
                 if (xf86PlatformDeviceCheckBusID(&xf86_platform_devices[j], devList[i]->busID))
                     break;
             }
             else {
                 /* for non-seat0 servers assume first device is the master */
-                if (ServerIsNotSeat0())
+                if (ServerIsNotSeat0()) {
                     break;
+                } else {
+                    /* Accept the device if the driver is corebootdrm */
+                    if (strcmp(xf86_platform_devices[j].attribs->driver, "corebootdrm") == 0)
+                        break;
+                    /* Accept the device if the driver is efidrm */
+                    if (strcmp(xf86_platform_devices[j].attribs->driver, "efidrm") == 0)
+                        break;
+                    /* Accept the device if the driver is hyperv_drm */
+                    if (strcmp(xf86_platform_devices[j].attribs->driver, "hyperv_drm") == 0)
+                        break;
+                    /* Accept the device if the driver is ofdrm */
+                    if (strcmp(xf86_platform_devices[j].attribs->driver, "ofdrm") == 0)
+                        break;
+                    /* Accept the device if the driver is simpledrm */
+                    if (strcmp(xf86_platform_devices[j].attribs->driver, "simpledrm") == 0)
+                        break;
+                    /* Accept the device if the driver is vesadrm */
+                    if (strcmp(xf86_platform_devices[j].attribs->driver, "vesadrm") == 0)
+                        break;
+                }
 
                 if (xf86IsPrimaryPlatform(&xf86_platform_devices[j]))
                     break;
@@ -569,24 +676,22 @@ xf86platformProbeDev(DriverPtr drvp)
 int
 xf86platformAddGPUDevices(DriverPtr drvp)
 {
-    Bool foundScreen = FALSE;
+    bool foundScreen = FALSE;
     GDevPtr *devList;
     int j;
 
-    if (!drvp->platformProbe)
+    if (!drvp->platformProbe || !xf86Info.autoAddGPU)
         return FALSE;
 
     xf86MatchDevice(drvp->driverName, &devList);
 
     /* if autoaddgpu devices is enabled then go find any unclaimed platform
      * devices and add them as GPU screens */
-    if (xf86Info.autoAddGPU) {
-        for (j = 0; j < xf86_num_platform_devices; j++) {
-            if (probeSingleDevice(&xf86_platform_devices[j], drvp,
-                                  devList ?  devList[0] : NULL,
-                                  PLATFORM_PROBE_GPU_SCREEN))
-                foundScreen = TRUE;
-        }
+    for (j = 0; j < xf86_num_platform_devices; j++) {
+        if (probeSingleDevice(&xf86_platform_devices[j], drvp,
+                              devList ?  devList[0] : NULL,
+                              PLATFORM_PROBE_GPU_SCREEN))
+            foundScreen = TRUE;
     }
 
     free(devList);
@@ -594,37 +699,77 @@ xf86platformAddGPUDevices(DriverPtr drvp)
     return foundScreen;
 }
 
-int
-xf86platformAddDevice(int index)
+const char *
+xf86PlatformFindHotplugDriver(int dev_index)
 {
-    int i, old_screens, scr_index;
+    XF86ConfOutputClassPtr cl;
+    const char *hp_driver = NULL;
+    struct xf86_platform_device *dev = &xf86_platform_devices[dev_index];
+
+    for (cl = xf86configptr->conf_outputclass_lst; cl; cl = cl->list.next) {
+        if (!OutputClassMatches(cl, dev) || !cl->option_lst)
+	    continue;
+
+        hp_driver = xf86FindOptionValue(cl->option_lst, "HotplugDriver");
+        if (hp_driver)
+            xf86MarkOptionUsed(cl->option_lst);
+    }
+
+    /* Return the first driver from the match list */
+    LogMessageVerb(X_INFO, 1, "matching hotplug-driver is %s\n",
+                   hp_driver ? hp_driver : "none");
+    return hp_driver;
+}
+
+/* wrapper to adapt for the xf86 driver ABI */
+static bool __screenInit(ScreenPtr pScreen, int argc, char **argv, void *closure)
+{
+    ScrnInfoPtr pScrn = closure;
+    assert(pScrn);
+
+    if (pScrn->ScreenInit) {
+        return !!(pScrn->ScreenInit(pScreen, argc, argv));
+    }
+
+    return true;
+}
+
+bool
+xf86platformAddDevice(const char *driver_name, int index)
+{
+    int i, old_screens, scr_index, scrnum;
     DriverPtr drvp = NULL;
     screenLayoutPtr layout;
-    static const char *hotplug_driver_name = "modesetting";
 
     if (!xf86Info.autoAddGPU)
-        return -1;
+        return FALSE;
 
-    /* force load the driver for now */
-    xf86LoadOneModule(hotplug_driver_name, NULL);
+    /* Load modesetting driver if no driver given, or driver open failed */
+    if (!driver_name || !xf86LoadOneModule(driver_name, NULL)) {
+        driver_name = "modesetting";
+        xf86LoadOneModule(driver_name, NULL);
+    }
 
     for (i = 0; i < xf86NumDrivers; i++) {
         if (!xf86DriverList[i])
             continue;
 
-        if (!strcmp(xf86DriverList[i]->driverName, hotplug_driver_name)) {
+        if (!strcmp(xf86DriverList[i]->driverName, driver_name)) {
             drvp = xf86DriverList[i];
             break;
         }
     }
-    if (i == xf86NumDrivers)
-        return -1;
+
+    if (!drvp) {
+        ErrorF("can't find driver %s for hotplugged device\n", driver_name);
+        return FALSE;
+    }
 
     old_screens = xf86NumGPUScreens;
     doPlatformProbe(&xf86_platform_devices[index], drvp, NULL,
                     PLATFORM_PROBE_GPU_SCREEN, 0);
     if (old_screens == xf86NumGPUScreens)
-        return -1;
+        return FALSE;
     i = old_screens;
 
     for (layout = xf86ConfigLayout.screens; layout->screen != NULL;
@@ -640,44 +785,56 @@ xf86platformAddDevice(int index)
     if (!xf86GPUScreens[i]->configured) {
         ErrorF("hotplugged device %d didn't configure\n", i);
         xf86DeleteScreen(xf86GPUScreens[i]);
-        return -1;
+        return FALSE;
     }
 
-   scr_index = AddGPUScreen(xf86GPUScreens[i]->ScreenInit, 0, NULL);
+   /*
+    * Almost everything uses these defaults, and many of those that
+    * don't, will wrap them.
+    */
+   xf86GPUScreens[i]->EnableDisableFBAccess = xf86EnableDisableFBAccess;
+#ifdef XFreeXDGA
+   xf86GPUScreens[i]->SetDGAMode = xf86SetDGAMode;
+#endif
+
+   scr_index = AddGPUScreen(__screenInit, 0, NULL, xf86GPUScreens[i]);
    if (scr_index == -1) {
        xf86DeleteScreen(xf86GPUScreens[i]);
        xf86UnclaimPlatformSlot(&xf86_platform_devices[index], NULL);
        xf86NumGPUScreens = old_screens;
-       return -1;
+       return FALSE;
    }
    dixSetPrivate(&xf86GPUScreens[i]->pScreen->devPrivates,
                  xf86ScreenKey, xf86GPUScreens[i]);
 
-   CreateScratchPixmapsForScreen(xf86GPUScreens[i]->pScreen);
+   PixmapScreenInit(xf86GPUScreens[i]->pScreen);
 
-   if (xf86GPUScreens[i]->pScreen->CreateScreenResources &&
-       !(*xf86GPUScreens[i]->pScreen->CreateScreenResources) (xf86GPUScreens[i]->pScreen)) {
+   if (dixScreenRaiseCreateResources(xf86GPUScreens[i]->pScreen)) {
        RemoveGPUScreen(xf86GPUScreens[i]->pScreen);
        xf86DeleteScreen(xf86GPUScreens[i]);
        xf86UnclaimPlatformSlot(&xf86_platform_devices[index], NULL);
        xf86NumGPUScreens = old_screens;
-       return -1;
+       return FALSE;
    }
-   /* attach unbound to 0 protocol screen */
-   AttachUnboundGPU(xf86Screens[0]->pScreen, xf86GPUScreens[i]->pScreen);
+   /* attach unbound to the configured protocol screen (or 0) */
+   scrnum = xf86GPUScreens[i]->confScreen->screennum;
+   AttachUnboundGPU(xf86Screens[scrnum]->pScreen, xf86GPUScreens[i]->pScreen);
+   if (xf86Info.autoBindGPU)
+       RRProviderAutoConfigGpuScreen(xf86ScrnToScreen(xf86GPUScreens[i]),
+                                     xf86ScrnToScreen(xf86Screens[scrnum]));
 
-   RRResourcesChanged(xf86Screens[0]->pScreen);
-   RRTellChanged(xf86Screens[0]->pScreen);
+   RRResourcesChanged(xf86Screens[scrnum]->pScreen);
+   RRTellChanged(xf86Screens[scrnum]->pScreen);
 
-   return 0;
+   return TRUE;
 }
 
 void
 xf86platformRemoveDevice(int index)
 {
     EntityPtr entity;
-    int ent_num, i, j;
-    Bool found;
+    int ent_num, i, j, scrnum;
+    bool found;
 
     for (ent_num = 0; ent_num < xf86NumEntities; ent_num++) {
         entity = xf86Entities[ent_num];
@@ -703,7 +860,9 @@ xf86platformRemoveDevice(int index)
         goto out;
     }
 
-    xf86GPUScreens[i]->pScreen->CloseScreen(xf86GPUScreens[i]->pScreen);
+    scrnum = xf86GPUScreens[i]->confScreen->screennum;
+
+    dixScreenRaiseClose(xf86GPUScreens[i]->pScreen);
 
     RemoveGPUScreen(xf86GPUScreens[i]->pScreen);
     xf86DeleteScreen(xf86GPUScreens[i]);
@@ -712,8 +871,8 @@ xf86platformRemoveDevice(int index)
 
     xf86_remove_platform_device(index);
 
-    RRResourcesChanged(xf86Screens[0]->pScreen);
-    RRTellChanged(xf86Screens[0]->pScreen);
+    RRResourcesChanged(xf86Screens[scrnum]->pScreen);
+    RRTellChanged(xf86Screens[scrnum]->pScreen);
  out:
     return;
 }
@@ -736,14 +895,49 @@ void xf86platformPrimary(void)
 {
     /* use the first platform device as a fallback */
     if (primaryBus.type == BUS_NONE) {
-        xf86Msg(X_INFO, "no primary bus or device found\n");
+        LogMessageVerb(X_INFO, 1, "no primary bus or device found\n");
 
         if (xf86_num_platform_devices > 0) {
             primaryBus.id.plat = &xf86_platform_devices[0];
             primaryBus.type = BUS_PLATFORM;
 
-            xf86Msg(X_NONE, "\tfalling back to %s\n", primaryBus.id.plat->attribs->syspath);
+            LogMessageVerb(X_NONE, 1, "\tfalling back to %s\n", primaryBus.id.plat->attribs->syspath);
         }
     }
 }
-#endif
+
+char *
+_xf86_get_platform_device_attrib(struct xf86_platform_device *device, int attrib, int (*fake)[0])
+{
+    switch (attrib) {
+    case ODEV_ATTRIB_PATH:
+        return xf86_platform_device_odev_attributes(device)->path;
+    case ODEV_ATTRIB_SYSPATH:
+        return xf86_platform_device_odev_attributes(device)->syspath;
+    case ODEV_ATTRIB_BUSID:
+        return xf86_platform_device_odev_attributes(device)->busid;
+    case ODEV_ATTRIB_DRIVER:
+        return xf86_platform_device_odev_attributes(device)->driver;
+    default:
+        assert(FALSE);
+        return NULL;
+    }
+}
+
+int
+_xf86_get_platform_device_int_attrib(struct xf86_platform_device *device, int attrib, int (*fake)[0])
+{
+    switch (attrib) {
+    case ODEV_ATTRIB_FD:
+        return xf86_platform_device_odev_attributes(device)->fd;
+    case ODEV_ATTRIB_MAJOR:
+        return xf86_platform_device_odev_attributes(device)->major;
+    case ODEV_ATTRIB_MINOR:
+        return xf86_platform_device_odev_attributes(device)->minor;
+    default:
+        assert(FALSE);
+        return 0;
+    }
+}
+
+#endif /* XSERVER_PLATFORM_BUS */

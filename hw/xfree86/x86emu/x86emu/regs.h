@@ -43,10 +43,6 @@
 
 /*---------------------- Macros and type definitions ----------------------*/
 
-#ifdef PACK
-#pragma PACK
-#endif
-
 /*
  * General EAX, EBX, ECX, EDX type registers.  Note that for
  * portability, and speed, the issue of byte swapping is not addressed
@@ -58,7 +54,7 @@
  * EAX & 0xff  === AL
  * EAX & 0xffff == AX
  *
- * etc.  The result is that alot of the calculations can then be
+ * etc.  The result is that a lot of the calculations can then be
  * done using the native instruction set fully.
  */
 
@@ -114,17 +110,8 @@ struct i386_special_regs {
  * CS, DS, ES, SS.
  */
 
-#if defined(__sun) && defined(CS) /* avoid conflicts with Solaris sys/regset.h */
-# undef CS
-# undef DS
-# undef SS
-# undef ES
-# undef FS
-# undef GS
-#endif
-
 struct i386_segment_regs {
-    u16 CS, DS, SS, ES, FS, GS;
+    u16 reg_cs, reg_ds, reg_ss, reg_es, reg_fs, reg_gs;
 };
 
 /* 8 bit registers */
@@ -166,12 +153,12 @@ struct i386_segment_regs {
 #define R_EFLG spc.FLAGS
 
 /* segment registers */
-#define R_CS  seg.CS
-#define R_DS  seg.DS
-#define R_SS  seg.SS
-#define R_ES  seg.ES
-#define R_FS  seg.FS
-#define R_GS  seg.GS
+#define R_CS  seg.reg_cs
+#define R_DS  seg.reg_ds
+#define R_SS  seg.reg_ss
+#define R_ES  seg.reg_es
+#define R_FS  seg.reg_fs
+#define R_GS  seg.reg_gs
 
 /* flag conditions   */
 #define FB_CF 0x0001            /* CARRY flag  */
@@ -212,7 +199,7 @@ struct i386_segment_regs {
 #define CLEARALL_FLAG(m)    	(M.x86.R_FLG = 0)
 
 #define CONDITIONAL_SET_FLAG(COND,FLAG) \
-  if (COND) SET_FLAG(FLAG); else CLEAR_FLAG(FLAG)
+  if (COND) SET_FLAG((FLAG)); else CLEAR_FLAG((FLAG))
 
 #define F_PF_CALC 0x010000      /* PARITY flag has been calced    */
 #define F_ZF_CALC 0x020000      /* ZERO flag has been calced      */
@@ -309,15 +296,7 @@ typedef struct {
     X86EMU_regs x86;
 } X86EMU_sysEnv;
 
-#ifdef END_PACK
-#pragma END_PACK
-#endif
-
 /*----------------------------- Global Variables --------------------------*/
-
-#ifdef  __cplusplus
-extern "C" {                    /* Use "C" linkage when in C++ mode */
-#endif
 
 /* Global emulator machine state.
  *
@@ -334,7 +313,4 @@ extern "C" {                    /* Use "C" linkage when in C++ mode */
     void printk(const char *fmt, ...)
         _X_ATTRIBUTE_PRINTF(1, 2);
 
-#ifdef  __cplusplus
-}                               /* End of "C" linkage for C++           */
-#endif
 #endif                          /* __X86EMU_REGS_H */

@@ -25,11 +25,6 @@
  * Thanks to Daniel Chemko <dchemko@intrinsyc.com> for making the 90 and 180
  * orientations work.
  */
-
-#ifdef HAVE_DIX_CONFIG_H
-#include <dix-config.h>
-#endif
-
 #include <stdlib.h>
 
 #include    <X11/X.h>
@@ -63,7 +58,7 @@
 #define SCRLEFT(x,y,w,h)    (y)
 #define SCRY(x,y,w,h)	    (pScreen->width - ((x) + (w)) - 1)
 #define SCRWIDTH(x,y,w,h)   (h)
-#define FIRSTSHA(x,y,w,h)   ((y) * shaStride + (x + w - 1))
+#define FIRSTSHA(x,y,w,h)   ((y) * shaStride + ((x) + (w) - 1))
 #define STEPDOWN(x,y,w,h)   ((w)--)
 #define NEXTY(x,y,w,h)	    ((void)(x))
 #define SHASTEPX(stride)    (stride)
@@ -74,7 +69,7 @@
 #define SCRLEFT(x,y,w,h)    (pScreen->width - ((x) + (w)))
 #define SCRY(x,y,w,h)	    (pScreen->height - ((y) + (h)) - 1)
 #define SCRWIDTH(x,y,w,h)   (w)
-#define FIRSTSHA(x,y,w,h)   ((y + h - 1) * shaStride + (x + w - 1))
+#define FIRSTSHA(x,y,w,h)   (((y) + (h) - 1) * shaStride + ((x) + (w) - 1))
 #define STEPDOWN(x,y,w,h)   ((h)--)
 #define NEXTY(x,y,w,h)	    ((void)(y))
 #define SHASTEPX(stride)    (-1)

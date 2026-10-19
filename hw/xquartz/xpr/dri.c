@@ -34,24 +34,24 @@
  *   Jeremy Huddleston <jeremyhu@apple.com>
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <assert.h>
 #include <sys/time.h>
 #include <unistd.h>
-
-#include <X11/X.h>
-#include <X11/Xproto.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include "misc.h"
+#include <X11/X.h>
+#include <X11/Xproto.h>
+
+#include "include/misc.h"
+#include "miext/extinit_priv.h"
+#include "os/log_priv.h"
+
 #include "dixstruct.h"
 #include "extnsionst.h"
-#include "extinit.h"
-#include "colormapst.h"
 #include "cursorstr.h"
 #include "scrnintstr.h"
 #include "windowstr.h"
@@ -59,7 +59,7 @@
 #define _APPLEDRI_SERVER_
 #include "appledristr.h"
 #include "swaprep.h"
-#include "dri.h"
+#include "xpr_dri.h"
 #include "dristruct.h"
 #include "mi.h"
 #include "mipointer.h"
@@ -266,7 +266,7 @@ CreateSurfaceForWindow(ScreenPtr pScreen, WindowPtr pWin,
         xp_window_changes wc;
 
         /* allocate a DRI Window Private record */
-        if (!(pDRIDrawablePriv = malloc(sizeof(*pDRIDrawablePriv)))) {
+        if (!(pDRIDrawablePriv = calloc(1, sizeof(*pDRIDrawablePriv)))) {
             return NULL;
         }
 
@@ -280,6 +280,10 @@ CreateSurfaceForWindow(ScreenPtr pScreen, WindowPtr pWin,
         wid = x_cvt_vptr_to_uint(RootlessFrameForWindow(pWin, TRUE));
 
         if (wid == 0) {
+            ErrorF("%s: RootlessFrameForWindow returned 0 for window 0x%x "
+                   "(realized=%d, mapped=%d, viewable=%d)\n", __func__,
+                   (unsigned int)pWin->drawable.id, pWin->realized,
+                   pWin->mapped, pWin->viewable);
             free(pDRIDrawablePriv);
             return NULL;
         }
@@ -288,6 +292,8 @@ CreateSurfaceForWindow(ScreenPtr pScreen, WindowPtr pWin,
         err = xp_create_surface(wid, &pDRIDrawablePriv->sid);
 
         if (err != Success) {
+            ErrorF("%s: xp_create_surface(wid 0x%x) failed: %d\n", __func__,
+                   (unsigned int)wid, err);
             free(pDRIDrawablePriv);
             return NULL;
         }
@@ -297,7 +303,15 @@ CreateSurfaceForWindow(ScreenPtr pScreen, WindowPtr pWin,
         wc.sibling = 0;
         err = xp_configure_surface(pDRIDrawablePriv->sid, XP_STACKING, &wc);
 
+        DebugF("%s: window 0x%x wid 0x%x sid 0x%x "
+               "(realized=%d mapped=%d viewable=%d): xp_configure_surface -> %d\n",
+               __func__, (unsigned int)pWin->drawable.id, (unsigned int)wid,
+               (unsigned int)pDRIDrawablePriv->sid, pWin->realized, pWin->mapped,
+               pWin->viewable, err);
+
         if (err != Success) {
+            ErrorF("%s: xp_configure_surface(sid 0x%x) failed: %d\n", __func__,
+                   (unsigned int)pDRIDrawablePriv->sid, err);
             xp_destroy_surface(pDRIDrawablePriv->sid);
             free(pDRIDrawablePriv);
             return NULL;
@@ -566,7 +580,7 @@ DRIDrawablePrivDelete(void *pResource, XID id)
 }
 
 void
-DRICopyWindow(WindowPtr pWin, DDXPointRec ptOldOrg, RegionPtr prgnSrc)
+DRICopyWindow(WindowPtr pWin, xPoint ptOldOrg, RegionPtr prgnSrc)
 {
     ScreenPtr pScreen = pWin->drawable.pScreen;
     DRIScreenPrivPtr pDRIPriv = DRI_SCREEN_PRIV(pScreen);
@@ -682,7 +696,6 @@ DRICreatePixmap(ScreenPtr pScreen, Drawable id,
                 DrawablePtr pDrawable, char *path,
                 size_t pathmax)
 {
-    DRIPixmapBufferPtr shared;
     PixmapPtr pPix;
 
     if (pDrawable->type != DRAWABLE_PIXMAP)
@@ -690,7 +703,7 @@ DRICreatePixmap(ScreenPtr pScreen, Drawable id,
 
     pPix = (PixmapPtr)pDrawable;
 
-    shared = malloc(sizeof(*shared));
+    DRIPixmapBufferPtr shared = calloc(1, sizeof(*shared));
     if (NULL == shared) {
         FatalError("failed to allocate DRIPixmapBuffer in %s\n", __func__);
     }

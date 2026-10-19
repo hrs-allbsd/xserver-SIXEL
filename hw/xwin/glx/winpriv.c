@@ -3,10 +3,8 @@
  *
  * Authors: Alexander Gottwald
  */
-
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
+
 #include "win.h"
 #include "winpriv.h"
 #include "winwindow.h"
@@ -21,7 +19,7 @@ void
 HWND
 winGetWindowInfo(WindowPtr pWin)
 {
-    winTrace("%s: pWin %p XID 0x%x\n", __FUNCTION__, pWin, (unsigned int)pWin->drawable.id);
+    winTrace("%s: pWin %p XID 0x%x\n", __func__, pWin, (unsigned int)pWin->drawable.id);
 
     /* a real window was requested */
     if (pWin != NULL) {
@@ -63,24 +61,6 @@ winGetWindowInfo(WindowPtr pWin)
 
             return hwnd;
         }
-#ifdef XWIN_MULTIWINDOWEXTWM
-        /* check for multiwindow external wm mode */
-        if (pScreenInfo->fMWExtWM) {
-            win32RootlessWindowPtr pRLWinPriv
-                = (win32RootlessWindowPtr) RootlessFrameForWindow(pWin, FALSE);
-
-            if (pRLWinPriv == NULL) {
-                ErrorF("winGetWindowInfo: window has no privates\n");
-                return hwnd;
-            }
-
-            if (pRLWinPriv->hWnd != NULL) {
-                /* copy window handle */
-                hwnd = pRLWinPriv->hWnd;
-            }
-            return hwnd;
-        }
-#endif
     }
     else {
         ScreenPtr pScreen = g_ScreenInfo[0].pScreen;
@@ -107,11 +87,6 @@ winCheckScreenAiglxIsSupported(ScreenPtr pScreen)
 
     if (pScreenInfo->fMultiWindow)
         return TRUE;
-
-#ifdef XWIN_MULTIWINDOWEXTWM
-    if (pScreenInfo->fMWExtWM)
-        return TRUE;
-#endif
 
     return FALSE;
 }

@@ -44,18 +44,22 @@ SOFTWARE.
 
 ********************************************************/
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <X11/X.h>
 #include <X11/Xmd.h>
-#include "misc.h"
+
+#include "dix/cursor_priv.h"
+#include "dix/dix_priv.h"
+#include "dix/server_priv.h"
+#include "dix/settings_priv.h"
+#include "include/misc.h"
+
 #include "windowstr.h"
 #include "scrnintstr.h"
 #include "input.h"
 #include "dixfont.h"
-#include "site.h"
 #include "dixstruct.h"
 #include "os.h"
 
@@ -85,7 +89,9 @@ int currentMaxClients;          /* current size of clients array */
 long maxBigRequestSize = MAX_BIG_REQUEST_SIZE;
 
 unsigned long globalSerialNumber = 0;
-unsigned long serverGeneration = 0;
+
+/* this is always 1 now, since there's no internal reset anymore */
+x_server_generation_t serverGeneration = 1;
 
 /* these next four are initialized in main.c */
 CARD32 ScreenSaverTime;
@@ -93,18 +99,17 @@ CARD32 ScreenSaverInterval;
 int ScreenSaverBlanking;
 int ScreenSaverAllowExposures;
 
-CARD32 defaultScreenSaverTime = DEFAULT_SCREEN_SAVER_TIME;
-CARD32 defaultScreenSaverInterval = DEFAULT_SCREEN_SAVER_INTERVAL;
-int defaultScreenSaverBlanking = DEFAULT_SCREEN_SAVER_BLANKING;
-int defaultScreenSaverAllowExposures = DEFAULT_SCREEN_SAVER_EXPOSURES;
+/* default time of 10 minutes */
+CARD32 defaultScreenSaverTime = (10 * (60 * 1000));
+CARD32 defaultScreenSaverInterval = (10 * (60 * 1000));
+int defaultScreenSaverBlanking = PreferBlanking;
+int defaultScreenSaverAllowExposures = AllowExposures;
 
 #ifdef SCREENSAVER
 Bool screenSaverSuspended = FALSE;
 #endif
 
 const char *defaultFontPath = COMPILEDDEFAULTFONTPATH;
-const char *defaultTextFont = COMPILEDDEFAULTFONT;
-const char *defaultCursorFont = COMPILEDCURSORFONT;
 FontPtr defaultFont;            /* not declared in dix.h to avoid including font.h in
                                    every compilation of dix code */
 CursorPtr rootCursor;
@@ -115,10 +120,7 @@ TimeStamp currentTime;
 
 int defaultColorVisualClass = -1;
 int monitorResolution = 0;
+bool autosetDPI = false;
 
-const char *display;
-int displayfd = -1;
 Bool explicit_display = FALSE;
 char *ConnectionInfo;
-
-CARD32 TimeOutValue = DEFAULT_TIMEOUT * MILLI_PER_SECOND;

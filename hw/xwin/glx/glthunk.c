@@ -27,9 +27,7 @@
 // so our generated wrappers will correctly link with the functions in opengl32.dll
 #define USE_OPENGL32
 
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
 
 #include <X11/Xwindows.h>
 
@@ -68,12 +66,12 @@ glWinResolveHelper(PROC * cache, const char *symbol)
 
 #define RESOLVE_RET(proctype, symbol, retval) \
     static PROC cache = NULL; \
-    __stdcall proctype proc = (proctype)glWinResolveHelper(&cache, symbol); \
+    __stdcall proctype proc = (proctype)glWinResolveHelper(&cache, (symbol)); \
     if (proc == NULL) { \
         return retval; \
     }
 
-#define RESOLVE(proctype, symbol) RESOLVE_RET(proctype, symbol,)
+#define RESOLVE(proctype, symbol) RESOLVE_RET(proctype, (symbol),)
 
 #define RESOLVED_PROC(proctype) proc
 

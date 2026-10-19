@@ -23,16 +23,17 @@
  * Author: Daniel Stone <daniel@fooishbar.org>
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
 #include <dbus/dbus.h>
 #include <sys/select.h>
 
+#include "os/log_priv.h"
+
 #include "dix.h"
 #include "os.h"
-#include "dbus-core.h"
+
+#include "config/dbus-core.h"
 
 /* How often to attempt reconnecting when we get booted off the bus. */
 #define RECONNECT_DELAY (10 * 1000)     /* in ms */

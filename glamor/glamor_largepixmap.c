@@ -1,5 +1,11 @@
+#include <dix-config.h>
+
+#include <assert.h>
 #include <stdlib.h>
 #include <stdint.h> /* For INT16_MAX */
+
+#include "os/bug_priv.h"
+#include "os/mathx_priv.h"
 
 #include "glamor_priv.h"
 
@@ -21,7 +27,7 @@ __glamor_large(glamor_pixmap_private *pixmap_priv) {
  */
 #if 0
 //#define DEBUGF(str, ...)  do {} while(0)
-#define DEBUGF(str, ...) ErrorF(str, ##__VA_ARGS__)
+#define DEBUGF(str, ...) ErrorF((str), ##__VA_ARGS__)
 //#define DEBUGRegionPrint(x) do {} while (0)
 #define DEBUGRegionPrint RegionPrint
 #endif
@@ -77,6 +83,10 @@ __glamor_compute_clipped_regions(int block_w,
     clipped_regions = calloc((end_block_x - start_block_x + 1)
                              * (end_block_y - start_block_y + 1),
                              sizeof(*clipped_regions));
+    if (!clipped_regions) {
+        *n_region = 0;
+        return NULL;
+    }
 
     DEBUGF("startx %d starty %d endx %d endy %d \n",
            start_x, start_y, end_x, end_y);
@@ -190,6 +200,7 @@ glamor_compute_clipped_regions_ext(PixmapPtr pixmap,
         small_box.y2 = block_h;
     }
     else {
+        BUG_RETURN_VAL(!pixmap_priv, NULL);
         glamor_pixmap_private *priv = __glamor_large(pixmap_priv);
 
         clipped_regions = __glamor_compute_clipped_regions(priv->block_w,
@@ -216,6 +227,12 @@ glamor_compute_clipped_regions_ext(PixmapPtr pixmap,
                                inner_block_w)
                             * ((block_h + inner_block_h - 1) /
                                inner_block_h), sizeof(*result_regions));
+    if (!result_regions) {
+        *n_region = 0;
+        free(clipped_regions);
+        return NULL;
+    }
+
     k = 0;
     for (i = 0; i < *n_region; i++) {
         x = box_array[clipped_regions[i].block_idx].x1;
@@ -362,6 +379,11 @@ _glamor_compute_clipped_regions(PixmapPtr pixmap,
     DEBUGRegionPrint(region);
     if (glamor_pixmap_priv_is_small(pixmap_priv)) {
         clipped_regions = calloc(1, sizeof(*clipped_regions));
+        if (!clipped_regions) {
+            *n_region = 0;
+            return NULL;
+        }
+
         clipped_regions[0].region = RegionCreate(NULL, 1);
         clipped_regions[0].block_idx = 0;
         RegionCopy(clipped_regions[0].region, region);
@@ -439,8 +461,8 @@ _glamor_compute_clipped_regions(PixmapPtr pixmap,
      *
      * For the other cases, just need to start
      * from a proper shiftx/shifty, and then increase
-     * y by tile_height each time to walk trhough the
-     * target block and then walk trhough the target
+     * y by tile_height each time to walk through the
+     * target block and then walk through the target
      * at x direction by increate tile_width each time.
      *
      * This way, we can consolidate all the sub blocks
@@ -744,7 +766,7 @@ glamor_compute_transform_clipped_regions(PixmapPtr pixmap,
 
 /*
  * As transform and repeatpad mode.
- * We may get a clipped result which in multipe regions.
+ * We may get a clipped result which in multiple regions.
  * It's not easy to do a 2nd round clipping just as we do
  * without transform/repeatPad. As it's not easy to reverse
  * the 2nd round clipping result with a transform/repeatPad mode,
@@ -927,9 +949,9 @@ glamor_get_transform_block_size(struct pixman_transform *transform,
 }
 
 #define VECTOR_FROM_POINT(p, x, y) do {\
-	p.v[0] = x;  \
-	p.v[1] = y;  \
-	p.v[2] = 1.0; } while (0)
+	(p).v[0] = (x);  \
+	(p).v[1] = (y);  \
+	(p).v[2] = 1.0; } while (0)
 static void
 glamor_get_transform_extent_from_box(struct pixman_box32 *box,
                                      struct pixman_transform *transform)
@@ -1122,9 +1144,9 @@ glamor_composite_largepixmap_region(CARD8 op,
             return FALSE;
         }
         fixed_block_width =
-            min(fixed_block_width, source_transformed_block_width);
+            MIN(fixed_block_width, source_transformed_block_width);
         fixed_block_height =
-            min(fixed_block_height, source_transformed_block_height);
+            MIN(fixed_block_height, source_transformed_block_height);
         DEBUGF("new source block size %d x %d \n", fixed_block_width,
                fixed_block_height);
     }
@@ -1143,9 +1165,9 @@ glamor_composite_largepixmap_region(CARD8 op,
             return FALSE;
         }
         fixed_block_width =
-            min(fixed_block_width, mask_transformed_block_width);
+            MIN(fixed_block_width, mask_transformed_block_width);
         fixed_block_height =
-            min(fixed_block_height, mask_transformed_block_height);
+            MIN(fixed_block_height, mask_transformed_block_height);
         DEBUGF("new mask block size %d x %d \n", fixed_block_width,
                fixed_block_height);
     }
@@ -1171,7 +1193,8 @@ glamor_composite_largepixmap_region(CARD8 op,
         && glamor_pixmap_priv_is_large(source_pixmap_priv)) {
         /* XXX self-copy... */
         need_free_source_pixmap_priv = source_pixmap_priv;
-        source_pixmap_priv = malloc(sizeof(*source_pixmap_priv));
+        source_pixmap_priv = calloc(1, sizeof(*source_pixmap_priv));
+        BUG_RETURN_VAL(!source_pixmap_priv, FALSE);
         *source_pixmap_priv = *need_free_source_pixmap_priv;
         need_free_source_pixmap_priv = source_pixmap_priv;
     }
@@ -1296,7 +1319,7 @@ glamor_composite_largepixmap_region(CARD8 op,
 			 null_mask ? NULL : mask, dest,		\
 			 null_source ? NULL : source_pixmap,    \
 			 null_mask ? NULL : mask_pixmap, 	\
-			 dest_pixmap, region,		        \
+			 dest_pixmap, (region),		        \
 			 x_source, y_source, x_mask, y_mask,	\
 			 x_dest, y_dest)) {			\
 		assert(0);					\

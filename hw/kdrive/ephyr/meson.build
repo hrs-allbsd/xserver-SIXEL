@@ -4,6 +4,7 @@ srcs = [
     'ephyrcursor.c',
     'ephyr_draw.c',
     'hostx.c',
+    '../../stubs/ddxBeforeReset.c',
 ]
 
 xephyr_dep = [
@@ -23,14 +24,10 @@ xephyr_dep = [
 
 xephyr_glamor = []
 if build_glamor
-    srcs += 'ephyr_glamor_glx.c'
-    if build_xv
-        srcs += 'ephyr_glamor_xv.c'
-    endif
+    srcs += 'ephyr_glamor.c'
     xephyr_glamor += glamor
-    xephyr_glamor += glamor_egl_stubs
-    xephyr_dep += dependency('x11-xcb')
     xephyr_dep += epoxy_dep
+    xephyr_dep += dependency('xcb-glx')
 endif
 
 if build_xv
@@ -38,7 +35,12 @@ if build_xv
     xephyr_dep += dependency('xcb-xv')
 endif
 
-executable(
+# mingw needs this for nanosleep()
+if host_machine.system() == 'windows'
+    xephyr_dep += cc.find_library('pthread', required : true, static: true)
+endif
+
+xephyr_server = executable(
     'Xephyr',
     srcs,
     include_directories: [
@@ -54,7 +56,7 @@ executable(
         libxserver_fb,
         libxserver,
         libxserver_config,
-        libxserver_xkb_stubs,
+        libxserver_xkeyboard_stubs,
         libxserver_xi_stubs,
         libxserver_glx,
         libglxvnd,

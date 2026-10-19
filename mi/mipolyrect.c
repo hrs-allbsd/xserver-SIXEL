@@ -43,9 +43,7 @@ ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
 SOFTWARE.
 
 ******************************************************************/
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
 #include <X11/X.h>
 #include <X11/Xprotostr.h>
@@ -59,23 +57,23 @@ miPolyRectangle(DrawablePtr pDraw, GCPtr pGC, int nrects, xRectangle *pRects)
 {
     int i;
     xRectangle *pR = pRects;
-    DDXPointRec rect[5];
+    xPoint rect[5];
     int bound_tmp;
 
-#define MINBOUND(dst,eqn)	bound_tmp = eqn; \
+#define MINBOUND(dst,eqn)	bound_tmp = (eqn); \
 				if (bound_tmp < -32768) \
 				    bound_tmp = -32768; \
-				dst = bound_tmp;
+				(dst) = bound_tmp;
 
-#define MAXBOUND(dst,eqn)	bound_tmp = eqn; \
+#define MAXBOUND(dst,eqn)	bound_tmp = (eqn); \
 				if (bound_tmp > 32767) \
 				    bound_tmp = 32767; \
-				dst = bound_tmp;
+				(dst) = bound_tmp;
 
-#define MAXUBOUND(dst,eqn)	bound_tmp = eqn; \
+#define MAXUBOUND(dst,eqn)	bound_tmp = (eqn); \
 				if (bound_tmp > 65535) \
 				    bound_tmp = 65535; \
-				dst = bound_tmp;
+				(dst) = bound_tmp;
 
     if (pGC->lineStyle == LineSolid && pGC->joinStyle == JoinMiter &&
         pGC->lineWidth != 0) {
@@ -88,7 +86,7 @@ miPolyRectangle(DrawablePtr pDraw, GCPtr pGC, int nrects, xRectangle *pRects)
         offset2 = pGC->lineWidth;
         offset1 = offset2 >> 1;
         offset3 = offset2 - offset1;
-        tmp = xallocarray(ntmp, sizeof(xRectangle));
+        tmp = calloc(ntmp, sizeof(xRectangle));
         if (!tmp)
             return;
         t = tmp;

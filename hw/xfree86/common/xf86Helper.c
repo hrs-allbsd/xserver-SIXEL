@@ -33,12 +33,22 @@
  * This file includes the helper functions that the server provides for
  * different drivers.
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
+#include <stdbool.h>
+#include <assert.h>
+#include <sys/stat.h>
 #include <X11/X.h>
+
+#include "dix/dix_priv.h"
+#include "dix/input_priv.h"
+#include "include/extinit.h"
+#include "include/xf86DDC.h"
+#include "mi/mi_priv.h"
+#include "os/log_priv.h"
+#include "os/mathx_priv.h"
+#include "os/osdep.h"
+
 #include "os.h"
 #include "servermd.h"
 #include "pixmapstr.h"
@@ -46,20 +56,16 @@
 #include "propertyst.h"
 #include "gcstruct.h"
 #include "loaderProcs.h"
-#include "xf86.h"
+#include "xf86_priv.h"
 #include "xf86Priv.h"
 #include "xf86_OSlib.h"
 #include "micmap.h"
-#include "xf86DDC.h"
-#include "xf86Xinput.h"
+#include "xf86Bus.h"
+#include "xf86Xinput_priv.h"
 #include "xf86InPriv.h"
-#include "mivalidate.h"
-
-/* For xf86GetClocks */
-#if defined(CSRG_BASED) || defined(__GNU__)
-#define HAS_SETPRIORITY
-#include <sys/resource.h>
-#endif
+#include "xf86Config.h"
+#include "xf86Module_priv.h"
+#include "xf86Crtc.h"
 
 static int xf86ScrnInfoPrivateCount = 0;
 
@@ -76,9 +82,9 @@ xf86AddDriver(DriverPtr driver, void *module, int flags)
         xf86NumDrivers = 0;
 
     xf86NumDrivers++;
-    xf86DriverList = xnfreallocarray(xf86DriverList,
+    xf86DriverList = XNFreallocarray(xf86DriverList,
                                      xf86NumDrivers, sizeof(DriverPtr));
-    xf86DriverList[xf86NumDrivers - 1] = xnfalloc(sizeof(DriverRec));
+    xf86DriverList[xf86NumDrivers - 1] = XNFalloc(sizeof(DriverRec));
     *xf86DriverList[xf86NumDrivers - 1] = *driver;
     xf86DriverList[xf86NumDrivers - 1]->module = module;
     xf86DriverList[xf86NumDrivers - 1]->refCount = 0;
@@ -109,22 +115,13 @@ xf86AddInputDriver(InputDriverPtr driver, void *module, int flags)
         xf86NumInputDrivers = 0;
 
     xf86NumInputDrivers++;
-    xf86InputDriverList = xnfreallocarray(xf86InputDriverList,
+    xf86InputDriverList = XNFreallocarray(xf86InputDriverList,
                                           xf86NumInputDrivers,
                                           sizeof(InputDriverPtr));
     xf86InputDriverList[xf86NumInputDrivers - 1] =
-        xnfalloc(sizeof(InputDriverRec));
+        XNFalloc(sizeof(InputDriverRec));
     *xf86InputDriverList[xf86NumInputDrivers - 1] = *driver;
     xf86InputDriverList[xf86NumInputDrivers - 1]->module = module;
-}
-
-void
-xf86DeleteInputDriver(int drvIndex)
-{
-    if (xf86InputDriverList[drvIndex] && xf86InputDriverList[drvIndex]->module)
-        UnloadModule(xf86InputDriverList[drvIndex]->module);
-    free(xf86InputDriverList[drvIndex]);
-    xf86InputDriverList[drvIndex] = NULL;
 }
 
 InputDriverPtr
@@ -165,9 +162,9 @@ xf86AllocateScreen(DriverPtr drv, int flags)
         if (xf86GPUScreens == NULL)
             xf86NumGPUScreens = 0;
         i = xf86NumGPUScreens++;
-        xf86GPUScreens = xnfreallocarray(xf86GPUScreens, xf86NumGPUScreens,
+        xf86GPUScreens = XNFreallocarray(xf86GPUScreens, xf86NumGPUScreens,
                                          sizeof(ScrnInfoPtr));
-        xf86GPUScreens[i] = xnfcalloc(sizeof(ScrnInfoRec), 1);
+        xf86GPUScreens[i] = XNFcallocarray(1, sizeof(ScrnInfoRec));
         pScrn = xf86GPUScreens[i];
         pScrn->scrnIndex = i + GPU_SCREEN_OFFSET;      /* Changes when a screen is removed */
         pScrn->is_gpu = TRUE;
@@ -176,16 +173,16 @@ xf86AllocateScreen(DriverPtr drv, int flags)
             xf86NumScreens = 0;
 
         i = xf86NumScreens++;
-        xf86Screens = xnfreallocarray(xf86Screens, xf86NumScreens,
+        xf86Screens = XNFreallocarray(xf86Screens, xf86NumScreens,
                                       sizeof(ScrnInfoPtr));
-        xf86Screens[i] = xnfcalloc(sizeof(ScrnInfoRec), 1);
+        xf86Screens[i] = XNFcallocarray(1, sizeof(ScrnInfoRec));
         pScrn = xf86Screens[i];
 
         pScrn->scrnIndex = i;      /* Changes when a screen is removed */
     }
 
     pScrn->origIndex = pScrn->scrnIndex;      /* This never changes */
-    pScrn->privates = xnfcalloc(sizeof(DevUnion), xf86ScrnInfoPrivateCount);
+    pScrn->privates = XNFcallocarray(xf86ScrnInfoPrivateCount, sizeof(DevUnion));
     /*
      * EnableDisableFBAccess now gets initialized in InitOutput()
      * pScrn->EnableDisableFBAccess = xf86EnableDisableFBAccess;
@@ -210,7 +207,7 @@ xf86DeleteScreen(ScrnInfoPtr pScrn)
 {
     int i;
     int scrnIndex;
-    Bool is_gpu = FALSE;
+    bool is_gpu = FALSE;
 
     if (!pScrn)
         return;
@@ -287,7 +284,7 @@ xf86AllocateScrnInfoPrivateIndex(void)
     idx = xf86ScrnInfoPrivateCount++;
     for (i = 0; i < xf86NumScreens; i++) {
         pScr = xf86Screens[i];
-        nprivs = xnfreallocarray(pScr->privates,
+        nprivs = XNFreallocarray(pScr->privates,
                                  xf86ScrnInfoPrivateCount, sizeof(DevUnion));
         /* Zero the new private */
         memset(&nprivs[idx], 0, sizeof(DevUnion));
@@ -295,7 +292,7 @@ xf86AllocateScrnInfoPrivateIndex(void)
     }
     for (i = 0; i < xf86NumGPUScreens; i++) {
         pScr = xf86GPUScreens[i];
-        nprivs = xnfreallocarray(pScr->privates,
+        nprivs = XNFreallocarray(pScr->privates,
                                  xf86ScrnInfoPrivateCount, sizeof(DevUnion));
         /* Zero the new private */
         memset(&nprivs[idx], 0, sizeof(DevUnion));
@@ -304,7 +301,7 @@ xf86AllocateScrnInfoPrivateIndex(void)
     return idx;
 }
 
-Bool
+static Bool
 xf86AddPixFormat(ScrnInfoPtr pScrn, int depth, int bpp, int pad)
 {
     int i;
@@ -350,8 +347,8 @@ xf86AddPixFormat(ScrnInfoPtr pScrn, int depth, int bpp, int pad)
  */
 
 /* Can the screen handle 32 bpp pixmaps */
-#define DO_PIX32(f) ((f & Support32bppFb) || \
-		     ((f & Support24bppFb) && (f & SupportConvert32to24)))
+#define DO_PIX32(f) (((f) & Support32bppFb) || \
+		     (((f) & Support24bppFb) && ((f) & SupportConvert32to24)))
 
 #ifndef GLOBAL_DEFAULT_DEPTH
 #define GLOBAL_DEFAULT_DEPTH 24
@@ -398,7 +395,7 @@ xf86SetDepthBpp(ScrnInfoPtr scrp, int depth, int dummy, int fbbpp,
              * Device sections.
              */
             GDevPtr device;
-            Bool found = FALSE;
+            bool found = FALSE;
 
             for (i = 0; i < scrp->numEntities; i++) {
                 device = xf86GetDevFromEntity(scrp->entityList[i],
@@ -555,13 +552,13 @@ xf86SetDepthBpp(ScrnInfoPtr scrp, int depth, int dummy, int fbbpp,
     if (i == scrp->confScreen->numdisplays) {
         scrp->confScreen->numdisplays++;
         scrp->confScreen->displays =
-            xnfreallocarray(scrp->confScreen->displays,
+            XNFreallocarray(scrp->confScreen->displays,
                             scrp->confScreen->numdisplays, sizeof(DispPtr));
         xf86DrvMsg(scrp->scrnIndex, X_INFO,
                    "Creating default Display subsection in Screen section\n"
                    "\t\"%s\" for depth/fbbpp %d/%d\n",
                    scrp->confScreen->id, scrp->depth, scrp->bitsPerPixel);
-        scrp->confScreen->displays[i] = xnfcalloc(1, sizeof(DispRec));
+        scrp->confScreen->displays[i] = XNFcallocarray(1, sizeof(DispRec));
         memset(scrp->confScreen->displays[i], 0, sizeof(DispRec));
         scrp->confScreen->displays[i]->blackColour.red = -1;
         scrp->confScreen->displays[i]->blackColour.green = -1;
@@ -570,7 +567,7 @@ xf86SetDepthBpp(ScrnInfoPtr scrp, int depth, int dummy, int fbbpp,
         scrp->confScreen->displays[i]->whiteColour.green = -1;
         scrp->confScreen->displays[i]->whiteColour.blue = -1;
         scrp->confScreen->displays[i]->defaultVisual = -1;
-        scrp->confScreen->displays[i]->modes = xnfalloc(sizeof(char *));
+        scrp->confScreen->displays[i]->modes = XNFalloc(sizeof(char *));
         scrp->confScreen->displays[i]->modes[0] = NULL;
         scrp->confScreen->displays[i]->depth = depth;
         scrp->confScreen->displays[i]->fbbpp = fbbpp;
@@ -630,7 +627,7 @@ void
 xf86PrintDepthBpp(ScrnInfoPtr scrp)
 {
     xf86DrvMsg(scrp->scrnIndex, scrp->depthFrom, "Depth %d, ", scrp->depth);
-    xf86Msg(scrp->bitsPerPixelFrom, "framebuffer bpp %d\n", scrp->bitsPerPixel);
+    LogMessageVerb(scrp->bitsPerPixelFrom, 1, "framebuffer bpp %d\n", scrp->bitsPerPixel);
 }
 
 /*
@@ -729,9 +726,9 @@ xf86SetWeight(ScrnInfoPtr scrp, rgb weight, rgb mask)
         scrp->mask.red = mask.red;
         scrp->mask.green = mask.green;
         scrp->mask.blue = mask.blue;
-        scrp->offset.red = ffs(mask.red);
-        scrp->offset.green = ffs(mask.green);
-        scrp->offset.blue = ffs(mask.blue);
+        scrp->offset.red = ffs(mask.red) - 1;
+        scrp->offset.green = ffs(mask.green) - 1;
+        scrp->offset.blue = ffs(mask.blue) - 1;
     }
     return TRUE;
 }
@@ -812,8 +809,8 @@ xf86SetGamma(ScrnInfoPtr scrp, Gamma gamma)
         scrp->gamma.red = SET_GAMMA(DDC->features.gamma);
         scrp->gamma.green = SET_GAMMA(DDC->features.gamma);
         scrp->gamma.blue = SET_GAMMA(DDC->features.gamma);
-        /* EDID structure version 2 gives optional seperate red, green & blue gamma values
-         * in bytes 0x57-0x59 */
+        /* EDID structure version 2 gives optional separate red, green & blue
+         * gamma values in bytes 0x57-0x59 */
 #endif
     }
     else if (TEST_GAMMA(gamma)) {
@@ -852,6 +849,7 @@ xf86SetDpi(ScrnInfoPtr pScrn, int x, int y)
     xf86MonPtr DDC = (xf86MonPtr) (pScrn->monitor->DDC);
     int ddcWidthmm, ddcHeightmm;
     int widthErr, heightErr;
+    xf86OutputPtr compat = xf86CompatOutput(pScrn);
 
     /* XXX Maybe there is no need for widthmm/heightmm in ScrnInfoRec */
     pScrn->widthmm = pScrn->monitor->widthmm;
@@ -863,6 +861,10 @@ xf86SetDpi(ScrnInfoPtr pScrn, int x, int y)
          */
         ddcWidthmm = DDC->features.hsize * 10;  /* 10mm in 1cm */
         ddcHeightmm = DDC->features.vsize * 10; /* 10mm in 1cm */
+    }
+    else if (autosetDPI && compat && compat->mm_width > 0 && compat->mm_height > 0) {
+        ddcWidthmm = compat->mm_width;
+        ddcHeightmm = compat->mm_height;
     }
     else {
         ddcWidthmm = ddcHeightmm = 0;
@@ -1044,9 +1046,14 @@ xf86DrvMsg(int scrnIndex, MessageType type, const char *format, ...)
     va_end(ap);
 }
 
+static void
+xf86VIDrvMsgVerb(InputInfoPtr dev, MessageType type, int verb,
+                 const char *format, va_list args)
+    _X_ATTRIBUTE_PRINTF(4, 0);
+
 /* Print input driver messages in the standard format of
    (<type>) <driver>: <device name>: <message> */
-void
+static void
 xf86VIDrvMsgVerb(InputInfoPtr dev, MessageType type, int verb,
                  const char *format, va_list args)
 {
@@ -1087,28 +1094,6 @@ xf86IDrvMsg(InputInfoPtr dev, MessageType type, const char *format, ...)
     va_end(ap);
 }
 
-/* Print non-driver messages with verbose level specified directly */
-void
-xf86MsgVerb(MessageType type, int verb, const char *format, ...)
-{
-    va_list ap;
-
-    va_start(ap, format);
-    LogVMessageVerb(type, verb, format, ap);
-    va_end(ap);
-}
-
-/* Print non-driver messages with verbose level of 1 (default) */
-void
-xf86Msg(MessageType type, const char *format, ...)
-{
-    va_list ap;
-
-    va_start(ap, format);
-    LogVMessageVerb(type, 1, format, ap);
-    va_end(ap);
-}
-
 /* Just like ErrorF, but with the verbose level checked */
 void
 xf86ErrorFVerb(int verb, const char *format, ...)
@@ -1117,7 +1102,7 @@ xf86ErrorFVerb(int verb, const char *format, ...)
 
     va_start(ap, format);
     if (xf86Verbose >= verb || xf86LogVerbose >= verb)
-        LogVWrite(verb, format, ap);
+        LogVMessageVerb(X_NONE, verb, format, ap);
     va_end(ap);
 }
 
@@ -1129,7 +1114,7 @@ xf86ErrorF(const char *format, ...)
 
     va_start(ap, format);
     if (xf86Verbose >= 1 || xf86LogVerbose >= 1)
-        LogVWrite(1, format, ap);
+        LogVMessageVerb(X_NONE, 1, format, ap);
     va_end(ap);
 }
 
@@ -1159,12 +1144,12 @@ xf86LogInit(void)
     if (xf86LogFileFrom == X_DEFAULT) {
         /* When not running as root, we won't be able to write to /var/log */
         if (geteuid() != 0) {
-            if ((env = getenv("XDG_DATA_HOME")))
+            if ((env = getenv("XDG_STATE_HOME")))
                 snprintf(buf, sizeof(buf), "%s/%s", env,
-                         DEFAULT_XDG_DATA_HOME_LOGDIR);
+                         DEFAULT_XDG_STATE_HOME_LOGDIR);
             else if ((env = getenv("HOME")))
                 snprintf(buf, sizeof(buf), "%s/%s/%s", env,
-                         DEFAULT_XDG_DATA_HOME, DEFAULT_XDG_DATA_HOME_LOGDIR);
+                         DEFAULT_XDG_STATE_HOME, DEFAULT_XDG_STATE_HOME_LOGDIR);
 
             if (env) {
                 xf86_mkdir_p(buf);
@@ -1258,7 +1243,7 @@ xf86PrintChipsets(const char *drvname, const char *drvmsg, SymTabPtr chips)
     int len, i;
 
     len = 6 + strlen(drvname) + 2 + strlen(drvmsg) + 2;
-    xf86Msg(X_INFO, "%s: %s:", drvname, drvmsg);
+    LogMessageVerb(X_INFO, 1, "%s: %s:", drvname, drvmsg);
     for (i = 0; chips[i].name != NULL; i++) {
         if (i != 0) {
             xf86ErrorF(",");
@@ -1318,13 +1303,14 @@ xf86MatchDevice(const char *drivername, GDevPtr ** sectlist)
      */
     for (j = 0; xf86ConfigLayout.screens[j].screen != NULL; j++) {
         screensecptr = xf86ConfigLayout.screens[j].screen;
-        if ((screensecptr->device->driver != NULL)
+        if ((screensecptr->device != NULL)
+            && (screensecptr->device->driver != NULL)
             && (xf86NameCmp(screensecptr->device->driver, drivername) == 0)
             && (!screensecptr->device->claimed)) {
             /*
              * we have a matching driver that wasn't claimed, yet
              */
-            pgdp = xnfreallocarray(pgdp, i + 2, sizeof(GDevPtr));
+            pgdp = XNFreallocarray(pgdp, i + 2, sizeof(GDevPtr));
             pgdp[i++] = screensecptr->device;
         }
         for (k = 0; k < screensecptr->num_gpu_devices; k++) {
@@ -1334,7 +1320,7 @@ xf86MatchDevice(const char *drivername, GDevPtr ** sectlist)
                 /*
                  * we have a matching driver that wasn't claimed, yet
                  */
-                pgdp = xnfrealloc(pgdp, (i + 2) * sizeof(GDevPtr));
+                pgdp = XNFrealloc(pgdp, (i + 2) * sizeof(GDevPtr));
                 pgdp[i++] = screensecptr->gpu_devices[k];
             }
         }
@@ -1347,7 +1333,7 @@ xf86MatchDevice(const char *drivername, GDevPtr ** sectlist)
         if (gdp->driver && !gdp->claimed &&
             !xf86NameCmp(gdp->driver, drivername)) {
             /* we have a matching driver that wasn't claimed yet */
-            pgdp = xnfreallocarray(pgdp, i + 2, sizeof(GDevPtr));
+            pgdp = XNFreallocarray(pgdp, i + 2, sizeof(GDevPtr));
             pgdp[i++] = gdp;
         }
         j++;
@@ -1378,19 +1364,7 @@ xf86GetVisualName(int visual)
 int
 xf86GetVerbosity(void)
 {
-    return max(xf86Verbose, xf86LogVerbose);
-}
-
-int
-xf86GetDepth(void)
-{
-    return xf86Depth;
-}
-
-rgb
-xf86GetWeight(void)
-{
-    return xf86Weight;
+    return MAX(xf86Verbose, xf86LogVerbose);
 }
 
 Gamma
@@ -1400,57 +1374,15 @@ xf86GetGamma(void)
 }
 
 Bool
-xf86GetFlipPixels(void)
-{
-    return xf86FlipPixels;
-}
-
-const char *
-xf86GetServerName(void)
-{
-    return xf86ServerName;
-}
-
-Bool
 xf86ServerIsExiting(void)
 {
     return (dispatchException & DE_TERMINATE) == DE_TERMINATE;
 }
 
 Bool
-xf86ServerIsResetting(void)
-{
-    return xf86Resetting;
-}
-
-Bool
 xf86ServerIsOnlyDetecting(void)
 {
     return xf86DoConfigure;
-}
-
-Bool
-xf86GetVidModeAllowNonLocal(void)
-{
-    return xf86Info.vidModeAllowNonLocal;
-}
-
-Bool
-xf86GetVidModeEnabled(void)
-{
-    return xf86Info.vidModeEnabled;
-}
-
-Bool
-xf86GetModInDevAllowNonLocal(void)
-{
-    return xf86Info.miscModInDevAllowNonLocal;
-}
-
-Bool
-xf86GetModInDevEnabled(void)
-{
-    return xf86Info.miscModInDevEnabled;
 }
 
 Bool
@@ -1551,7 +1483,7 @@ xf86SetBackingStore(ScreenPtr pScreen)
     ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
     OptionInfoPtr options;
 
-    options = xnfalloc(sizeof(BSOptions));
+    options = XNFalloc(sizeof(BSOptions));
     (void) memcpy(options, BSOptions, sizeof(BSOptions));
     xf86ProcessOptions(pScrn->scrnIndex, pScrn->options, options);
 
@@ -1597,7 +1529,7 @@ xf86SetSilkenMouse(ScreenPtr pScreen)
     ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
     OptionInfoPtr options;
 
-    options = xnfalloc(sizeof(SMOptions));
+    options = XNFalloc(sizeof(SMOptions));
     (void) memcpy(options, SMOptions, sizeof(SMOptions));
     xf86ProcessOptions(pScrn->scrnIndex, pScrn->options, options);
 
@@ -1620,36 +1552,6 @@ xf86SetSilkenMouse(ScreenPtr pScreen)
     if (serverGeneration == 1)
         xf86DrvMsg(pScreen->myNum, from, "Silken mouse %s\n",
                    pScrn->silkenMouse ? "enabled" : "disabled");
-}
-
-/* Wrote this function for the PM2 Xv driver, preliminary. */
-
-void *
-xf86FindXvOptions(ScrnInfoPtr pScrn, int adaptor_index, const char *port_name,
-                  const char **adaptor_name, void **adaptor_options)
-{
-    confXvAdaptorPtr adaptor;
-    int i;
-
-    if (adaptor_index >= pScrn->confScreen->numxvadaptors) {
-        if (adaptor_name)
-            *adaptor_name = NULL;
-        if (adaptor_options)
-            *adaptor_options = NULL;
-        return NULL;
-    }
-
-    adaptor = &pScrn->confScreen->xvadaptors[adaptor_index];
-    if (adaptor_name)
-        *adaptor_name = adaptor->identifier;
-    if (adaptor_options)
-        *adaptor_options = adaptor->options;
-
-    for (i = 0; i < adaptor->numports; i++)
-        if (!xf86NameCmp(adaptor->ports[i].identifier, port_name))
-            return adaptor->ports[i].options;
-
-    return NULL;
 }
 
 static void
@@ -1695,18 +1597,6 @@ xf86ConfigFbEntity(ScrnInfoPtr pScrn, int scrnFlag, int entityIndex,
 }
 
 Bool
-xf86IsScreenPrimary(ScrnInfoPtr pScrn)
-{
-    int i;
-
-    for (i = 0; i < pScrn->numEntities; i++) {
-        if (xf86IsEntityPrimary(i))
-            return TRUE;
-    }
-    return FALSE;
-}
-
-Bool
 xf86IsUnblank(int mode)
 {
     switch (mode) {
@@ -1717,7 +1607,7 @@ xf86IsUnblank(int mode)
     case SCREEN_SAVER_CYCLE:
         return FALSE;
     default:
-        xf86MsgVerb(X_WARNING, 0, "Unexpected save screen mode: %d\n", mode);
+        LogMessageVerb(X_WARNING, 0, "Unexpected save screen mode: %d\n", mode);
         return TRUE;
     }
 }
@@ -1753,7 +1643,13 @@ xf86ScrnToScreen(ScrnInfoPtr pScrn)
 }
 
 void
-xf86UpdateDesktopDimensions(void)
+xf86AddInputEventDrainCallback(CallbackProcPtr callback, void *param)
 {
-    update_desktop_dimensions();
+    mieqAddCallbackOnDrained(callback, param);
+}
+
+void
+xf86RemoveInputEventDrainCallback(CallbackProcPtr callback, void *param)
+{
+    mieqRemoveCallbackOnDrained(callback, param);
 }

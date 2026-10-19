@@ -46,27 +46,29 @@ SOFTWARE.
 /* Author: Keith Packard and Bob Scheifler */
 /* Warning: this code is toxic, do not dally very long here. */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <math.h>
 #include <X11/X.h>
 #include <X11/Xprotostr.h>
-#include "misc.h"
+#include <X11/Xfuncproto.h>
+
+#include "include/misc.h"
+#include "mi/mi_priv.h"
+#include "os/mathx_priv.h"
+
 #include "gcstruct.h"
 #include "scrnintstr.h"
 #include "pixmapstr.h"
 #include "windowstr.h"
 #include "mifpoly.h"
-#include "mi.h"
 #include "mifillarc.h"
-#include <X11/Xfuncproto.h>
 
 #define EPSILON	0.000001
 #define ISEQUAL(a,b) (fabs((a) - (b)) <= EPSILON)
 #define UNEQUAL(a,b) (fabs((a) - (b)) > EPSILON)
-#define PTISEQUAL(a,b) (ISEQUAL(a.x,b.x) && ISEQUAL(a.y,b.y))
+#define PTISEQUAL(a,b) (ISEQUAL((a).x,(b).x) && ISEQUAL((a).y,(b).y))
 #define SQSECANT 108.856472512142   /* 1/sin^2(11/2) - for 11o miter cutoff */
 
 /* Point with sub-pixel positioning. */
@@ -96,7 +98,7 @@ cbrt(double x)
 #endif
 
 /*
- * some interesting sematic interpretation of the protocol:
+ * some interesting semantic interpretation of the protocol:
  *
  * Self intersecting arcs (i.e. those spanning 360 degrees)
  *  never join with other arcs, and are drawn without caps
@@ -131,7 +133,7 @@ struct line {
     int valid;
 };
 
-#define intersectLine(y,line) (line.m * (y) + line.b)
+#define intersectLine(y,line) ((line).m * (y) + (line).b)
 
 /*
  * these are all y value bounds
@@ -747,13 +749,12 @@ tailX(double K,
 static miArcSpanData *
 miComputeWideEllipse(int lw, xArc * parc)
 {
-    miArcSpanData *spdata = NULL;
     int k;
 
     if (!lw)
         lw = 1;
     k = (parc->height >> 1) + ((lw - 1) >> 1);
-    spdata = malloc(sizeof(miArcSpanData) + sizeof(miArcSpan) * (k + 2));
+    miArcSpanData *spdata = calloc(1, sizeof(miArcSpanData) + sizeof(miArcSpan) * (k + 2));
     if (!spdata)
         return NULL;
     spdata->spans = (miArcSpan *) (spdata + 1);
@@ -772,7 +773,6 @@ miFillWideEllipse(DrawablePtr pDraw, GCPtr pGC, xArc * parc)
 {
     DDXPointPtr points;
     DDXPointPtr pts;
-    int *widths;
     int *wids;
     miArcSpanData *spdata;
     miArcSpan *span;
@@ -781,7 +781,7 @@ miFillWideEllipse(DrawablePtr pDraw, GCPtr pGC, xArc * parc)
 
     yorgu = parc->height + pGC->lineWidth;
     n = (sizeof(int) * 2) * yorgu;
-    widths = malloc(n + (sizeof(DDXPointRec) * 2) * yorgu);
+    int *widths = calloc(1, n + (sizeof(xPoint) * 2) * yorgu);
     if (!widths)
         return;
     points = (DDXPointPtr) ((char *) widths + n);
@@ -896,7 +896,7 @@ miWideArc(DrawablePtr pDraw, GCPtr pGC, int narcs, xArc * parcs)
     int pixmapWidth = 0, pixmapHeight = 0;
     int xOrg = 0, yOrg = 0;
     int width = pGC->lineWidth;
-    Bool fTricky;
+    bool fTricky;
     DrawablePtr pDrawTo;
     CARD32 fg, bg;
     GCPtr pGCTo;
@@ -943,10 +943,10 @@ miWideArc(DrawablePtr pDraw, GCPtr pGC, int narcs, xArc * parcs)
         xMax = yMax = MINSHORT;
 
         for (i = narcs, parc = parcs; --i >= 0; parc++) {
-            xMin = min(xMin, parc->x);
-            yMin = min(yMin, parc->y);
-            xMax = max(xMax, (parc->x + (int) parc->width));
-            yMax = max(yMax, (parc->y + (int) parc->height));
+            xMin = MIN(xMin, parc->x);
+            yMin = MIN(yMin, parc->y);
+            xMax = MAX(xMax, (parc->x + (int) parc->width));
+            yMax = MAX(yMax, (parc->y + (int) parc->height));
         }
 
         /* expand box to deal with line widths */
@@ -957,10 +957,10 @@ miWideArc(DrawablePtr pDraw, GCPtr pGC, int narcs, xArc * parcs)
         yMax += halfWidth;
 
         /* compute pixmap size; limit it to size of drawable */
-        xOrg = max(xMin, 0);
-        yOrg = max(yMin, 0);
-        pixmapWidth = min(xMax, pDraw->width) - xOrg;
-        pixmapHeight = min(yMax, pDraw->height) - yOrg;
+        xOrg = MAX(xMin, 0);
+        yOrg = MAX(yMin, 0);
+        pixmapWidth = MIN(xMax, pDraw->width) - xOrg;
+        pixmapHeight = MIN(yMax, pDraw->height) - yOrg;
 
         /* if nothing left, return */
         if ((pixmapWidth <= 0) || (pixmapHeight <= 0))
@@ -988,7 +988,7 @@ miWideArc(DrawablePtr pDraw, GCPtr pGC, int narcs, xArc * parcs)
             gcvals[3].val = pGC->lineWidth;
             gcvals[4].val = pGC->capStyle;
             gcvals[5].val = pGC->joinStyle;
-            ChangeGC(NullClient, pGCTo, GCFunction |
+            ChangeGC(NULL, pGCTo, GCFunction |
                      GCForeground | GCBackground | GCLineWidth |
                      GCCapStyle | GCJoinStyle, gcvals);
         }
@@ -1026,12 +1026,12 @@ miWideArc(DrawablePtr pDraw, GCPtr pGC, int narcs, xArc * parcs)
 
         if (iphase == 1) {
             gcval.val = bg;
-            ChangeGC(NullClient, pGC, GCForeground, &gcval);
+            ChangeGC(NULL, pGC, GCForeground, &gcval);
             ValidateGC(pDraw, pGC);
         }
         else if (pGC->lineStyle == LineDoubleDash) {
             gcval.val = fg;
-            ChangeGC(NullClient, pGC, GCForeground, &gcval);
+            ChangeGC(NULL, pGC, GCForeground, &gcval);
             ValidateGC(pDraw, pGC);
         }
         for (i = 0; i < polyArcs[iphase].narcs; i++) {
@@ -1112,7 +1112,7 @@ miWideArc(DrawablePtr pDraw, GCPtr pGC, int narcs, xArc * parcs)
 
 out:
     if (fTricky) {
-        (*pGCTo->pScreen->DestroyPixmap) ((PixmapPtr) pDrawTo);
+        dixDestroyPixmap((PixmapPtr) pDrawTo, 0);
         FreeScratchGC(pGCTo);
     }
 }
@@ -1155,7 +1155,7 @@ GetFPolyYBounds(SppPointPtr pts, int n, double yFtrans, int *by, int *ty)
  *	edge list and a right edge list.  The algorithm used
  *	to traverse each edge is digital differencing analyzer
  *	line algorithm with y as the major axis. There's some funny linear
- *	interpolation involved because of the subpixel postioning.
+ *	interpolation involved because of the subpixel positioning.
  */
 static void
 miFillSppPoly(DrawablePtr dst, GCPtr pgc, int count,    /* number of points */
@@ -1193,9 +1193,9 @@ miFillSppPoly(DrawablePtr dst, GCPtr pgc, int count,    /* number of points */
     y = ymax - ymin + 1;
     if ((count < 3) || (y <= 0))
         return;
-    ptsOut = FirstPoint = xallocarray(y, sizeof(DDXPointRec));
-    width = FirstWidth = xallocarray(y, sizeof(int));
-    Marked = xallocarray(count, sizeof(int));
+    ptsOut = FirstPoint = calloc(y, sizeof(xPoint));
+    width = FirstWidth = calloc(y, sizeof(int));
+    Marked = calloc(count, sizeof(int));
 
     if (!ptsOut || !width || !Marked) {
         free(Marked);
@@ -1230,7 +1230,7 @@ miFillSppPoly(DrawablePtr dst, GCPtr pgc, int count,    /* number of points */
             if (dy != 0.0) {
                 ml = (ptsIn[nextleft].x - ptsIn[left].x) / dy;
                 dy = y - (ptsIn[left].y + yFtrans);
-                xl = (ptsIn[left].x + xFtrans) + ml * max(dy, 0);
+                xl = (ptsIn[left].x + xFtrans) + ml * MAX(dy, 0);
             }
         }
 
@@ -1250,7 +1250,7 @@ miFillSppPoly(DrawablePtr dst, GCPtr pgc, int count,    /* number of points */
             if (dy != 0.0) {
                 mr = (ptsIn[nextright].x - ptsIn[right].x) / dy;
                 dy = y - (ptsIn[right].y + yFtrans);
-                xr = (ptsIn[right].x + xFtrans) + mr * max(dy, 0);
+                xr = (ptsIn[right].x + xFtrans) + mr * MAX(dy, 0);
             }
         }
 
@@ -1258,7 +1258,7 @@ miFillSppPoly(DrawablePtr dst, GCPtr pgc, int count,    /* number of points */
          *  generate scans to fill while we still have
          *  a right edge as well as a left edge.
          */
-        i = (min(ptsIn[nextleft].y, ptsIn[nextright].y) + yFtrans) - y;
+        i = (MIN(ptsIn[nextleft].y, ptsIn[nextright].y) + yFtrans) - y;
 
         if (i < EPSILON) {
             if (Marked[nextleft] && Marked[nextright]) {
@@ -1395,7 +1395,7 @@ miArcJoin(DrawablePtr pDraw, GCPtr pGC, miArcFacePtr pLeft,
         arc.height = width;
         arc.angle1 = -miDatan2(corner.y - center.y, corner.x - center.x);
         arc.angle2 = a;
-        pArcPts = malloc(3 * sizeof(SppPointRec));
+        pArcPts = calloc(3, sizeof(SppPointRec));
         if (!pArcPts)
             return;
         pArcPts[0].x = otherCorner.x;
@@ -1436,6 +1436,7 @@ miArcJoin(DrawablePtr pDraw, GCPtr pGC, miArcFacePtr pLeft,
             polyLen = 5;
             break;
         }
+        /* fallthrough */
     case JoinBevel:
         poly[0] = corner;
         poly[1] = center;
@@ -1542,8 +1543,8 @@ miRoundCap(DrawablePtr pDraw,
 #define M_PI_2	1.57079632679489661923
 #endif
 
-#define Dsin(d)	((d) == 0.0 ? 0.0 : ((d) == 90.0 ? 1.0 : sin(d*M_PI/180.0)))
-#define Dcos(d)	((d) == 0.0 ? 1.0 : ((d) == 90.0 ? 0.0 : cos(d*M_PI/180.0)))
+#define Dsin(d)	((d) == 0.0 ? 0.0 : ((d) == 90.0 ? 1.0 : sin((d)*M_PI/180.0)))
+#define Dcos(d)	((d) == 0.0 ? 1.0 : ((d) == 90.0 ? 0.0 : cos((d)*M_PI/180.0)))
 #define mod(a,b)	((a) >= 0 ? (a) % (b) : (b) - (-(a)) % (b))
 
 static double
@@ -1637,7 +1638,7 @@ miDatan2(double dy, double dx)
  * This procedure allocates the space necessary to fit the arc points.
  * Sometimes it's convenient for those points to be at the end of an existing
  * array. (For example, if we want to leave a spare point to make sectors
- * instead of segments.)  So we pass in the malloc()ed chunk that contains the
+ * instead of segments.)  So we pass in the calloc()ed chunk that contains the
  * array and an index saying where we should start stashing the points.
  * If there isn't an array already, we just pass in a null pointer and
  * count on realloc() to handle the null pointer correctly.
@@ -1895,10 +1896,10 @@ miComputeArcs(xArc * parcs, int narcs, GCPtr pGC)
     isDoubleDash = (pGC->lineStyle == LineDoubleDash);
     dashOffset = pGC->dashOffset;
 
-    data = xallocarray(narcs, sizeof(struct arcData));
+    data = calloc(narcs, sizeof(struct arcData));
     if (!data)
         return NULL;
-    arcs = xallocarray(isDoubleDash ? 2 : 1, sizeof(*arcs));
+    arcs = calloc(isDoubleDash ? 2 : 1, sizeof(*arcs));
     if (!arcs) {
         free(data);
         return NULL;
@@ -2267,7 +2268,7 @@ angleToLength(int angle, dashMap * map)
     double len, excesslen, sidelen = map->map[DASH_MAP_SIZE - 1], totallen;
     int di;
     int excess;
-    Bool oddSide = FALSE;
+    bool oddSide = FALSE;
 
     totallen = 0;
     if (angle >= 0) {
@@ -2315,7 +2316,7 @@ lengthToAngle(double len, dashMap * map)
 {
     double sidelen = map->map[DASH_MAP_SIZE - 1];
     int angle, angleexcess;
-    Bool oddSide = FALSE;
+    bool oddSide = FALSE;
     int a0, a1, a;
 
     angle = 0;
@@ -2370,7 +2371,7 @@ lengthToAngle(double len, dashMap * map)
 }
 
 /*
- * compute the angle of an ellipse which cooresponds to
+ * compute the angle of an ellipse which corresponds to
  * the given path length.  Note that the correct solution
  * to this problem is an eliptic integral, we'll punt and
  * approximate (it's only for dashes anyway).  This
@@ -2834,7 +2835,7 @@ hookX(double scan_y,
                 acc->h2 * scan_y * (3 * ellipse_y * ellipse_y - 2 * acc->h2);
             if ((left && maxMin > 0) || (!left && maxMin < 0)) {
                 if (ellipse_y == 0)
-                    return def->w + left ? -def->l : def->l;
+                    return def->w + (left ? -def->l : def->l);
                 x = (acc->h2 * scan_y - ellipse_y * acc->h2mw2) *
                     sqrt(acc->h2 - ellipse_y * ellipse_y) /
                     (def->h * def->w * ellipse_y);
@@ -3037,11 +3038,10 @@ static struct finalSpanChunk *chunks;
 static struct finalSpan *
 realAllocSpan(void)
 {
-    struct finalSpanChunk *newChunk;
     struct finalSpan *span;
     int i;
 
-    newChunk = malloc(sizeof(struct finalSpanChunk));
+    struct finalSpanChunk *newChunk = calloc(1, sizeof(struct finalSpanChunk));
     if (!newChunk)
         return (struct finalSpan *) NULL;
     newChunk->next = chunks;
@@ -3086,8 +3086,8 @@ fillSpans(DrawablePtr pDrawable, GCPtr pGC)
 
     if (nspans == 0)
         return;
-    xSpan = xSpans = xallocarray(nspans, sizeof(DDXPointRec));
-    xWidth = xWidths = xallocarray(nspans, sizeof(int));
+    xSpan = xSpans = calloc(nspans, sizeof(xPoint));
+    xWidth = xWidths = calloc(nspans, sizeof(int));
     if (xSpans && xWidths) {
         i = 0;
         f = finalSpans;
@@ -3117,7 +3117,7 @@ fillSpans(DrawablePtr pDrawable, GCPtr pGC)
 
 #define findSpan(y) ((finalMiny <= (y) && (y) <= finalMaxy) ? \
 			  &finalSpans[(y) - finalMiny] : \
-			  realFindSpan (y))
+			  realFindSpan ((y)))
 
 static struct finalSpan **
 realFindSpan(int y)
@@ -3141,7 +3141,7 @@ realFindSpan(int y)
         else
             change = SPAN_REALLOC;
         newSize = finalSize + change;
-        newSpans = xallocarray(newSize, sizeof(struct finalSpan *));
+        newSpans = calloc(newSize, sizeof(struct finalSpan *));
         if (!newSpans)
             return NULL;
         newMiny = finalMiny;
@@ -3151,10 +3151,10 @@ realFindSpan(int y)
         else
             newMaxy = finalMaxy + change;
         if (finalSpans) {
-            memmove(((char *) newSpans) +
+            memcpy(((char *) newSpans) +
                     (finalMiny - newMiny) * sizeof(struct finalSpan *),
-                    (char *) finalSpans,
-                    finalSize * sizeof(struct finalSpan *));
+                   finalSpans,
+                   finalSize * sizeof(struct finalSpan *));
             free(finalSpans);
         }
         if ((i = finalMiny - newMiny) > 0)
@@ -3191,8 +3191,8 @@ newFinalSpan(int y, int xmin, int xmax)
             }
             if (x->min <= xmax && xmin <= x->max) {
                 if (oldx) {
-                    oldx->min = min(x->min, xmin);
-                    oldx->max = max(x->max, xmax);
+                    oldx->min = MIN(x->min, xmin);
+                    oldx->max = MAX(x->max, xmax);
                     if (prev)
                         prev->next = x->next;
                     else
@@ -3200,8 +3200,8 @@ newFinalSpan(int y, int xmin, int xmax)
                     --nspans;
                 }
                 else {
-                    x->min = min(x->min, xmin);
-                    x->max = max(x->max, xmax);
+                    x->min = MIN(x->min, xmin);
+                    x->max = MAX(x->max, xmax);
                     oldx = x;
                 }
                 xmin = oldx->min;
@@ -3298,7 +3298,7 @@ drawArc(xArc * tarc, int l, int a0, int a1, miArcFacePtr right,
             else
                 q0 = a0;
             if (a1 < 360 * 64)
-                q1 = min(a1, 90 * 64);
+                q1 = MIN(a1, 90 * 64);
             else
                 q1 = 90 * 64;
             if (curq == startq && a0 == q0 && rightq < 0) {
@@ -3314,11 +3314,11 @@ drawArc(xArc * tarc, int l, int a0, int a1, miArcFacePtr right,
             if (a1 < 90 * 64)
                 q0 = 0;
             else
-                q0 = 180 * 64 - min(a1, 180 * 64);
+                q0 = 180 * 64 - MIN(a1, 180 * 64);
             if (a0 > 180 * 64)
                 q1 = 90 * 64;
             else
-                q1 = 180 * 64 - max(a0, 90 * 64);
+                q1 = 180 * 64 - MAX(a0, 90 * 64);
             if (curq == startq && 180 * 64 - a0 == q1) {
                 righta = q1;
                 rightq = curq;
@@ -3332,11 +3332,11 @@ drawArc(xArc * tarc, int l, int a0, int a1, miArcFacePtr right,
             if (a0 > 270 * 64)
                 q0 = 0;
             else
-                q0 = max(a0, 180 * 64) - 180 * 64;
+                q0 = MAX(a0, 180 * 64) - 180 * 64;
             if (a1 < 180 * 64)
                 q1 = 90 * 64;
             else
-                q1 = min(a1, 270 * 64) - 180 * 64;
+                q1 = MIN(a1, 270 * 64) - 180 * 64;
             if (curq == startq && a0 - 180 * 64 == q0) {
                 righta = q0;
                 rightq = curq;
@@ -3350,8 +3350,8 @@ drawArc(xArc * tarc, int l, int a0, int a1, miArcFacePtr right,
             if (a1 < 270 * 64)
                 q0 = 0;
             else
-                q0 = 360 * 64 - min(a1, 360 * 64);
-            q1 = 360 * 64 - max(a0, 270 * 64);
+                q0 = 360 * 64 - MIN(a1, 360 * 64);
+            q1 = 360 * 64 - MAX(a0, 270 * 64);
             if (curq == startq && 360 * 64 - a0 == q1) {
                 righta = q1;
                 rightq = curq;

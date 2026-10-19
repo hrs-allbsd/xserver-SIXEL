@@ -20,13 +20,11 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
 #include <string.h>
 
-#include "fb.h"
+#include "fb/fb_priv.h"
 
 void
 fbPutImage(DrawablePtr pDrawable,
@@ -36,7 +34,7 @@ fbPutImage(DrawablePtr pDrawable,
 {
     FbGCPrivPtr pPriv = fbGetGCPrivate(pGC);
     unsigned long i;
-    FbStride srcStride;
+    size_t srcStride;
     FbStip *src = (FbStip *) pImage;
 
     x += pDrawable->x;
@@ -213,7 +211,7 @@ fbGetImage(DrawablePtr pDrawable,
     int srcBpp;
     int srcXoff, srcYoff;
     FbStip *dst;
-    FbStride dstStride;
+    size_t dstStride;
 
     /*
      * XFree86 DDX empties the root borderClip when the VT is

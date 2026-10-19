@@ -25,12 +25,12 @@
   from The Open Group.
 
 */
-
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
+
+#include "mi/mi_priv.h"
+
 #include "win.h"
-#include "dixstruct.h"
+#include "dixstruct_priv.h"
 #include "inputstr.h"
 
 /*
@@ -45,21 +45,6 @@ int winProcEstablishConnection(ClientPtr /* client */ );
 
 DeviceIntPtr g_pwinPointer;
 DeviceIntPtr g_pwinKeyboard;
-
-/* Called from dix/devices.c */
-/*
- * All of our keys generate up and down transition notifications,
- * so all of our keys can be used as modifiers.
- *
- * An example of a modifier is mapping the A key to the Control key.
- * A has to be a legal modifier.  I think.
- */
-
-Bool
-LegalModifier(unsigned int uiKey, DeviceIntPtr pDevice)
-{
-    return TRUE;
-}
 
 /* Called from dix/dispatch.c */
 /*
@@ -103,7 +88,7 @@ xwinDevWindowsHandlerNotify(int fd, int ready, void *data)
 void
 InitInput(int argc, char *argv[])
 {
-#if CYGDEBUG
+#if ENABLE_DEBUG
     winDebug("InitInput\n");
 #endif
 
@@ -141,7 +126,7 @@ InitInput(int argc, char *argv[])
     }
 #endif
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
     winDebug("InitInput - returning\n");
 #endif
 }

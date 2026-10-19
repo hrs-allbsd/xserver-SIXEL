@@ -1,9 +1,13 @@
 srcs_dix = [
     'atom.c',
+    'client.c',
     'colormap.c',
+    'color.c',
+    'connsetup.c',
     'cursor.c',
     'devices.c',
     'dispatch.c',
+    'display.c',
     'dixfonts.c',
     'main.c',
     'dixutils.c',
@@ -12,12 +16,14 @@ srcs_dix = [
     'eventconvert.c',
     'extension.c',
     'gc.c',
+    'gestures.c',
     'getevents.c',
     'globals.c',
     'glyphcurs.c',
     'grabs.c',
-    'initatoms.c',
+    'inputdev.c',
     'inpututils.c',
+    'lookup.c',
     'pixmap.c',
     'privates.c',
     'property.c',
@@ -25,7 +31,12 @@ srcs_dix = [
     'region.c',
     'registry.c',
     'resource.c',
+    'rpcbuf.c',
+    'screen_hooks.c',
     'selection.c',
+    'screen.c',
+    'settings.c',
+    'sleepuntil.c',
     'swaprep.c',
     'swapreq.c',
     'tables.c',
@@ -33,13 +44,32 @@ srcs_dix = [
     'window.c',
 ]
 
-libxserver_dix = static_library('libxserver_dix',
-    srcs_dix,
+atom_generator = generator(
+    find_program('generate-atoms'),
+    output: '@BASENAME@.c',
+    arguments : ['@INPUT@', '@OUTPUT@'])
+
+builtinatoms_src = atom_generator.process('BuiltInAtoms')
+
+dtrace_src = []
+if with_dtrace
+    dtrace_object = generator(dtrace,
+        output: '@BASENAME@.o',
+        arguments: ['-G', '-s', '@INPUT@', '-o', '@OUTPUT@']
+    )
+
+    dtrace_src += dtrace_object.process(dtrace_tmpl)
+endif
+
+dtrace_dep = declare_dependency(sources: [dtrace_src, dtrace_hdr])
+
+libxserver_dix = static_library('xserver_dix',
+    [ srcs_dix, builtinatoms_src ],
     include_directories: inc,
-    dependencies: common_dep,
+    dependencies: [ dtrace_dep, common_dep, ]
 )
 
-libxserver_main = static_library('libxserver_main',
+libxserver_main = static_library('xserver_main',
     'stubmain.c',
     include_directories: inc,
     dependencies: common_dep,

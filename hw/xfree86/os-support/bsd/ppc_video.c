@@ -22,27 +22,23 @@
  * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
+#include <sys/mman.h>
 #include <X11/X.h>
+
 #include "xf86.h"
 #include "xf86Priv.h"
-
+#include "xf86_os_support.h"
 #include "xf86_OSlib.h"
-#include "xf86OSpriv.h"
 
 #include "bus/Pci.h"
+
+#include "xf86_bsd_priv.h"
 
 /***************************************************************************/
 /* Video Memory Mapping section                                            */
 /***************************************************************************/
-
-#ifdef __OpenBSD__
-#define DEV_MEM "/dev/xf86"
-#endif
 
 Bool xf86EnableIO(void);
 void xf86DisableIO(void);
@@ -54,20 +50,20 @@ xf86OSInitVidMem(VidMemInfoPtr pVidMem)
     xf86EnableIO();
 }
 
-volatile unsigned char *ioBase = MAP_FAILED;
+void *ioBase = MAP_FAILED;
 
 Bool
 xf86EnableIO()
 {
     int fd = xf86Info.consoleFd;
 
-    xf86MsgVerb(X_WARNING, 3, "xf86EnableIO %d\n", fd);
+    LogMessageVerb(X_WARNING, 3, "xf86EnableIO %d\n", fd);
     if (ioBase == MAP_FAILED) {
         ioBase = mmap(NULL, 0x10000, PROT_READ | PROT_WRITE, MAP_SHARED, fd,
                       0xf2000000);
-        xf86MsgVerb(X_INFO, 3, "xf86EnableIO: %08x\n", ioBase);
+        LogMessageVerb(X_INFO, 3, "xf86EnableIO: %08x\n", ioBase);
         if (ioBase == MAP_FAILED) {
-            xf86MsgVerb(X_WARNING, 3, "Can't map IO space!\n");
+            LogMessageVerb(X_WARNING, 3, "Can't map IO space!\n");
             return FALSE;
         }
     }
@@ -79,7 +75,7 @@ xf86DisableIO()
 {
 
     if (ioBase != MAP_FAILED) {
-        munmap(__UNVOLATILE(ioBase), 0x10000);
+        munmap(ioBase, 0x10000);
         ioBase = MAP_FAILED;
     }
 }

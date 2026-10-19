@@ -21,22 +21,23 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <sys/time.h>
 #include <dev/wscons/wsconsio.h>
 #include <dev/wscons/wsksymdef.h>
 
 #include <sys/ioctl.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <string.h>
 #include <unistd.h>
 
 #include "input.h"
 #include "inputstr.h"
 #include "os.h"
-#include "config-backends.h"
+
+#include "config/config-wscons.h"
 
 #define WSCONS_KBD_DEVICE "/dev/wskbd"
 #define WSCONS_MOUSE_PREFIX "/dev/wsmouse"
@@ -51,10 +52,13 @@
 
 struct nameint {
     int val;
-    char *name;
+    const char *name;
 } kbdenc[] = {
     KB_OVRENC,
-    KB_ENCTAB,
+    KB_ENCTAB
+#ifndef __NetBSD__
+    ,
+#endif
     {0}
 };
 
@@ -121,8 +125,7 @@ wscons_add_keyboard(void)
     input_options = input_option_new(input_options, "name", WSCONS_KBD_DEVICE);
     input_options = input_option_new(input_options, "driver", "kbd");
 
-    config_info = Xprintf("wscons:%s", WSCONS_KBD_DEVICE);
-    if (!config_info)
+    if (asprintf(&config_info, "wscons:%s", WSCONS_KBD_DEVICE) == -1)
         goto unwind;
     if (KB_ENCODING(wsenc) == KB_USER) {
         /* Ignore wscons "user" layout */
@@ -185,8 +188,7 @@ wscons_add_pointer(const char *path, const char *driver, int flags)
     char *config_info = NULL;
     int rc;
 
-    config_info = Xprintf("wscons:%s", path);
-    if (!config_info)
+    if (asprintf(&config_info, "wscons:%s", path) == -1)
         return;
 
     input_options = input_option_new(input_options, "_source", "server/wscons");
@@ -220,7 +222,11 @@ wscons_add_pointers(void)
     for (i = 0; i < 4; i++) {
         snprintf(devname, sizeof(devname), "%s%d", WSCONS_MOUSE_PREFIX, i);
         LogMessageVerb(X_INFO, 10, "wsmouse: checking %s\n", devname);
-        fd = open_device(devnamem O_RDWR | O_NONBLOCK | O_EXCL);
+#ifdef HAVE_OPEN_DEVICE
+        fd = open_device(devname, O_RDWR | O_NONBLOCK | O_EXCL);
+#else
+        fd = open(devname, O_RDWR | O_NONBLOCK | O_EXCL);
+#endif
         if (fd == -1) {
             LogMessageVerb(X_WARNING, 10, "%s: %s\n", devname, strerror(errno));
             continue;
@@ -233,9 +239,11 @@ wscons_add_pointers(void)
         }
         close(fd);
         switch (wsmouse_type) {
+#ifdef WSMOUSE_TYPE_SYNAPTICS
         case WSMOUSE_TYPE_SYNAPTICS:
             wscons_add_pointer(devname, "synaptics", ATTR_TOUCHPAD);
             break;
+#endif
         case WSMOUSE_TYPE_TPANEL:
             wscons_add_pointer(devname, "ws", ATTR_TOUCHSCREEN);
             break;
@@ -243,8 +251,8 @@ wscons_add_pointers(void)
             break;
         }
     }
-    /* Add a default entry catching all other mux elements as "mouse" */
-    wscons_add_pointer(WSCONS_MOUSE_PREFIX, "mouse", ATTR_POINTER);
+    /* Add a default entry catching all other mux elements as pointers */
+    wscons_add_pointer(WSCONS_MOUSE_PREFIX, "ws", ATTR_POINTER);
 }
 
 int

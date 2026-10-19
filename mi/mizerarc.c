@@ -32,17 +32,18 @@ Author:  Bob Scheifler, MIT X Consortium
  * The Computer Journal, November 1967, Volume 10, Number 3, pp. 282-289
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <math.h>
 #include <X11/X.h>
 #include <X11/Xprotostr.h>
+
+#include "mi/mi_priv.h"
+
 #include "regionstr.h"
 #include "gcstruct.h"
 #include "pixmapstr.h"
-#include "mi.h"
 #include "mizerarc.h"
 
 #define FULLCIRCLE (360 * 64)
@@ -57,21 +58,21 @@ Author:  Bob Scheifler, MIT X Consortium
 
 #define Dsin(d)	((d) == 0 ? 0.0 : ((d) == QUADRANT ? 1.0 : \
 		 ((d) == HALFCIRCLE ? 0.0 : \
-		 ((d) == QUADRANT3 ? -1.0 : sin((double)d*(M_PI/11520.0))))))
+		 ((d) == QUADRANT3 ? -1.0 : sin((double)(d)*(M_PI/11520.0))))))
 
 #define Dcos(d)	((d) == 0 ? 1.0 : ((d) == QUADRANT ? 0.0 : \
 		 ((d) == HALFCIRCLE ? -1.0 : \
-		 ((d) == QUADRANT3 ? 0.0 : cos((double)d*(M_PI/11520.0))))))
+		 ((d) == QUADRANT3 ? 0.0 : cos((double)(d)*(M_PI/11520.0))))))
 
 #define EPSILON45 64
 
 typedef struct {
     int skipStart;
     int haveStart;
-    DDXPointRec startPt;
+    xPoint startPt;
     int haveLast;
     int skipLast;
-    DDXPointRec endPt;
+    xPoint endPt;
     int dashIndex;
     int dashOffset;
     int dashIndexInit;
@@ -357,12 +358,12 @@ miZeroArcSetup(xArc * arc, miZeroArcRec * info, Bool ok360)
 
 #define Pixelate(xval,yval) \
     { \
-	pts->x = xval; \
-	pts->y = yval; \
+	pts->x = (xval); \
+	pts->y = (yval); \
 	pts++; \
     }
 
-#define DoPix(idx,xval,yval) if (mask & (1 << idx)) Pixelate(xval, yval);
+#define DoPix(idx,xval,yval) if (mask & (1 << (idx))) Pixelate((xval), (yval));
 
 static DDXPointPtr
 miZeroArcPts(xArc * arc, DDXPointPtr pts)
@@ -370,7 +371,7 @@ miZeroArcPts(xArc * arc, DDXPointPtr pts)
     miZeroArcRec info;
     int x, y, a, b, d, mask;
     int k1, k3, dx, dy;
-    Bool do360;
+    bool do360;
 
     do360 = miZeroArcSetup(arc, &info, TRUE);
     MIARCSETUP();
@@ -454,11 +455,11 @@ miZeroArcPts(xArc * arc, DDXPointPtr pts)
 
 #undef DoPix
 #define DoPix(idx,xval,yval) \
-    if (mask & (1 << idx)) \
+    if (mask & (1 << (idx))) \
     { \
-	arcPts[idx]->x = xval; \
-	arcPts[idx]->y = yval; \
-	arcPts[idx]++; \
+	arcPts[(idx)]->x = (xval); \
+	arcPts[(idx)]->y = (yval); \
+	arcPts[(idx)]++; \
     }
 
 static void
@@ -649,7 +650,7 @@ miZeroPolyArc(DrawablePtr pDraw, GCPtr pGC, int narcs, xArc * parcs)
     DDXPointPtr points, pts, oddPts = NULL;
     DDXPointPtr pt;
     int numPts;
-    Bool dospans;
+    bool dospans;
     int *widths = NULL;
     XID fgPixel = pGC->fgPixel;
     DashInfo dinfo;
@@ -671,7 +672,7 @@ miZeroPolyArc(DrawablePtr pDraw, GCPtr pGC, int narcs, xArc * parcs)
     numPts = maxPts << 2;
     dospans = (pGC->fillStyle != FillSolid);
     if (dospans) {
-        widths = xallocarray(numPts, sizeof(int));
+        widths = calloc(numPts, sizeof(int));
         if (!widths)
             return;
         maxw = 0;
@@ -687,7 +688,7 @@ miZeroPolyArc(DrawablePtr pDraw, GCPtr pGC, int narcs, xArc * parcs)
                    (unsigned char *) pGC->dash, (int) pGC->numInDashList,
                    &dinfo.dashOffsetInit);
     }
-    points = xallocarray(numPts, sizeof(DDXPointRec));
+    points = calloc(numPts, sizeof(xPoint));
     if (!points) {
         if (dospans) {
             free(widths);
@@ -729,7 +730,7 @@ miZeroPolyArc(DrawablePtr pDraw, GCPtr pGC, int narcs, xArc * parcs)
                 ChangeGCVal gcval;
 
                 gcval.val = pGC->bgPixel;
-                ChangeGC(NullClient, pGC, GCForeground, &gcval);
+                ChangeGC(NULL, pGC, GCForeground, &gcval);
                 ValidateGC(pDraw, pGC);
             }
             pts = &points[numPts >> 1];
@@ -755,7 +756,7 @@ miZeroPolyArc(DrawablePtr pDraw, GCPtr pGC, int narcs, xArc * parcs)
                 ChangeGCVal gcval;
 
                 gcval.val = fgPixel;
-                ChangeGC(NullClient, pGC, GCForeground, &gcval);
+                ChangeGC(NULL, pGC, GCForeground, &gcval);
                 ValidateGC(pDraw, pGC);
             }
         }

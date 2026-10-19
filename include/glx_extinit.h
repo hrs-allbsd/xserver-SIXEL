@@ -29,8 +29,11 @@
 /* this is separate due to sdksyms pulling in extinit.h */
 /* XXX this comment no longer makes sense i think */
 #ifdef GLXEXT
+
 typedef struct __GLXprovider __GLXprovider;
 typedef struct __GLXscreen __GLXscreen;
+typedef struct __GLXconfig __GLXconfig;
+
 struct __GLXprovider {
     __GLXscreen *(*screenProbe) (ScreenPtr pScreen);
     const char *name;
@@ -38,11 +41,20 @@ struct __GLXprovider {
 };
 extern __GLXprovider __glXDRISWRastProvider;
 
+/* exported for glamor */
+_X_EXPORT
 void GlxPushProvider(__GLXprovider * provider);
-Bool xorgGlxCreateVendor(void);
-#else
-static inline Bool xorgGlxCreateVendor(void) { return TRUE; }
-#endif
 
+/**
+ * @brief xorgGlxCreateVendor adds default glx vendor callback
+ * @warning this function need to be called once, because it installs `catch-all` style which always succeed
+ */
+void xorgGlxCreateVendor(void);
 
-#endif
+#else /* GLXEXT */
+
+static inline void xorgGlxCreateVendor(void) {}
+
+#endif /* GLEXT */
+
+#endif /* GLX_EXT_INIT_H */

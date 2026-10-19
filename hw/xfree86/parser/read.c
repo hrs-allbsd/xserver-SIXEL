@@ -51,13 +51,10 @@
  * the sale, use or other dealings in this Software without prior written
  * authorization from the copyright holder(s) and author(s).
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
 #include "xf86Config.h"
-#include "xf86Parser.h"
+#include "xf86Parser_priv.h"
 #include "xf86tokens.h"
 #include "Configint.h"
 
@@ -100,9 +97,11 @@ xf86readConfigFile(void)
         switch (token) {
         case COMMENT:
             ptr->conf_comment = xf86addComment(ptr->conf_comment, xf86_lex_val.str);
+            free(xf86_lex_val.str);
+            xf86_lex_val.str = NULL;
             break;
         case SECTION:
-            if (xf86getSubToken(&(ptr->conf_comment)) != STRING) {
+            if (xf86getSubToken(&(ptr->conf_comment)) != XF86_TOKEN_STRING) {
                 xf86parseError(QUOTE_MSG, "Section");
                 CLEANUP(ptr);
                 return NULL;
@@ -111,12 +110,12 @@ xf86readConfigFile(void)
             if (xf86nameCompare(xf86_lex_val.str, "files") == 0) {
                 free(xf86_lex_val.str);
                 xf86_lex_val.str = NULL;
-                HANDLE_RETURN(conf_files, xf86parseFilesSection());
+                HANDLE_RETURN(conf_files, xf86parseFilesSection(ptr->conf_files));
             }
             else if (xf86nameCompare(xf86_lex_val.str, "serverflags") == 0) {
                 free(xf86_lex_val.str);
                 xf86_lex_val.str = NULL;
-                HANDLE_RETURN(conf_flags, xf86parseFlagsSection());
+                HANDLE_RETURN(conf_flags, xf86parseFlagsSection(ptr->conf_flags));
             }
             else if (xf86nameCompare(xf86_lex_val.str, "pointer") == 0) {
                 free(xf86_lex_val.str);
@@ -175,7 +174,7 @@ xf86readConfigFile(void)
             else if (xf86nameCompare(xf86_lex_val.str, "module") == 0) {
                 free(xf86_lex_val.str);
                 xf86_lex_val.str = NULL;
-                HANDLE_RETURN(conf_modules, xf86parseModuleSection());
+                HANDLE_RETURN(conf_modules, xf86parseModuleSection(ptr->conf_modules));
             }
             else if (xf86nameCompare(xf86_lex_val.str, "serverlayout") == 0) {
                 free(xf86_lex_val.str);
@@ -188,11 +187,6 @@ xf86readConfigFile(void)
                 xf86_lex_val.str = NULL;
                 HANDLE_LIST(conf_vendor_lst, xf86parseVendorSection,
                             XF86ConfVendorPtr);
-            }
-            else if (xf86nameCompare(xf86_lex_val.str, "dri") == 0) {
-                free(xf86_lex_val.str);
-                xf86_lex_val.str = NULL;
-                HANDLE_RETURN(conf_dri, xf86parseDRISection());
             }
             else if (xf86nameCompare(xf86_lex_val.str, "extensions") == 0) {
                 free(xf86_lex_val.str);
@@ -301,7 +295,6 @@ xf86freeConfig(XF86ConfigPtr p)
     xf86freeLayoutList(p->conf_layout_lst);
     xf86freeInputList(p->conf_input_lst);
     xf86freeVendorList(p->conf_vendor_lst);
-    xf86freeDRI(p->conf_dri);
     xf86freeExtensions(p->conf_extensions);
     TestFree(p->conf_comment);
 

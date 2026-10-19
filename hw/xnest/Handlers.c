@@ -11,31 +11,27 @@ the suitability of this software for any purpose.  It is provided "as
 is" without express or implied warranty.
 
 */
-
-#ifdef HAVE_XNEST_CONFIG_H
-#include <xnest-config.h>
-#endif
+#include <dix-config.h>
 
 #include <X11/X.h>
 #include <X11/Xproto.h>
+
+#include "include/misc.h"
+
 #include "screenint.h"
 #include "input.h"
-#include "misc.h"
 #include "scrnintstr.h"
 #include "windowstr.h"
 #include "servermd.h"
-
-#include "Xnest.h"
 
 #include "Display.h"
 #include "Events.h"
 #include "Handlers.h"
 
 void
-xnestBlockHandler(void *blockData, void *timout)
+xnestBlockHandler(void *blockData, void *timeout)
 {
-    xnestCollectExposures();
-    XFlush(xnestDisplay);
+    xnestCollectEvents();
 }
 
 void

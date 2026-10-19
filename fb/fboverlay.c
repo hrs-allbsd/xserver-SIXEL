@@ -22,15 +22,16 @@
  * Author:  Keith Packard, SuSE, Inc.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <assert.h>
 #include <stdlib.h>
+
+#include "include/shmint.h"
+#include "mi/mi_priv.h"
 
 #include "fb.h"
 #include "fboverlay.h"
-#include "shmint.h"
 
 static DevPrivateKeyRec fbOverlayScreenPrivateKeyRec;
 
@@ -46,7 +47,7 @@ fbOverlayGetScreenPrivateKey(void)
  * Replace this if you want something supporting
  * multiple overlays with the same depth
  */
-Bool
+static Bool
 fbOverlayCreateWindow(WindowPtr pWin)
 {
     FbOverlayScrPrivPtr pScrPriv = fbOverlayGetScrPriv(pWin->drawable.pScreen);
@@ -76,14 +77,14 @@ fbOverlayCreateWindow(WindowPtr pWin)
     return FALSE;
 }
 
-Bool
+static Bool
 fbOverlayCloseScreen(ScreenPtr pScreen)
 {
     FbOverlayScrPrivPtr pScrPriv = fbOverlayGetScrPriv(pScreen);
     int i;
 
     for (i = 0; i < pScrPriv->nlayers; i++) {
-        (*pScreen->DestroyPixmap) (pScrPriv->layer[i].u.run.pixmap);
+        dixDestroyPixmap(pScrPriv->layer[i].u.run.pixmap, 0);
         RegionUninit(&pScrPriv->layer[i].u.run.region);
     }
     return TRUE;
@@ -92,7 +93,7 @@ fbOverlayCloseScreen(ScreenPtr pScreen)
 /*
  * Return layer containing this window
  */
-int
+static int
 fbOverlayWindowLayer(WindowPtr pWin)
 {
     FbOverlayScrPrivPtr pScrPriv = fbOverlayGetScrPriv(pWin->drawable.pScreen);
@@ -105,7 +106,7 @@ fbOverlayWindowLayer(WindowPtr pWin)
     return 0;
 }
 
-Bool
+static Bool
 fbOverlayCreateScreenResources(ScreenPtr pScreen)
 {
     int i;
@@ -143,7 +144,7 @@ fbOverlayCreateScreenResources(ScreenPtr pScreen)
     return TRUE;
 }
 
-void
+static void
 fbOverlayPaintKey(DrawablePtr pDrawable,
                   RegionPtr pRegion, CARD32 pixel, int layer)
 {
@@ -154,7 +155,7 @@ fbOverlayPaintKey(DrawablePtr pDrawable,
 /*
  * Track visible region for each layer
  */
-void
+static void
 fbOverlayUpdateLayerRegion(ScreenPtr pScreen, int layer, RegionPtr prgn)
 {
     FbOverlayScrPrivPtr pScrPriv = fbOverlayGetScrPriv(pScreen);
@@ -186,8 +187,8 @@ fbOverlayUpdateLayerRegion(ScreenPtr pScreen, int layer, RegionPtr prgn)
 /*
  * Copy only areas in each layer containing real bits
  */
-void
-fbOverlayCopyWindow(WindowPtr pWin, DDXPointRec ptOldOrg, RegionPtr prgnSrc)
+static void
+fbOverlayCopyWindow(WindowPtr pWin, xPoint ptOldOrg, RegionPtr prgnSrc)
 {
     ScreenPtr pScreen = pWin->drawable.pScreen;
     FbOverlayScrPrivPtr pScrPriv = fbOverlayGetScrPriv(pScreen);
@@ -210,6 +211,7 @@ fbOverlayCopyWindow(WindowPtr pWin, DDXPointRec ptOldOrg, RegionPtr prgnSrc)
     /*
      * Compute the portion of each fb affected by this copy
      */
+    assert(pScrPriv->nlayers <= FB_OVERLAY_MAX);
     for (i = 0; i < pScrPriv->nlayers; i++) {
         RegionNull(&layerRgn[i]);
         RegionIntersect(&layerRgn[i], &rgnDst,
@@ -235,25 +237,12 @@ fbOverlayCopyWindow(WindowPtr pWin, DDXPointRec ptOldOrg, RegionPtr prgnSrc)
     RegionUninit(&rgnDst);
 }
 
-void
+static void
 fbOverlayWindowExposures(WindowPtr pWin, RegionPtr prgn)
 {
     fbOverlayUpdateLayerRegion(pWin->drawable.pScreen,
                                fbOverlayWindowLayer(pWin), prgn);
     miWindowExposures(pWin, prgn);
-}
-
-Bool
-fbOverlaySetupScreen(ScreenPtr pScreen,
-                     void *pbits1,
-                     void *pbits2,
-                     int xsize,
-                     int ysize,
-                     int dpix,
-                     int dpiy, int width1, int width2, int bpp1, int bpp2)
-{
-    return fbSetupScreen(pScreen,
-                         pbits1, xsize, ysize, dpix, dpiy, width1, bpp1);
 }
 
 Bool
@@ -273,7 +262,6 @@ fbOverlayFinishScreenInit(ScreenPtr pScreen,
     int nvisuals;
     int ndepths;
     VisualID defaultVisual;
-    FbOverlayScrPrivPtr pScrPriv;
 
     if (!dixRegisterPrivateKey
         (&fbOverlayScreenPrivateKeyRec, PRIVATE_SCREEN, 0))
@@ -282,7 +270,7 @@ fbOverlayFinishScreenInit(ScreenPtr pScreen,
     if (bpp1 == 24 || bpp2 == 24)
         return FALSE;
 
-    pScrPriv = malloc(sizeof(FbOverlayScrPrivRec));
+    FbOverlayScrPrivPtr pScrPriv = calloc(1, sizeof(FbOverlayScrPrivRec));
     if (!pScrPriv)
         return FALSE;
 
@@ -299,9 +287,9 @@ fbOverlayFinishScreenInit(ScreenPtr pScreen,
         return FALSE;
     }
     /* MI thinks there's no frame buffer */
-#ifdef MITSHM
+#ifdef CONFIG_MITSHM
     ShmRegisterFbFuncs(pScreen);
-#endif
+#endif /* CONFIG_MITSHM */
     pScreen->minInstalledCmaps = 1;
     pScreen->maxInstalledCmaps = 2;
 

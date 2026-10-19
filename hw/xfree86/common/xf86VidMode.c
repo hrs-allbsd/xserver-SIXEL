@@ -33,16 +33,18 @@
  * so that two version of code that do similar things don't have to be
  * maintained.
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
+#include <stdbool.h>
 #include <X11/X.h>
+
+#include "dix/screenint_priv.h"
+#include "os/log_priv.h"
+#include "os/mathx_priv.h"
+
 #include "os.h"
-#include "xf86.h"
+#include "xf86_priv.h"
 #include "xf86Priv.h"
-#include "extinit.h"
 
 #ifdef XF86VIDMODE
 #include "vidmodestr.h"
@@ -219,10 +221,10 @@ xf86VidModeSetViewPort(ScreenPtr pScreen, int x, int y)
     ScrnInfoPtr pScrn;
 
     pScrn = xf86ScreenToScrn(pScreen);
-    pScrn->frameX0 = min(max(x, 0),
+    pScrn->frameX0 = MIN(MAX(x, 0),
                          pScrn->virtualX - pScrn->currentMode->HDisplay);
     pScrn->frameX1 = pScrn->frameX0 + pScrn->currentMode->HDisplay - 1;
-    pScrn->frameY0 = min(max(y, 0),
+    pScrn->frameY0 = MIN(MAX(y, 0),
                          pScrn->virtualY - pScrn->currentMode->VDisplay);
     pScrn->frameY1 = pScrn->frameY0 + pScrn->currentMode->VDisplay - 1;
     if (pScrn->AdjustFrame != NULL)
@@ -247,7 +249,7 @@ xf86VidModeSwitchMode(ScreenPtr pScreen, DisplayModePtr mode)
 {
     ScrnInfoPtr pScrn;
     DisplayModePtr pTmpMode;
-    Bool retval;
+    bool retval;
 
     pScrn = xf86ScreenToScrn(pScreen);
     /* save in case we fail */
@@ -398,7 +400,7 @@ xf86VidModeInit(ScreenPtr pScreen)
 {
     VidModePtr pVidMode;
 
-    if (!xf86GetVidModeEnabled()) {
+    if (!xf86Info.vidModeEnabled) {
         DebugF("!xf86GetVidModeEnabled()\n");
         return FALSE;
     }
@@ -440,24 +442,24 @@ xf86VidModeInit(ScreenPtr pScreen)
 void
 XFree86VidModeExtensionInit(void)
 {
-    int i;
-    Bool enabled = FALSE;
+    bool enabled = FALSE;
 
     DebugF("XFree86VidModeExtensionInit");
 
     /* This means that the DDX doesn't want the vidmode extension enabled */
-    if (!xf86GetVidModeEnabled())
+    if (!xf86Info.vidModeEnabled)
         return;
 
-    for (i = 0; i < screenInfo.numScreens; i++) {
-        if (xf86VidModeInit (screenInfo.screens[i]))
+    DIX_FOR_EACH_SCREEN({
+        if (xf86VidModeInit(walkScreen))
             enabled = TRUE;
-    }
+    });
+
     /* This means that the DDX doesn't want the vidmode extension enabled */
     if (!enabled)
         return;
 
-   VidModeAddExtension(xf86GetVidModeAllowNonLocal());
+   VidModeAddExtension(xf86Info.vidModeAllowNonLocal);
 }
 
 #endif                          /* XF86VIDMODE */

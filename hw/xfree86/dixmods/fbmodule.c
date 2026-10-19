@@ -23,30 +23,28 @@
  * dealings in this Software without prior written authorization from the
  * XFree86 Project.
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
 #include "xf86Module.h"
 #include "fb.h"
 
 static XF86ModuleVersionInfo VersRec = {
 #ifdef FB_ACCESS_WRAPPER
-    "wfb",
+    .modname      = "wfb",
 #else
-    "fb",
+    .modname      = "fb",
 #endif
-    MODULEVENDORSTRING,
-    MODINFOSTRING1,
-    MODINFOSTRING2,
-    XORG_VERSION_CURRENT,
-    1, 0, 0,
-    ABI_CLASS_ANSIC,            /* Only need the ansic layer */
-    ABI_ANSIC_VERSION,
-    MOD_CLASS_NONE,
-    {0, 0, 0, 0}                /* signature, to be patched into the file by a tool */
+    .vendor       = MODULEVENDORSTRING,
+    ._modinfo1_   = MODINFOSTRING1,
+    ._modinfo2_   = MODINFOSTRING2,
+    .xf86version  = XORG_VERSION_CURRENT,
+    .majorversion = 1,
+    .minorversion = 0,
+    .patchlevel   = 0,
+    .abiclass     = ABI_CLASS_ANSIC,
+    .abiversion   = ABI_ANSIC_VERSION,
 };
 
 _X_EXPORT XF86ModuleData FBPREFIX(ModuleData) = {
-&VersRec, NULL, NULL};
+    .vers = &VersRec
+};

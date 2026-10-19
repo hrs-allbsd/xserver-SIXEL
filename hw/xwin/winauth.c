@@ -27,26 +27,17 @@
  *
  * Authors:	Harold L Hunt II
  */
-
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
 
-#include "win.h"
+#include "winauth.h"
+#include "winmsg.h"
 
 /* Includes for authorization */
-#include "securitysrv.h"
+#include "security/securitysrv.h"
 #include "os/osdep.h"
+#include "os/mitauth.h"
 
 #include <xcb/xcb.h>
-
-/* Need to get this from Xlib.h */
-extern void XSetAuthorization(
-    const char *                /* name */,
-    int                         /* namelen */,
-    const char *                /* data */,
-    int                         /* datalen */
-);
 
 /*
  * Constants
@@ -64,38 +55,17 @@ static char *g_pAuthData = NULL;
 static xcb_auth_info_t auth_info;
 
 /*
- * Code to generate a MIT-MAGIC-COOKIE-1, copied from under XCSECURITY
- */
-
-#ifndef XCSECURITY
-
-static
-    XID
-GenerateAuthorization(unsigned name_length,
-                      const char *name,
-                      unsigned data_length,
-                      const char *data,
-                      unsigned *data_length_return, char **data_return)
-{
-    return MitGenerateCookie(data_length, data,
-                             FakeClientID(0), data_length_return, data_return);
-}
-#endif
-
-/*
  * Generate authorization cookie for internal server clients
  */
 
-Bool
+BOOL
 winGenerateAuthorization(void)
 {
-    SecurityAuthorizationPtr pAuth = NULL;
-
     /* Call OS layer to generate authorization key */
     g_authId = GenerateAuthorization(strlen(AUTH_NAME),
                                      AUTH_NAME,
                                      0, NULL, &g_uiAuthDataLen, &g_pAuthData);
-    if ((XID) ~0L == g_authId) {
+    if (!g_authId) {
         ErrorF("winGenerateAuthorization - GenerateAuthorization failed\n");
         return FALSE;
     }
@@ -106,15 +76,14 @@ winGenerateAuthorization(void)
                  g_uiAuthDataLen, g_pAuthData);
     }
 
-    auth_info.name = AUTH_NAME;
+    auth_info.name = strdup(AUTH_NAME);
     auth_info.namelen = strlen(AUTH_NAME);
     auth_info.data = g_pAuthData;
     auth_info.datalen = g_uiAuthDataLen;
 
 #ifdef XCSECURITY
     /* Allocate structure for additional auth information */
-    pAuth = (SecurityAuthorizationPtr)
-        malloc(sizeof(SecurityAuthorizationRec));
+    SecurityAuthorizationPtr pAuth = calloc(1, sizeof(SecurityAuthorizationRec));
     if (!(pAuth)) {
         ErrorF("winGenerateAuthorization - Failed allocating "
                "SecurityAuthorizationPtr.\n");
@@ -139,14 +108,6 @@ winGenerateAuthorization(void)
 #endif
 
     return TRUE;
-}
-
-/* Use our generated cookie for authentication */
-void
-winSetAuthorization(void)
-{
-    XSetAuthorization(AUTH_NAME,
-                      strlen(AUTH_NAME), g_pAuthData, g_uiAuthDataLen);
 }
 
 xcb_auth_info_t *

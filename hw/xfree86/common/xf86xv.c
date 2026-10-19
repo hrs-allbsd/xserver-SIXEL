@@ -27,31 +27,30 @@
  * the sale, use or other dealings in this Software without prior written
  * authorization from the copyright holder(s) and author(s).
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
-#include "misc.h"
-#include "xf86.h"
-#include "xf86_OSproc.h"
-
+#include <stdbool.h>
 #include <X11/X.h>
 #include <X11/Xproto.h>
+#include <X11/extensions/Xv.h>
+#include <X11/extensions/Xvproto.h>
+
+#include "dix/screen_hooks_priv.h"
+#include "include/extinit.h"
+#include "include/misc.h"
+#include "Xext/xv/xvdix_priv.h"
+
+#include "xf86.h"
+#include "xf86_OSproc.h"
 #include "scrnintstr.h"
 #include "regionstr.h"
 #include "windowstr.h"
 #include "pixmapstr.h"
-#include "mivalidate.h"
 #include "validate.h"
 #include "resource.h"
 #include "gcstruct.h"
 #include "dixstruct.h"
-
-#include <X11/extensions/Xv.h>
-#include <X11/extensions/Xvproto.h>
 #include "xvdix.h"
-
 #include "xf86xvpriv.h"
 
 /* XvAdaptorRec fields */
@@ -81,14 +80,15 @@ static int xf86XVPutImage(DrawablePtr, XvPortPtr, GCPtr,
 static int xf86XVQueryImageAttributes(XvPortPtr, XvImagePtr,
                                       CARD16 *, CARD16 *, int *, int *);
 
+static void xf86XVWindowDestroy(CallbackListPtr *pcbl, ScreenPtr pScreen, WindowPtr pWin);
+
 /* ScreenRec fields */
 
-static Bool xf86XVDestroyWindow(WindowPtr pWin);
 static void xf86XVWindowExposures(WindowPtr pWin, RegionPtr r1);
 static void xf86XVPostValidateTree(WindowPtr pWin, WindowPtr pLayerWin,
                                    VTKind kind);
 static void xf86XVClipNotify(WindowPtr pWin, int dx, int dy);
-static Bool xf86XVCloseScreen(ScreenPtr);
+static void xf86XVCloseScreen(CallbackListPtr *, ScreenPtr, void *);
 
 #define PostValidateTreeUndefined ((PostValidateTreeProcPtr)-1)
 
@@ -107,18 +107,16 @@ static DevPrivateKeyRec XF86XVWindowKeyRec;
 
 #define XF86XVWindowKey (&XF86XVWindowKeyRec)
 
-/* dixmain.c XvScreenPtr screen private */
-DevPrivateKey XF86XvScreenKey;
 /** xf86xv.c XF86XVScreenPtr screen private */
 static DevPrivateKeyRec XF86XVScreenPrivateKey;
 
 static unsigned long PortResource = 0;
 
 #define GET_XV_SCREEN(pScreen) \
-    ((XvScreenPtr)dixLookupPrivate(&(pScreen)->devPrivates, XF86XvScreenKey))
+    ((XvScreenPtr)dixLookupPrivate(&(pScreen)->devPrivates, XvGetScreenKey()))
 
 #define GET_XF86XV_SCREEN(pScreen) \
-    ((XF86XVScreenPtr)(dixGetPrivate(&pScreen->devPrivates, &XF86XVScreenPrivateKey)))
+    ((XF86XVScreenPtr)(dixGetPrivate(&(pScreen)->devPrivates, &XF86XVScreenPrivateKey)))
 
 #define GET_XF86XV_WINDOW(pWin) \
     ((XF86XVWindowPtr)dixLookupPrivate(&(pWin)->devPrivates, XF86XVWindowKey))
@@ -241,11 +239,9 @@ xf86XVScreenInit(ScreenPtr pScreen, XF86VideoAdaptorPtr * adaptors, int num)
     if (!dixRegisterPrivateKey(&XF86XVScreenPrivateKey, PRIVATE_SCREEN, 0))
         return FALSE;
 
-    XF86XvScreenKey = XvGetScreenKey();
-
     PortResource = XvGetRTPort();
 
-    ScreenPriv = malloc(sizeof(XF86XVScreenRec));
+    ScreenPriv = calloc(1, sizeof(XF86XVScreenRec));
     dixSetPrivate(&pScreen->devPrivates, &XF86XVScreenPrivateKey, ScreenPriv);
 
     if (!ScreenPriv)
@@ -253,20 +249,19 @@ xf86XVScreenInit(ScreenPtr pScreen, XF86VideoAdaptorPtr * adaptors, int num)
 
     pScrn = xf86ScreenToScrn(pScreen);
 
-    ScreenPriv->DestroyWindow = pScreen->DestroyWindow;
+    dixScreenHookWindowDestroy(pScreen, xf86XVWindowDestroy);
+    dixScreenHookClose(pScreen, xf86XVCloseScreen);
+
     ScreenPriv->WindowExposures = pScreen->WindowExposures;
     ScreenPriv->PostValidateTree = PostValidateTreeUndefined;
     ScreenPriv->ClipNotify = pScreen->ClipNotify;
-    ScreenPriv->CloseScreen = pScreen->CloseScreen;
     ScreenPriv->EnterVT = pScrn->EnterVT;
     ScreenPriv->LeaveVT = pScrn->LeaveVT;
     ScreenPriv->AdjustFrame = pScrn->AdjustFrame;
     ScreenPriv->ModeSet = pScrn->ModeSet;
 
-    pScreen->DestroyWindow = xf86XVDestroyWindow;
     pScreen->WindowExposures = xf86XVWindowExposures;
     pScreen->ClipNotify = xf86XVClipNotify;
-    pScreen->CloseScreen = xf86XVCloseScreen;
     pScrn->EnterVT = xf86XVEnterVT;
     pScrn->LeaveVT = xf86XVLeaveVT;
     if (pScrn->AdjustFrame)
@@ -486,7 +481,7 @@ xf86XVInitAdaptors(ScreenPtr pScreen, XF86VideoAdaptorPtr * infoPtr, int number)
         }
         for (pp = pPort, i = 0, numPort = 0; i < adaptorPtr->nPorts; i++) {
 
-            if (!(pp->id = FakeClientID(0)))
+            if (!(pp->id = dixAllocServerXID()))
                 continue;
 
             if (!(portPriv = calloc(1, sizeof(XvPortRecPrivate))))
@@ -544,7 +539,7 @@ xf86XVInitAdaptors(ScreenPtr pScreen, XF86VideoAdaptorPtr * infoPtr, int number)
    client clip from the GC when the video is initialized.  We then
    use xf86XVUpdateCompositeClip to calculate the new composite clip
    when we need it.  This is different from what DEC did.  They saved
-   the GC and used it's clip list when they needed to reclip the window,
+   the GC and used its clip list when they needed to reclip the window,
    even if the client clip was different from the one the video was
    initialized with.  If the original GC was destroyed, they had to stop
    the video.  I like the new method better (MArk).
@@ -558,7 +553,7 @@ xf86XVUpdateCompositeClip(XvPortRecPrivatePtr portPriv)
 {
     RegionPtr pregWin, pCompositeClip;
     WindowPtr pWin;
-    Bool freeCompClip = FALSE;
+    bool freeCompClip = FALSE;
 
     if (portPriv->pCompositeClip)
         return;
@@ -647,7 +642,7 @@ xf86XVRegetVideo(XvPortRecPrivatePtr portPriv)
     RegionRec ClipRegion;
     BoxRec WinBox;
     int ret = Success;
-    Bool clippedAway = FALSE;
+    bool clippedAway = FALSE;
 
     xf86XVUpdateCompositeClip(portPriv);
 
@@ -704,7 +699,7 @@ xf86XVReputVideo(XvPortRecPrivatePtr portPriv)
     RegionRec ClipRegion;
     BoxRec WinBox;
     int ret = Success;
-    Bool clippedAway = FALSE;
+    bool clippedAway = FALSE;
 
     xf86XVUpdateCompositeClip(portPriv);
 
@@ -777,7 +772,7 @@ xf86XVReputImage(XvPortRecPrivatePtr portPriv)
     RegionRec ClipRegion;
     BoxRec WinBox;
     int ret = Success;
-    Bool clippedAway = FALSE;
+    bool clippedAway = FALSE;
 
     xf86XVUpdateCompositeClip(portPriv);
 
@@ -964,7 +959,7 @@ xf86XVReputOrStopAllPorts(ScrnInfoPtr pScrn, Bool onlyChanged)
             XvPortRecPrivatePtr pPriv =
                 (XvPortRecPrivatePtr) pPort->devPriv.ptr;
             WindowPtr pWin = (WindowPtr) pPriv->pDraw;
-            Bool visible;
+            bool visible;
 
             if (pPriv->isOn == XV_OFF || !pWin)
                 continue;
@@ -991,13 +986,10 @@ xf86XVReputOrStopAllPorts(ScrnInfoPtr pScrn, Bool onlyChanged)
 
 /****  ScreenRec fields ****/
 
-static Bool
-xf86XVDestroyWindow(WindowPtr pWin)
+static void
+xf86XVWindowDestroy(CallbackListPtr *pcbl, ScreenPtr pScreen, WindowPtr pWin)
 {
-    ScreenPtr pScreen = pWin->drawable.pScreen;
-    XF86XVScreenPtr ScreenPriv = GET_XF86XV_SCREEN(pScreen);
     XF86XVWindowPtr tmp, WinPriv = GET_XF86XV_WINDOW(pWin);
-    int ret;
 
     while (WinPriv) {
         XvPortRecPrivatePtr pPriv = WinPriv->PortRec;
@@ -1015,12 +1007,6 @@ xf86XVDestroyWindow(WindowPtr pWin)
     }
 
     dixSetPrivate(&pWin->devPrivates, XF86XVWindowKey, NULL);
-
-    pScreen->DestroyWindow = ScreenPriv->DestroyWindow;
-    ret = (*pScreen->DestroyWindow) (pWin);
-    pScreen->DestroyWindow = xf86XVDestroyWindow;
-
-    return ret;
 }
 
 static void
@@ -1054,7 +1040,7 @@ xf86XVWindowExposures(WindowPtr pWin, RegionPtr reg1)
     XF86XVScreenPtr ScreenPriv = GET_XF86XV_SCREEN(pScreen);
     XF86XVWindowPtr WinPriv = GET_XF86XV_WINDOW(pWin);
     XvPortRecPrivatePtr pPriv;
-    Bool AreasExposed;
+    bool AreasExposed;
 
     AreasExposed = (WinPriv && reg1 && RegionNotEmpty(reg1));
 
@@ -1067,7 +1053,7 @@ xf86XVWindowExposures(WindowPtr pWin, RegionPtr reg1)
         return;
 
     while (WinPriv) {
-        Bool visible = TRUE;
+        bool visible = TRUE;
 
         pPriv = WinPriv->PortRec;
 
@@ -1136,8 +1122,8 @@ xf86XVClipNotify(WindowPtr pWin, int dx, int dy)
 
 /**** Required XvScreenRec fields ****/
 
-static Bool
-xf86XVCloseScreen(ScreenPtr pScreen)
+static void xf86XVCloseScreen(CallbackListPtr *pcbl,
+                              ScreenPtr pScreen, void *unused)
 {
     ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
     XvScreenPtr pxvs = GET_XV_SCREEN(pScreen);
@@ -1146,12 +1132,13 @@ xf86XVCloseScreen(ScreenPtr pScreen)
     int c;
 
     if (!ScreenPriv)
-        return TRUE;
+        return;
 
-    pScreen->DestroyWindow = ScreenPriv->DestroyWindow;
+    dixScreenUnhookWindowDestroy(pScreen, xf86XVWindowDestroy);
+    dixScreenUnhookClose(pScreen, xf86XVCloseScreen);
+
     pScreen->WindowExposures = ScreenPriv->WindowExposures;
     pScreen->ClipNotify = ScreenPriv->ClipNotify;
-    pScreen->CloseScreen = ScreenPriv->CloseScreen;
 
     pScrn->EnterVT = ScreenPriv->EnterVT;
     pScrn->LeaveVT = ScreenPriv->LeaveVT;
@@ -1164,8 +1151,7 @@ xf86XVCloseScreen(ScreenPtr pScreen)
 
     free(pxvs->pAdaptors);
     free(ScreenPriv);
-
-    return pScreen->CloseScreen(pScreen);
+    dixSetPrivate(&pScreen->devPrivates, &XF86XVScreenPrivateKey, NULL);
 }
 
 /**** ScrnInfoRec fields ****/
@@ -1175,7 +1161,7 @@ xf86XVEnterVT(ScrnInfoPtr pScrn)
 {
     ScreenPtr pScreen = xf86ScrnToScreen(pScrn);
     XF86XVScreenPtr ScreenPriv = GET_XF86XV_SCREEN(pScreen);
-    Bool ret;
+    bool ret;
 
     pScrn->EnterVT = ScreenPriv->EnterVT;
     ret = (*ScreenPriv->EnterVT) (pScrn);
@@ -1329,7 +1315,7 @@ xf86XVPutStill(DrawablePtr pDraw,
     RegionRec ClipRegion;
     BoxRec WinBox;
     int ret = Success;
-    Bool clippedAway = FALSE;
+    bool clippedAway = FALSE;
 
     if (pDraw->type != DRAWABLE_WINDOW)
         return BadAlloc;
@@ -1476,7 +1462,7 @@ xf86XVGetStill(DrawablePtr pDraw,
     RegionRec ClipRegion;
     BoxRec WinBox;
     int ret = Success;
-    Bool clippedAway = FALSE;
+    bool clippedAway = FALSE;
 
     if (pDraw->type != DRAWABLE_WINDOW)
         return BadAlloc;
@@ -1599,7 +1585,7 @@ xf86XVPutImage(DrawablePtr pDraw,
     RegionRec ClipRegion;
     BoxRec WinBox;
     int ret = Success;
-    Bool clippedAway = FALSE;
+    bool clippedAway = FALSE;
 
     if (pDraw->type != DRAWABLE_WINDOW)
         return BadAlloc;
@@ -1717,52 +1703,6 @@ void
 xf86XVFillKeyHelper(ScreenPtr pScreen, CARD32 key, RegionPtr fillboxes)
 {
     xf86XVFillKeyHelperDrawable(&pScreen->root->drawable, key, fillboxes);
-}
-
-void
-xf86XVFillKeyHelperPort(DrawablePtr pDraw, void *data, CARD32 key,
-                        RegionPtr clipboxes, Bool fillEverything)
-{
-    WindowPtr pWin = (WindowPtr) pDraw;
-    XF86XVWindowPtr WinPriv = GET_XF86XV_WINDOW(pWin);
-    XvPortRecPrivatePtr portPriv = NULL;
-    RegionRec reg;
-    RegionPtr fillboxes;
-
-    while (WinPriv) {
-        XvPortRecPrivatePtr pPriv = WinPriv->PortRec;
-
-        if (data == pPriv->DevPriv.ptr) {
-            portPriv = pPriv;
-            break;
-        }
-
-        WinPriv = WinPriv->next;
-    }
-
-    if (!portPriv)
-        return;
-
-    if (!portPriv->ckeyFilled)
-        portPriv->ckeyFilled = RegionCreate(NULL, 0);
-
-    if (!fillEverything) {
-        RegionNull(&reg);
-        fillboxes = &reg;
-        RegionSubtract(fillboxes, clipboxes, portPriv->ckeyFilled);
-
-        if (!RegionNotEmpty(fillboxes))
-            goto out;
-    }
-    else
-        fillboxes = clipboxes;
-
-    RegionCopy(portPriv->ckeyFilled, clipboxes);
-
-    xf86XVFillKeyHelperDrawable(pDraw, key, fillboxes);
- out:
-    if (!fillEverything)
-        RegionUninit(&reg);
 }
 
 /* xf86XVClipVideoHelper -

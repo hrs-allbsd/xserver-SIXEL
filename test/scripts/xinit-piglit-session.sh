@@ -31,5 +31,9 @@ PIGLIT_ARGS="$PIGLIT_ARGS -x xlistfontswithinfo@4"
 PIGLIT_ARGS="$PIGLIT_ARGS -x xloadqueryfont@1"
 PIGLIT_ARGS="$PIGLIT_ARGS -x xqueryfont@1"
 PIGLIT_ARGS="$PIGLIT_ARGS -x xqueryfont@2"
+PIGLIT_ARGS="$PIGLIT_ARGS -x xsetfontpath@1"
+PIGLIT_ARGS="$PIGLIT_ARGS -x xsetfontpath@2"
+# Run as meson unit tests.
+PIGLIT_ARGS="$PIGLIT_ARGS -x rendercheck"
 
 exec ./piglit run xts-render $PIGLIT_ARGS $PIGLIT_RESULTS_DIR

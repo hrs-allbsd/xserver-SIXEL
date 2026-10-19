@@ -30,10 +30,7 @@
    GL calls can be directed to mesa cygGL-1.dll, or cygnativeGLthunk.dll
    (which contains cdecl-to-stdcall thunks to the native openGL32.dll)
 */
-
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
 
 #define GL_GLEXT_LEGACY
 #define GL_GLEXT_PROTOTYPES
@@ -45,7 +42,8 @@
 #include <X11/Xwindows.h>
 #include <os.h>
 #include "glwindows.h"
-#include <glx/glxserver.h>
+
+#include "Xext/glx/glxserver.h"
 
 extern void *glXGetProcAddressARB(const char *);
 
@@ -99,10 +97,10 @@ int glWinSelectImplementation(int native)
 }
 
 #define RESOLVE_RET(proctype, symbol, retval) \
-    proctype proc = (proctype)glXGetProcAddressARB(symbol);   \
+    proctype proc = (proctype)glXGetProcAddressARB((symbol));   \
     if (proc == NULL) return retval;
 
-#define RESOLVE(proctype, symbol) RESOLVE_RET(proctype, symbol,)
+#define RESOLVE(proctype, symbol) RESOLVE_RET(proctype, (symbol),)
 #define RESOLVED_PROC proc
 
 /* Include generated shims for direct linkage to GL functions which are in the ABI */

@@ -31,14 +31,17 @@
 
 #include "sanitizedCarbon.h"
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
+
+#include <stdbool.h>
 
 #include "quartz.h"
 #include "xpr.h"
 #include "darwinEvents.h"
 #include <Xplugin.h>
+
+#include "dix/input_priv.h"
+#include "mi/mipointer_priv.h"
 
 #include "mi.h"
 #include "scrnintstr.h"
@@ -47,7 +50,6 @@
 #include "windowstr.h"
 #include "globals.h"
 #include "servermd.h"
-#include "dixevents.h"
 #include "x-hash.h"
 
 typedef struct {
@@ -60,14 +62,14 @@ static DevPrivateKeyRec darwinCursorScreenKeyRec;
 #define darwinCursorScreenKey (&darwinCursorScreenKeyRec)
 
 #define CURSOR_PRIV(pScreen) ((QuartzCursorScreenPtr) \
-                              dixLookupPrivate(&pScreen->devPrivates, \
+                              dixLookupPrivate(&(pScreen)->devPrivates, \
                                                darwinCursorScreenKey))
 
 static Bool
 load_cursor(CursorPtr src, int screen)
 {
     uint32_t *data;
-    Bool free_data = FALSE;
+    bool free_data = FALSE;
     uint32_t rowbytes;
     int width, height;
     int hot_x, hot_y;
@@ -93,7 +95,7 @@ load_cursor(CursorPtr src, int screen)
         const uint32_t *be_data = (uint32_t *)src->bits->argb;
         unsigned i;
         rowbytes = src->bits->width * sizeof(CARD32);
-        data = malloc(rowbytes * src->bits->height);
+        data = calloc(rowbytes, src->bits->height);
         free_data = TRUE;
         if (!data) {
             FatalError("Failed to allocate memory in %s\n", __func__);
@@ -119,7 +121,7 @@ load_cursor(CursorPtr src, int screen)
 
         /* round up to 8 pixel boundary so we can convert whole bytes */
         rowbytes = ((src->bits->width * 4) + 31) & ~31;
-        data = malloc(rowbytes * src->bits->height);
+        data = calloc(rowbytes, src->bits->height);
         free_data = TRUE;
         if (!data) {
             FatalError("Failed to allocate memory in %s\n", __func__);
@@ -396,11 +398,11 @@ QuartzResumeXCursor(ScreenPtr pScreen)
 
     /* TODO: Tablet? */
 
-    pWin = GetSpriteWindow(darwinPointer);
+    pWin = InputDevSpriteWindow(darwinPointer);
     if (pWin->drawable.pScreen != pScreen)
         return;
 
-    pCursor = GetSpriteCursor(darwinPointer);
+    pCursor = InputDevGetSpriteCursor(darwinPointer);
     if (pCursor == NULL)
         return;
 

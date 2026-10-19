@@ -5,39 +5,45 @@ srcs_xorg_os_support = [
     'shared/vidmem.c',
 ]
 
-hdrs_xorg_os_support = [
-    'bus/xf86Pci.h',
-    'xf86_OSlib.h',
-    'xf86_OSproc.h'
-]
-
-os_support_flags = ['-DUSESTDRES']
+os_dep = []
+os_c_args = []
 
 if get_option('pciaccess')
     srcs_xorg_os_support += 'bus/Pci.c'
-    if host_machine.system() != 'linux' and host_machine.system() != 'solaris'
-        srcs_xorg_os_support += 'bus/bsd_pci.c'
-    endif
-    if host_machine.cpu() == 'sparc'
+    if host_machine.cpu_family() in ['sparc', 'sparc64']
         srcs_xorg_os_support += 'bus/Sbus.c'
-        install_data('bus/xf86Sbus.h', install_dir: xorgsdkdir)
     endif
+endif
+
+if get_option('agp') == 'auto'
+    build_agp = cc.has_header('sys/agpio.h') or cc.has_header('sys/agpgart.h') or cc.has_header('linux/agpgart.h')
+else
+    build_agp = get_option('agp') == 'true'
 endif
 
 if host_machine.system() == 'linux'
     srcs_xorg_os_support += [
-        'linux/lnx_agp.c',
         'linux/lnx_bell.c',
         'linux/lnx_init.c',
         'linux/lnx_kmod.c',
-        'linux/lnx_platform.c',
         'linux/lnx_video.c',
         'misc/SlowBcopy.c',
         'shared/VTsw_usl.c',
     ]
+    if libdrm_dep.found()
+        srcs_xorg_os_support += 'shared/drm_platform.c'
+    else
+        srcs_xorg_os_support += 'shared/platform_noop.c'
+    endif
+    if build_agp
+        srcs_xorg_os_support += 'linux/lnx_agp.c'
+    else
+        srcs_xorg_os_support += 'shared/agp_noop.c'
+    endif
     if build_systemd_logind
         srcs_xorg_os_support += 'linux/systemd-logind.c'
     endif
+
 
     # this is ugly because the code is also
     if build_apm or build_acpi
@@ -45,9 +51,11 @@ if host_machine.system() == 'linux'
         if build_acpi
             srcs_xorg_os_support += 'linux/lnx_acpi.c'
         endif
+    else
+        srcs_xorg_os_support += 'shared/pm_noop.c'
     endif
 
-elif host_machine.system() == 'solaris'
+elif host_machine.system() == 'sunos'
     srcs_xorg_os_support += [
         'solaris/sun_apm.c',
         'solaris/sun_bell.c',
@@ -62,13 +70,13 @@ elif host_machine.system() == 'solaris'
         srcs_xorg_os_support += 'shared/VTsw_noop.c'
     endif
 
-    if cc.has_header('sys/agpio.h') or cc.has_header('sys/agpgart.h')
+    if build_agp
         srcs_xorg_os_support += 'solaris/sun_agp.c'
     else
         srcs_xorg_os_support += 'shared/agp_noop.c'
     endif
 
-    if host_machine.cpu_family() == 'sparc'
+    if host_machine.cpu_family() in ['sparc', 'sparc64']
         srcs_xorg_os_support += 'solaris/solaris-sparcv8plus.S'
     elif host_machine.cpu_family() == 'x86_64'
         srcs_xorg_os_support += 'solaris/solaris-amd64.S'
@@ -78,37 +86,56 @@ elif host_machine.system() == 'solaris'
         error('Unknown CPU family for Solaris build')
     endif
 
-elif host_machine.system().endswith('bsd')
+elif host_machine.system().endswith('bsd') or host_machine.system() == 'dragonfly'
     srcs_xorg_os_support += [
         'bsd/bsd_VTsw.c',
-        'bsd/bsd_bell.c',
         'bsd/bsd_init.c',
+        'bsd/console.c',
+        'bsd/console_pcvt.c',
+        'bsd/console_wscons.c',
+        'shared/drm_platform.c',
+        'shared/pm_noop.c'
     ]
 
-    # XXX: APM
+    if supports_syscons
+        srcs_xorg_os_support += 'bsd/console_syscons.c'
+    endif
 
     if host_machine.cpu_family() == 'x86_64'
         srcs_xorg_os_support += 'bsd/i386_video.c'
+        if host_machine.system() == 'netbsd'
+            os_dep += cc.find_library('x86_64')
+        elif host_machine.system() == 'openbsd'
+            os_dep += cc.find_library('amd64')
+        endif
     elif host_machine.cpu_family() == 'x86'
         srcs_xorg_os_support += 'bsd/i386_video.c'
-    elif host_machine.cpu_family() == 'arm'
+        if host_machine.system() in ['netbsd', 'openbsd']
+            os_dep += cc.find_library('i386')
+        endif
+    elif host_machine.cpu_family() in ['arm', 'aarch64']
         srcs_xorg_os_support += 'bsd/arm_video.c'
-    elif host_machine.cpu_family() == 'powerpc'
+    elif host_machine.cpu_family() in ['ppc', 'ppc64']
         srcs_xorg_os_support += 'bsd/ppc_video.c'
     elif host_machine.cpu_family() == 'sparc64'
         srcs_xorg_os_support += 'bsd/sparc64_video.c'
         srcs_xorg_os_support += 'shared/ioperm_noop.c'
     elif host_machine.cpu_family() == 'alpha'
         srcs_xorg_os_support += 'bsd/alpha_video.c'
+        if host_machine.system() == 'freebsd'
+            os_dep += cc.find_library('io')
+        elif host_machine.system() == 'netbsd'
+            os_c_args += '-DUSE_ALPHA_PIO'
+        endif
     endif
 
-    if host_machine.system() == 'freebsd'
+    if host_machine.system() == 'freebsd' or host_machine.system() == 'dragonfly'
         srcs_xorg_os_support += 'bsd/bsd_kmod.c'
     else
         srcs_xorg_os_support += 'shared/kmod_noop.c'
     endif
 
-    if cc.has_header('sys/agpio.h') or cc.has_header('sys/agpgart.h')
+    if build_agp
         srcs_xorg_os_support += 'linux/lnx_agp.c'
     else
         srcs_xorg_os_support += 'shared/agp_noop.c'
@@ -127,7 +154,17 @@ else
         'stub/stub_bell.c',
         'stub/stub_init.c',
         'stub/stub_video.c',
+        'misc/SlowBcopy.c',
     ]
+endif
+
+if host_machine.system() == 'linux' or host_machine.system() == 'dragonfly' or host_machine.system().endswith('bsd')
+
+    if build_seatd_libseat
+       srcs_xorg_os_support  += 'shared/seatd-libseat.c'
+       os_dep += seat_libseat_dep
+    endif
+
 endif
 
 xorg_os_support = static_library('xorg_os_support',
@@ -137,8 +174,7 @@ xorg_os_support = static_library('xorg_os_support',
         common_dep,
         dbus_dep,
         libdrm_dep,
+        os_dep,
     ],
-    c_args: xorg_c_args,
+    c_args: xorg_c_args + os_c_args,
 )
-
-install_data(hdrs_xorg_os_support, install_dir: xorgsdkdir)

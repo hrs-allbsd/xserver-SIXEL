@@ -29,11 +29,9 @@
  * Authors:	Kensuke Matsuzaki
  *              Colin Harrison
  */
-
-/* X headers */
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
+
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -49,6 +47,7 @@
 #include <xcb/xcb_icccm.h>
 #include <xcb/xcb_ewmh.h>
 #include <xcb/xcb_aux.h>
+#include <xcb/composite.h>
 
 #include <X11/Xwindows.h>
 
@@ -62,6 +61,7 @@
 #include "winglobals.h"
 #include "windisplay.h"
 #include "winmultiwindowicons.h"
+#include "winauth.h"
 
 /* We need the native HWND atom for intWM, so for consistency use the
    same name as extWM does */
@@ -74,10 +74,9 @@
 extern void winDebug(const char *format, ...);
 extern void winReshapeMultiWindow(WindowPtr pWin);
 extern void winUpdateRgnMultiWindow(WindowPtr pWin);
-extern xcb_auth_info_t *winGetXcbAuthInfo(void);
 
-#ifndef CYGDEBUG
-#define CYGDEBUG NO
+#ifndef ENABLE_DEBUG
+#define ENABLE_DEBUG NO
 #endif
 
 /*
@@ -115,7 +114,11 @@ typedef struct _WMInfo {
     xcb_atom_t atmPrivMap;
     xcb_atom_t atmUtf8String;
     xcb_atom_t atmNetWmName;
+    xcb_atom_t atmCurrentDesktop;
+    xcb_atom_t atmNumberDesktops;
+    xcb_atom_t atmDesktopNames;
     xcb_ewmh_connection_t ewmh;
+    bool fCompositeWM;
 } WMInfoRec, *WMInfoPtr;
 
 typedef struct _WMProcArgRec {
@@ -184,7 +187,7 @@ static Bool g_shutdown = FALSE;
  * Translate msg id to text, for debug purposes
  */
 
-#if CYGMULTIWINDOW_DEBUG
+#if ENABLE_DEBUG
 static const char *
 MessageName(winWMMessagePtr msg)
 {
@@ -220,11 +223,11 @@ MessageName(winWMMessagePtr msg)
     case WM_WM_CHANGE_STATE:
       return "WM_WM_CHANGE_STATE";
       break;
-    case WM_WM_MAP2:
-      return "WM_WM_MAP2";
+    case WM_WM_MAP_UNMANAGED:
+      return "WM_WM_MAP_UNMANAGED";
       break;
-    case WM_WM_MAP3:
-      return "WM_WM_MAP3";
+    case WM_WM_MAP_MANAGED:
+      return "WM_WM_MAP_MANAGED";
       break;
     case WM_WM_HINTS_EVENT:
       return "WM_WM_HINTS_EVENT";
@@ -381,7 +384,7 @@ GetWindowName(WMInfoPtr pWMInfo, xcb_window_t iWin, char **ppWindowName)
     xcb_connection_t *conn = pWMInfo->conn;
     char *pszWindowName = NULL;
 
-#if CYGMULTIWINDOW_DEBUG
+#if ENABLE_DEBUG
     ErrorF("GetWindowName\n");
 #endif
 
@@ -453,7 +456,7 @@ GetWindowName(WMInfoPtr pWMInfo, xcb_window_t iWin, char **ppWindowName)
                 (strstr(pszWindowName, pszClientHostname) == 0)) {
                 /* ... add '@<clientmachine>' to end of window name */
                 *ppWindowName =
-                    malloc(strlen(pszWindowName) +
+                    calloc(1, strlen(pszWindowName) +
                            strlen(pszClientMachine) + 2);
                 strcpy(*ppWindowName, pszWindowName);
                 strcat(*ppWindowName, "@");
@@ -554,7 +557,7 @@ getHwnd(WMInfoPtr pWMInfo, xcb_window_t iWindow)
 static Bool
 IsOverrideRedirect(xcb_connection_t *conn, xcb_window_t iWin)
 {
-    Bool result = FALSE;
+    bool result = FALSE;
     xcb_get_window_attributes_reply_t *reply;
     xcb_get_window_attributes_cookie_t cookie;
 
@@ -629,8 +632,7 @@ UpdateName(WMInfoPtr pWMInfo, xcb_window_t iWindow)
             /* Convert from UTF-8 to wide char */
             int iLen =
                 MultiByteToWideChar(CP_UTF8, 0, pszWindowName, -1, NULL, 0);
-            wchar_t *pwszWideWindowName =
-                malloc(sizeof(wchar_t)*(iLen + 1));
+            wchar_t *pwszWideWindowName = calloc(iLen + 1, sizeof(wchar_t));
             MultiByteToWideChar(CP_UTF8, 0, pszWindowName, -1,
                                 pwszWideWindowName, iLen);
 
@@ -693,7 +695,7 @@ UpdateStyle(WMInfoPtr pWMInfo, xcb_window_t iWindow)
     winApplyHints(pWMInfo, iWindow, hWnd, &zstyle);
     winUpdateWindowPosition(hWnd, &zstyle);
 
-    /* Apply the updated window style, without changing it's show or activation state */
+    /* Apply the updated window style, without changing its show or activation state */
     flags = SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE;
     if (zstyle == HWND_NOTOPMOST)
         flags |= SWP_NOZORDER | SWP_NOOWNERZORDER;
@@ -786,7 +788,7 @@ winMultiWindowWMProc(void *pArg)
     /* Initialize the Window Manager */
     winInitMultiWindowWM(pWMInfo, pProcArg);
 
-#if CYGMULTIWINDOW_DEBUG
+#if ENABLE_DEBUG
     ErrorF("winMultiWindowWMProc ()\n");
 #endif
 
@@ -803,7 +805,7 @@ winMultiWindowWMProc(void *pArg)
             pthread_exit(NULL);
         }
 
-#if CYGMULTIWINDOW_DEBUG
+#if ENABLE_DEBUG
         ErrorF("winMultiWindowWMProc - MSG: %s (%d) ID: %d\n",
                MessageName(&(pNode->msg)), (int)pNode->msg.msg, (int)pNode->msg.dwID);
 #endif
@@ -840,7 +842,7 @@ winMultiWindowWMProc(void *pArg)
             }
             break;
 
-        case WM_WM_MAP2:
+        case WM_WM_MAP_UNMANAGED:
             /* Put a note as to the HWND associated with this Window */
             xcb_change_property(pWMInfo->conn, XCB_PROP_MODE_REPLACE,
                                 pNode->msg.iWindow, pWMInfo->atmPrivMap,
@@ -849,7 +851,7 @@ winMultiWindowWMProc(void *pArg)
 
             break;
 
-        case WM_WM_MAP3:
+        case WM_WM_MAP_MANAGED:
             /* Put a note as to the HWND associated with this Window */
             xcb_change_property(pWMInfo->conn, XCB_PROP_MODE_REPLACE,
                                 pNode->msg.iWindow, pWMInfo->atmPrivMap,
@@ -904,8 +906,9 @@ winMultiWindowWMProc(void *pArg)
                -- independently, the WM_TAKE_FOCUS protocol determines whether
                the WM should send a WM_TAKE_FOCUS ClientMessage.
             */
+            if (pNode->msg.iWindow)
             {
-              Bool neverFocus = FALSE;
+              bool neverFocus = FALSE;
               xcb_get_property_cookie_t cookie;
               xcb_icccm_wm_hints_t hints;
 
@@ -917,7 +920,7 @@ winMultiWindowWMProc(void *pArg)
               }
 
               if (!neverFocus)
-                xcb_set_input_focus(pWMInfo->conn, XCB_INPUT_FOCUS_POINTER_ROOT,
+                xcb_set_input_focus(pWMInfo->conn, XCB_INPUT_FOCUS_PARENT,
                                     pNode->msg.iWindow, XCB_CURRENT_TIME);
 
               if (IsWmProtocolAvailable(pWMInfo,
@@ -926,6 +929,13 @@ winMultiWindowWMProc(void *pArg)
                 SendXMessage(pWMInfo->conn,
                              pNode->msg.iWindow,
                              pWMInfo->atmWmProtos, pWMInfo->atmWmTakeFocus);
+
+            }
+            else
+            /* Set the input focus to none */
+            {
+              xcb_set_input_focus(pWMInfo->conn, XCB_INPUT_FOCUS_NONE,
+                                  XCB_NONE, XCB_CURRENT_TIME);
 
             }
             break;
@@ -997,7 +1007,7 @@ winMultiWindowWMProc(void *pArg)
     /* Free the passed-in argument */
     free(pProcArg);
 
-#if CYGMULTIWINDOW_DEBUG
+#if ENABLE_DEBUG
     ErrorF("-winMultiWindowWMProc ()\n");
 #endif
     return NULL;
@@ -1038,6 +1048,8 @@ winMultiWindowXMsgProc(void *pArg)
     xcb_atom_t atmWindowState, atmMotifWmHints, atmWindowType, atmNormalHints;
     int iReturn;
     xcb_auth_info_t *auth_info;
+    xcb_screen_t *root_screen;
+    xcb_window_t root_window_id;
 
     winDebug("winMultiWindowXMsgProc - Hello\n");
 
@@ -1110,11 +1122,11 @@ winMultiWindowXMsgProc(void *pArg)
         pthread_exit(NULL);
     }
 
-    {
-        /* Get root window id */
-        xcb_screen_t *root_screen = xcb_aux_get_screen(pProcArg->conn, pProcArg->dwScreen);
-        xcb_window_t root_window_id = root_screen->root;
+    /* Get root window id */
+    root_screen = xcb_aux_get_screen(pProcArg->conn, pProcArg->dwScreen);
+    root_window_id = root_screen->root;
 
+    {
         /* Set WM_ICON_SIZE property indicating desired icon sizes */
         typedef struct {
             uint32_t min_width, min_height;
@@ -1152,11 +1164,46 @@ winMultiWindowXMsgProc(void *pArg)
      */
     intern_atom(pProcArg->conn, "WM_STATE");
 
+    /*
+      Enable Composite extension and redirect subwindows of the root window
+     */
+    if (pProcArg->pWMInfo->fCompositeWM) {
+        const char *extension_name = "Composite";
+        xcb_query_extension_cookie_t cookie;
+        xcb_query_extension_reply_t *reply;
+
+        cookie = xcb_query_extension(pProcArg->conn, strlen(extension_name), extension_name);
+        reply = xcb_query_extension_reply(pProcArg->conn, cookie, NULL);
+
+        if (reply && (reply->present)) {
+            xcb_composite_redirect_subwindows(pProcArg->conn,
+                                              root_window_id,
+                                              XCB_COMPOSITE_REDIRECT_AUTOMATIC);
+
+            /*
+              We use automatic updating of the root window for two
+              reasons:
+
+              1) redirected window contents are mirrored to the root
+              window so that the root window draws correctly when shown.
+
+              2) updating the root window causes damage against the
+              shadow framebuffer, which ultimately causes WM_PAINT to be
+              sent to the affected window(s) to cause the damage regions
+              to be redrawn.
+            */
+
+            ErrorF("Using Composite redirection\n");
+
+            free(reply);
+        }
+    }
+
     /* Loop until we explicitly break out */
     while (1) {
         xcb_generic_event_t *event;
         uint8_t type;
-        Bool send_event;
+        bool send_event;
 
         if (g_shutdown)
             break;
@@ -1233,7 +1280,7 @@ winMultiWindowXMsgProc(void *pArg)
                 if ((reply->root == reply_qt->parent) && !notify->override_redirect) {
                     xcb_reparent_notify_event_t event_send;
 
-                    event_send.response_type = ReparentNotify;
+                    event_send.response_type = XCB_REPARENT_NOTIFY;
                     event_send.event = notify->window;
                     event_send.window = notify->window;
                     event_send.parent = reply_qt->parent;
@@ -1345,41 +1392,37 @@ winMultiWindowXMsgProc(void *pArg)
  * the Window Manager thread.  Called from
  * winscrinit.c/winFinishScreenInitFB ().
  */
-
-Bool
-winInitWM(void **ppWMInfo,
-          pthread_t * ptWMProc,
-          pthread_t * ptXMsgProc,
-          pthread_mutex_t * ppmServerStarted,
-          int dwScreen, HWND hwndScreen)
+bool winInitWM(void **ppWMInfo,
+               pthread_t *ptWMProc,
+               pthread_t *ptXMsgProc,
+               pthread_mutex_t *ppmServerStarted,
+               int dwScreen,
+               HWND hwndScreen,
+               bool compositeWM)
 {
-    WMProcArgPtr pArg = malloc(sizeof(WMProcArgRec));
-    WMInfoPtr pWMInfo = malloc(sizeof(WMInfoRec));
-    XMsgProcArgPtr pXMsgArg = malloc(sizeof(XMsgProcArgRec));
+    WMProcArgPtr pArg = calloc(1, sizeof(WMProcArgRec));
+    WMInfoPtr pWMInfo = calloc(1, sizeof(WMInfoRec));
+    XMsgProcArgPtr pXMsgArg = calloc(1, sizeof(XMsgProcArgRec));
 
     /* Bail if the input parameters are bad */
     if (pArg == NULL || pWMInfo == NULL || pXMsgArg == NULL) {
-        ErrorF("winInitWM - malloc failed.\n");
+        ErrorF("winInitWM - calloc failed.\n");
         free(pArg);
         free(pWMInfo);
         free(pXMsgArg);
         return FALSE;
     }
 
-    /* Zero the allocated memory */
-    ZeroMemory(pArg, sizeof(WMProcArgRec));
-    ZeroMemory(pWMInfo, sizeof(WMInfoRec));
-    ZeroMemory(pXMsgArg, sizeof(XMsgProcArgRec));
-
     /* Set a return pointer to the Window Manager info structure */
     *ppWMInfo = pWMInfo;
+    pWMInfo->fCompositeWM = (!!compositeWM);
 
     /* Setup the argument structure for the thread function */
     pArg->dwScreen = dwScreen;
     pArg->pWMInfo = pWMInfo;
     pArg->ppmServerStarted = ppmServerStarted;
 
-    /* Intialize the message queue */
+    /* Initialize the message queue */
     if (!InitQueue(&pWMInfo->wmMsgQueue)) {
         ErrorF("winInitWM - InitQueue () failed.\n");
         return FALSE;
@@ -1403,7 +1446,7 @@ winInitWM(void **ppWMInfo,
         return FALSE;
     }
 
-#if CYGDEBUG || YES
+#if ENABLE_DEBUG || YES
     winDebug("winInitWM - Returning.\n");
 #endif
 
@@ -1421,6 +1464,8 @@ winInitMultiWindowWM(WMInfoPtr pWMInfo, WMProcArgPtr pProcArg)
     char pszDisplay[512];
     int iReturn;
     xcb_auth_info_t *auth_info;
+    xcb_screen_t *root_screen;
+    xcb_window_t root_window_id;
 
     winDebug("winInitMultiWindowWM - Hello\n");
 
@@ -1490,6 +1535,9 @@ winInitMultiWindowWM(WMInfoPtr pWMInfo, WMProcArgPtr pProcArg)
     pWMInfo->atmPrivMap = intern_atom(pWMInfo->conn, WINDOWSWM_NATIVE_HWND);
     pWMInfo->atmUtf8String = intern_atom(pWMInfo->conn, "UTF8_STRING");
     pWMInfo->atmNetWmName = intern_atom(pWMInfo->conn, "_NET_WM_NAME");
+    pWMInfo->atmCurrentDesktop = intern_atom(pWMInfo->conn, "_NET_CURRENT_DESKTOP");
+    pWMInfo->atmNumberDesktops = intern_atom(pWMInfo->conn, "_NET_NUMBER_OF_DESKTOPS");
+    pWMInfo->atmDesktopNames = intern_atom(pWMInfo->conn, "__NET_DESKTOP_NAMES");
 
     /* Initialization for the xcb_ewmh and EWMH atoms */
     {
@@ -1524,9 +1572,35 @@ winInitMultiWindowWM(WMInfoPtr pWMInfo, WMProcArgPtr pProcArg)
         }
     }
 
+    /* Get root window id */
+    root_screen = xcb_aux_get_screen(pWMInfo->conn, pProcArg->dwScreen);
+    root_window_id = root_screen->root;
+
+    /*
+      Set root window properties for describing multiple desktops to describe
+      the one desktop we have
+    */
+    {
+        int data;
+        const char buf[] = "Desktop";
+
+        data = 0;
+        xcb_change_property(pWMInfo->conn, XCB_PROP_MODE_REPLACE, root_window_id,
+                            pWMInfo->atmCurrentDesktop, XCB_ATOM_CARDINAL, 32,
+                            1, &data);
+        data = 1;
+        xcb_change_property(pWMInfo->conn, XCB_PROP_MODE_REPLACE, root_window_id,
+                            pWMInfo->atmNumberDesktops, XCB_ATOM_CARDINAL, 32,
+                            1, &data);
+
+        xcb_change_property(pWMInfo->conn, XCB_PROP_MODE_REPLACE, root_window_id,
+                            pWMInfo->atmDesktopNames, pWMInfo->atmUtf8String, 8,
+                            strlen(buf), (unsigned char *) buf);
+    }
+
     /*
       Set the root window cursor to left_ptr (this controls the cursor an
-      application gets over it's windows when it doesn't set one)
+      application gets over its windows when it doesn't set one)
     */
     {
 #define XC_left_ptr 68
@@ -1537,9 +1611,6 @@ winInitMultiWindowWM(WMInfoPtr pWMInfo, WMProcArgPtr pProcArg)
         uint32_t mask = XCB_CW_CURSOR;
         uint32_t value_list = cursor;
 
-        xcb_screen_t *root_screen = xcb_aux_get_screen(pWMInfo->conn, pProcArg->dwScreen);
-        xcb_window_t window = root_screen->root;
-
         static const uint16_t fgred = 0, fggreen = 0, fgblue = 0;
         static const uint16_t bgred = 0xFFFF, bggreen = 0xFFFF, bgblue = 0xFFFF;
 
@@ -1549,7 +1620,7 @@ winInitMultiWindowWM(WMInfoPtr pWMInfo, WMProcArgPtr pProcArg)
                                 shape, shape + 1,
                                 fgred, fggreen, fgblue, bgred, bggreen, bgblue);
 
-        xcb_change_window_attributes(pWMInfo->conn, window, mask, &value_list);
+        xcb_change_window_attributes(pWMInfo->conn, root_window_id, mask, &value_list);
 
         xcb_free_cursor(pWMInfo->conn, cursor);
         xcb_close_font(pWMInfo->conn, font);
@@ -1563,13 +1634,12 @@ winInitMultiWindowWM(WMInfoPtr pWMInfo, WMProcArgPtr pProcArg)
 void
 winSendMessageToWM(void *pWMInfo, winWMMessagePtr pMsg)
 {
-    WMMsgNodePtr pNode;
 
-#if CYGMULTIWINDOW_DEBUG
+#if ENABLE_DEBUG
     ErrorF("winSendMessageToWM %s\n", MessageName(pMsg));
 #endif
 
-    pNode = malloc(sizeof(WMMsgNodeRec));
+    WMMsgNodePtr pNode = calloc(1, sizeof(WMMsgNodeRec));
     if (pNode != NULL) {
         memcpy(&pNode->msg, pMsg, sizeof(winWMMessageRec));
         PushMessage(&((WMInfoPtr) pWMInfo)->wmMsgQueue, pNode);
@@ -1583,7 +1653,7 @@ winSendMessageToWM(void *pWMInfo, winWMMessagePtr pMsg)
 static Bool
 CheckAnotherWindowManager(xcb_connection_t *conn, DWORD dwScreen)
 {
-    Bool redirectError = FALSE;
+    bool redirectError = FALSE;
 
     /* Get root window id */
     xcb_screen_t *root_screen = xcb_aux_get_screen(conn, dwScreen);
@@ -1657,7 +1727,7 @@ winApplyHints(WMInfoPtr pWMInfo, xcb_window_t iWindow, HWND hWnd, HWND * zstyle)
     static xcb_atom_t hiddenState, fullscreenState, belowState, aboveState,
         skiptaskbarState;
     static xcb_atom_t splashType;
-    static int generation;
+    static x_server_generation_t generation;
 
     unsigned long hint = 0, maxmin = 0;
     unsigned long style, exStyle;
@@ -1803,11 +1873,11 @@ winApplyHints(WMInfoPtr pWMInfo, xcb_window_t iWindow, HWND hWnd, HWND * zstyle)
 #define APPLICATION_ID_FORMAT	"%s.xwin.%s"
 #define APPLICATION_ID_UNKNOWN "unknown"
         if (res_class) {
-            asprintf(&application_id, APPLICATION_ID_FORMAT, XVENDORNAME,
+            asprintf(&application_id, APPLICATION_ID_FORMAT, "XLibre",
                      res_class);
         }
         else {
-            asprintf(&application_id, APPLICATION_ID_FORMAT, XVENDORNAME,
+            asprintf(&application_id, APPLICATION_ID_FORMAT, "XLibre",
                      APPLICATION_ID_UNKNOWN);
         }
         winSetAppUserModelID(hWnd, application_id);

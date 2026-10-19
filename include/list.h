@@ -95,6 +95,11 @@
  *              xorg_list_del(&iterator->entry);
  * }
  *
+ * WARNING: entries MUST NOT be added to the list twice, otherwise iterating
+ *          will end up in infinite loop.
+ * WARNING: entries MUST NOT be added to multiple lists - use separate entry
+ *          nodes within the container struct, if it needs to be added to
+ *          several lists at the same time.
  */
 
 /**
@@ -126,6 +131,13 @@ xorg_list_init(struct xorg_list *list)
 }
 
 static inline void
+__xorg_list_autoinit(struct xorg_list *head)
+{
+    if ((!head->prev) && (!head->next))
+        xorg_list_init(head);
+}
+
+static inline void
 __xorg_list_add(struct xorg_list *entry,
                 struct xorg_list *prev, struct xorg_list *next)
 {
@@ -153,6 +165,7 @@ __xorg_list_add(struct xorg_list *entry,
 static inline void
 xorg_list_add(struct xorg_list *entry, struct xorg_list *head)
 {
+    __xorg_list_autoinit(head);
     __xorg_list_add(entry, head, head->next);
 }
 
@@ -168,12 +181,13 @@ xorg_list_add(struct xorg_list *entry, struct xorg_list *head)
  * struct foo *newfoo = malloc(...);
  * xorg_list_append(&newfoo->entry, &bar->list_of_foos);
  *
- * @param entry The new element to prepend to the list.
+ * @param entry The new element to append to the list.
  * @param head The existing list.
  */
 static inline void
 xorg_list_append(struct xorg_list *entry, struct xorg_list *head)
 {
+    __xorg_list_autoinit(head);
     __xorg_list_add(entry, head->prev, head);
 }
 
@@ -201,6 +215,7 @@ __xorg_list_del(struct xorg_list *prev, struct xorg_list *next)
 static inline void
 xorg_list_del(struct xorg_list *entry)
 {
+    __xorg_list_autoinit(entry);
     __xorg_list_del(entry->prev, entry->next);
     xorg_list_init(entry);
 }
@@ -217,7 +232,62 @@ xorg_list_del(struct xorg_list *entry)
 static inline int
 xorg_list_is_empty(struct xorg_list *head)
 {
-    return head->next == head;
+    return ((head->next == NULL) || (head->next == head));
+}
+
+/**
+ * @brief check whether element already is in list
+ *
+ * @param entry The element to check for
+ * @param head The existing list.
+ * @return zero when entry isn't present in list, otherwise non-zero
+ */
+static inline int
+xorg_list_present(struct xorg_list *entry, struct xorg_list *head)
+{
+    for (struct xorg_list *l=head->next; l && (l != head); l=l->next) {
+        if (l == entry)
+            return 1;
+    }
+    return 0;
+}
+
+/**
+ * @brief prepend a new element to the end of the list if not existing yet
+ *
+ * Same as xorg_list_add(), but protecting against duplicate insertion.
+ *
+ * @param entry The new element to append to the list.
+ * @param head The existing list.
+ * @return zero if element already in list, otherwise non-zero
+ */
+static inline int
+xorg_list_add_ndup(struct xorg_list *entry, struct xorg_list *head)
+{
+    if (xorg_list_present(entry, head))
+        return 0;
+
+    xorg_list_add(entry, head);
+    return 1;
+}
+
+/**
+ * @brief append a new element to the end of the list if not existing yet
+ *
+ * Same as xorg_list_append(), but protecting against duplicate insertion.
+ *
+ * @param entry The new element to append to the list.
+ * @param head The existing list.
+ * @return zero if element already in list, otherwise non-zero
+ */
+static inline int
+xorg_list_append_ndup(struct xorg_list *entry, struct xorg_list *head)
+{
+    if (xorg_list_present(entry, head))
+        return 0;
+
+    xorg_list_append(entry, head);
+    return 1;
 }
 
 /**
@@ -242,7 +312,7 @@ xorg_list_is_empty(struct xorg_list *head)
  * Alias of container_of
  */
 #define xorg_list_entry(ptr, type, member) \
-    container_of(ptr, type, member)
+    container_of((ptr), type, member)
 
 /**
  * Retrieve the first list entry for the given list pointer.
@@ -274,19 +344,8 @@ xorg_list_is_empty(struct xorg_list *head)
 #define xorg_list_last_entry(ptr, type, member) \
     xorg_list_entry((ptr)->prev, type, member)
 
-#ifdef HAVE_TYPEOF
 #define __container_of(ptr, sample, member)			\
-    container_of(ptr, typeof(*sample), member)
-#else
-/* This implementation of __container_of has undefined behavior according
- * to the C standard, but it works in many cases.  If your compiler doesn't
- * support typeof() and fails with this implementation, please try a newer
- * compiler.
- */
-#define __container_of(ptr, sample, member)                            \
-    (void *)((char *)(ptr)                                             \
-            - ((char *)&(sample)->member - (char *)(sample)))
-#endif
+    container_of((ptr), typeof(*(sample)), member)
 
 /**
  * Loop through the list given by head and set pos to struct in the list.
@@ -306,10 +365,10 @@ xorg_list_is_empty(struct xorg_list *head)
  *
  */
 #define xorg_list_for_each_entry(pos, head, member)			\
-    for (pos = NULL,                                                    \
-         pos = __container_of((head)->next, pos, member);		\
-	 &pos->member != (head);					\
-	 pos = __container_of(pos->member.next, pos, member))
+    for ((pos) = NULL,                                                    \
+         (pos) = __container_of((head)->next, (pos), member);		\
+	 (((head)->next != NULL) && &(pos)->member != (head));		\
+	 (pos) = __container_of((pos)->member.next, (pos), member))
 
 /**
  * Loop through the list, keeping a backup pointer to the element. This
@@ -319,11 +378,11 @@ xorg_list_is_empty(struct xorg_list *head)
  * See xorg_list_for_each_entry for more details.
  */
 #define xorg_list_for_each_entry_safe(pos, tmp, head, member)		\
-    for (pos = NULL,                                                    \
-         pos = __container_of((head)->next, pos, member),		\
-	 tmp = __container_of(pos->member.next, pos, member);		\
-	 &pos->member != (head);					\
-	 pos = tmp, tmp = __container_of(pos->member.next, tmp, member))
+    for ((pos) = NULL,                                                    \
+         (pos) = __container_of((head)->next, (pos), member),		\
+	 (tmp) = __container_of((head)->next ? (pos)->member.next : NULL, (pos), member); \
+	 (((head)->next != NULL) && (&(pos)->member != (head)));		\
+	 (pos) = (tmp), (tmp) = __container_of((pos)->member.next, (tmp), member))
 
 /* NULL-Terminated List Interface
  *
@@ -384,7 +443,7 @@ xorg_list_is_empty(struct xorg_list *head)
  * @param member Member name of the field pointing to next struct.
  */
 #define nt_list_for_each_entry(_entry, _list, _member)			\
-	for (_entry = _list; _entry; _entry = (_entry)->_member)
+	for ((_entry) = (_list); (_entry); (_entry) = (_entry)->_member)
 
 /**
  * Iterate through each element in the list, keeping a backup pointer to the
@@ -399,9 +458,9 @@ xorg_list_is_empty(struct xorg_list *head)
  * @param member Member name of the field pointing to next struct.
  */
 #define nt_list_for_each_entry_safe(_entry, _tmp, _list, _member)	\
-	for (_entry = _list, _tmp = (_entry) ? (_entry)->_member : NULL;\
-		_entry;							\
-		_entry = _tmp, _tmp = (_tmp) ? (_tmp)->_member: NULL)
+	for ((_entry) = (_list), (_tmp) = (_entry) ? (_entry)->_member : NULL;\
+		(_entry);							\
+		(_entry) = (_tmp), (_tmp) = (_tmp) ? (_tmp)->_member: NULL)
 
 /**
  * Append the element to the end of the list. This macro may be used to
@@ -423,9 +482,9 @@ xorg_list_is_empty(struct xorg_list *head)
  */
 #define nt_list_append(_entry, _list, _type, _member)		        \
     do {								\
-	_type *__iterator = _list;					\
+	_type *__iterator = (_list);					\
 	while (__iterator->_member) { __iterator = __iterator->_member;}\
-	__iterator->_member = _entry;					\
+	__iterator->_member = (_entry);					\
     } while (0)
 
 /**
@@ -447,8 +506,8 @@ xorg_list_is_empty(struct xorg_list *head)
  */
 #define nt_list_insert(_entry, _list, _type, _member)			\
     do {								\
-	nt_list_append((_list)->_member, _entry, _type, _member);	\
-	(_list)->_member = _entry;					\
+	nt_list_append((_list)->_member, (_entry), _type, _member);	\
+	(_list)->_member = (_entry);					\
     } while (0)
 
 /**
@@ -468,12 +527,12 @@ xorg_list_is_empty(struct xorg_list *head)
  */
 #define nt_list_del(_entry, _list, _type, _member)		\
 	do {							\
-		_type *__e = _entry;				\
-		if (__e == NULL || _list == NULL) break;        \
+		_type *__e = (_entry);				\
+		if (__e == NULL || (_list) == NULL) break;        \
 		if ((_list) == __e) {				\
-		    _list = __e->_member;			\
+		    (_list) = __e->_member;			\
 		} else {					\
-		    _type *__prev = _list;			\
+		    _type *__prev = (_list);			\
 		    while (__prev->_member && __prev->_member != __e)	\
 			__prev = nt_list_next(__prev, _member);	\
 		    if (__prev->_member)			\

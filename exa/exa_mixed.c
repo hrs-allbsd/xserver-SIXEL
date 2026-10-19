@@ -22,10 +22,9 @@
  *
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <string.h>
 
 #include "exa_priv.h"
@@ -34,7 +33,7 @@
 /* This file holds the driver allocated pixmaps + better initial placement code.
  */
 
-static _X_INLINE void *
+static inline void *
 ExaGetPixmapAddress(PixmapPtr p)
 {
     ExaPixmapPriv(p);
@@ -72,7 +71,7 @@ exaCreatePixmap_mixed(ScreenPtr pScreen, int w, int h, int depth,
     bpp = pPixmap->drawable.bitsPerPixel;
 
     paddedWidth = ((w * bpp + FB_MASK) >> FB_SHIFT) * sizeof(FbBits);
-    if (paddedWidth / 4 > 32767 || h > 32767)
+    if (paddedWidth / 4 > 32767)
         return NullPixmap;
 
     /* We will allocate the system pixmap later if needed. */
@@ -98,7 +97,7 @@ exaCreatePixmap_mixed(ScreenPtr pScreen, int w, int h, int depth,
         pExaPixmap->use_gpu_copy = FALSE;
 
         if (w == 1 && h == 1) {
-            pExaPixmap->sys_ptr = malloc(paddedWidth);
+            pExaPixmap->sys_ptr = calloc(1, paddedWidth);
 
             /* Set up damage tracking */
             pExaPixmap->pDamage = DamageCreate(exaDamageReport_mixed, NULL,
@@ -130,7 +129,7 @@ exaModifyPixmapHeader_mixed(PixmapPtr pPixmap, int width, int height, int depth,
     ScreenPtr pScreen;
     ExaScreenPrivPtr pExaScr;
     ExaPixmapPrivPtr pExaPixmap;
-    Bool ret, has_gpu_copy;
+    bool ret, has_gpu_copy;
 
     if (!pPixmap)
         return FALSE;
@@ -241,38 +240,28 @@ exaModifyPixmapHeader_mixed(PixmapPtr pPixmap, int width, int height, int depth,
     return ret;
 }
 
-Bool
-exaDestroyPixmap_mixed(PixmapPtr pPixmap)
+void exaPixmapDestroy_mixed(CallbackListPtr *pcbl, ScreenPtr pScreen, PixmapPtr pPixmap)
 {
-    ScreenPtr pScreen = pPixmap->drawable.pScreen;
-
     ExaScreenPriv(pScreen);
-    Bool ret;
 
-    if (pPixmap->refcnt == 1) {
-        ExaPixmapPriv(pPixmap);
+    ExaPixmapPriv(pPixmap);
+    if (!pExaPixmap) // we're called on an error path
+        return;
 
-        exaDestroyPixmap(pPixmap);
+    exaDestroyPixmap(pPixmap);
 
-        if (pExaScr->deferred_mixed_pixmap == pPixmap)
-            pExaScr->deferred_mixed_pixmap = NULL;
+    if (pExaScr->deferred_mixed_pixmap == pPixmap)
+        pExaScr->deferred_mixed_pixmap = NULL;
 
-        if (pExaPixmap->driverPriv)
-            pExaScr->info->DestroyPixmap(pScreen, pExaPixmap->driverPriv);
-        pExaPixmap->driverPriv = NULL;
+    if (pExaPixmap->driverPriv)
+        pExaScr->info->DestroyPixmap(pScreen, pExaPixmap->driverPriv);
+    pExaPixmap->driverPriv = NULL;
 
-        if (pExaPixmap->pDamage) {
-            free(pExaPixmap->sys_ptr);
-            pExaPixmap->sys_ptr = NULL;
-            pExaPixmap->pDamage = NULL;
-        }
+    if (pExaPixmap->pDamage) {
+        free(pExaPixmap->sys_ptr);
+        pExaPixmap->sys_ptr = NULL;
+        pExaPixmap->pDamage = NULL;
     }
-
-    swap(pExaScr, pScreen, DestroyPixmap);
-    ret = pScreen->DestroyPixmap(pPixmap);
-    swap(pExaScr, pScreen, DestroyPixmap);
-
-    return ret;
 }
 
 Bool
@@ -283,7 +272,7 @@ exaPixmapHasGpuCopy_mixed(PixmapPtr pPixmap)
     ExaScreenPriv(pScreen);
     ExaPixmapPriv(pPixmap);
     void *saved_ptr;
-    Bool ret;
+    bool ret;
 
     if (!pExaPixmap->driverPriv)
         return FALSE;
@@ -297,16 +286,16 @@ exaPixmapHasGpuCopy_mixed(PixmapPtr pPixmap)
 }
 
 Bool
-exaSharePixmapBacking_mixed(PixmapPtr pPixmap, ScreenPtr slave, void **handle_p)
+exaSharePixmapBacking_mixed(PixmapPtr pPixmap, ScreenPtr secondary, void **handle_p)
 {
     ScreenPtr pScreen = pPixmap->drawable.pScreen;
     ExaScreenPriv(pScreen);
-    Bool ret = FALSE;
+    bool ret = FALSE;
 
     exaMoveInPixmap(pPixmap);
     /* get the driver to give us a handle */
     if (pExaScr->info->SharePixmapBacking)
-        ret = pExaScr->info->SharePixmapBacking(pPixmap, slave, handle_p);
+        ret = pExaScr->info->SharePixmapBacking(pPixmap, secondary, handle_p);
 
     return ret;
 }
@@ -316,7 +305,7 @@ exaSetSharedPixmapBacking_mixed(PixmapPtr pPixmap, void *handle)
 {
     ScreenPtr pScreen = pPixmap->drawable.pScreen;
     ExaScreenPriv(pScreen);
-    Bool ret = FALSE;
+    bool ret = FALSE;
 
     if (pExaScr->info->SetSharedPixmapBacking)
         ret = pExaScr->info->SetSharedPixmapBacking(pPixmap, handle);
@@ -326,5 +315,3 @@ exaSetSharedPixmapBacking_mixed(PixmapPtr pPixmap, void *handle)
 
     return ret;
 }
-
-

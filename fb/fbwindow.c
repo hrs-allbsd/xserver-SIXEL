@@ -20,13 +20,11 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
 #include <stdlib.h>
 
-#include "fb.h"
+#include "fb/fb_priv.h"
 
 Bool
 fbCreateWindow(WindowPtr pWin)
@@ -100,7 +98,7 @@ fbCopyWindowProc(DrawablePtr pSrcDrawable,
 }
 
 void
-fbCopyWindow(WindowPtr pWin, DDXPointRec ptOldOrg, RegionPtr prgnSrc)
+fbCopyWindow(WindowPtr pWin, xPoint ptOldOrg, RegionPtr prgnSrc)
 {
     RegionRec rgnDst;
     int dx, dy;
@@ -116,10 +114,8 @@ fbCopyWindow(WindowPtr pWin, DDXPointRec ptOldOrg, RegionPtr prgnSrc)
 
     RegionIntersect(&rgnDst, &pWin->borderClip, prgnSrc);
 
-#ifdef COMPOSITE
     if (pPixmap->screen_x || pPixmap->screen_y)
         RegionTranslate(&rgnDst, -pPixmap->screen_x, -pPixmap->screen_y);
-#endif
 
     miCopyRegion(pDrawable, pDrawable,
                  0, &rgnDst, dx, dy, fbCopyWindowProc, 0, 0);

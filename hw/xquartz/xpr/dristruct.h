@@ -35,7 +35,7 @@
 #ifndef DRI_STRUCT_H
 #define DRI_STRUCT_H
 
-#include "dri.h"
+#include "xpr_dri.h"
 #include "x-list.h"
 
 #define DRI_MAX_DRAWABLES 256
@@ -69,7 +69,7 @@ typedef struct _DRIDrawablePrivRec {
 #define DRI_SCREEN_PRIV_FROM_INDEX(screenIndex) ((DRIScreenPrivPtr) \
                                                  dixLookupPrivate(&screenInfo \
                                                                   .screens[ \
-                                                                      screenIndex \
+                                                                      (screenIndex) \
                                                                   ]-> \
                                                                   devPrivates, \
                                                                   DRIScreenPrivKey))

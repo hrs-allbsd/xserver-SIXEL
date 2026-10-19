@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2014, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, Oracle and/or its affiliates.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -21,9 +21,12 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
+/* Test relies on assert() */
+#undef NDEBUG
+
 #include <dix-config.h>
-#endif
+
+#include <assert.h>
 
 /*
  * Protocol testing for ChangeDeviceControl request.
@@ -32,25 +35,29 @@
 #include <X11/X.h>
 #include <X11/Xproto.h>
 #include <X11/extensions/XIproto.h>
+
+#include "Xext/xinput/handlers.h"
+
 #include "inputstr.h"
-#include "chgdctl.h"
 
 #include "protocol-common.h"
+
+DECLARE_WRAP_FUNCTION(dixWriteToClient, void, ClientPtr client, int len, void *data);
 
 extern ClientRec client_window;
 static ClientRec client_request;
 
 static void
-reply_ChangeDeviceControl(ClientPtr client, int len, char *data, void *userdata)
+reply_ChangeDeviceControl(ClientPtr client, int len, void *data)
 {
-    xChangeDeviceControlReply *rep = (xChangeDeviceControlReply *) data;
+    xChangeDeviceControlReply *reply = (xChangeDeviceControlReply *) data;
 
     if (client->swapped) {
-        swapl(&rep->length);
-        swaps(&rep->sequenceNumber);
+        swapl(&reply->length);
+        swaps(&reply->sequenceNumber);
     }
 
-    reply_check_defaults(rep, len, ChangeDeviceControl);
+    reply_check_defaults(reply, len, ChangeDeviceControl);
 
     /* XXX: check status code in reply */
 }
@@ -73,7 +80,7 @@ request_ChangeDeviceControl(ClientPtr client, xChangeDeviceControlReq * req,
     swaps(&ctl->length);
     swaps(&ctl->control);
     /* XXX: swap other contents of ctl, depending on type */
-    rc = SProcXChangeDeviceControl(&client_request);
+    rc = ProcXChangeDeviceControl(&client_request);
     assert(rc == error);
 }
 
@@ -82,27 +89,29 @@ static unsigned char *data[4096];       /* the request buffer */
 static void
 test_ChangeDeviceControl(void)
 {
+    init_simple();
+
     xChangeDeviceControlReq *request = (xChangeDeviceControlReq *) data;
     xDeviceCtl *control = (xDeviceCtl *) (&request[1]);
 
     request_init(request, ChangeDeviceControl);
 
-    reply_handler = reply_ChangeDeviceControl;
+    wrapped_dixWriteToClient  = reply_ChangeDeviceControl;
 
     client_request = init_client(request->length, request);
 
-    printf("Testing invalid lengths:\n");
-    printf(" -- no control struct\n");
+    dbg("Testing invalid lengths:\n");
+    dbg(" -- no control struct\n");
     request_ChangeDeviceControl(&client_request, request, control, BadLength);
 
-    printf(" -- xDeviceResolutionCtl\n");
+    dbg(" -- xDeviceResolutionCtl\n");
     request_init(request, ChangeDeviceControl);
     request->control = DEVICE_RESOLUTION;
     control->length = (sizeof(xDeviceResolutionCtl) >> 2);
     request->length += control->length - 2;
     request_ChangeDeviceControl(&client_request, request, control, BadLength);
 
-    printf(" -- xDeviceEnableCtl\n");
+    dbg(" -- xDeviceEnableCtl\n");
     request_init(request, ChangeDeviceControl);
     request->control = DEVICE_ENABLE;
     control->length = (sizeof(xDeviceEnableCtl) >> 2);
@@ -112,12 +121,12 @@ test_ChangeDeviceControl(void)
     /* XXX: Test functionality! */
 }
 
-int
+const testfunc_t*
 protocol_xchangedevicecontrol_test(void)
 {
-    init_simple();
-
-    test_ChangeDeviceControl();
-
-    return 0;
+    static const testfunc_t testfuncs[] = {
+        test_ChangeDeviceControl,
+        NULL,
+    };
+    return testfuncs;
 }

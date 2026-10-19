@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2011, Oracle and/or its affiliates.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -26,9 +26,10 @@
  * provided in os/ subdirectory for some platforms.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
+/* Test relies on assert() */
+#undef NDEBUG
+
 #include <dix-config.h>
-#endif
 
 #include <assert.h>
 #include "os.h"
@@ -51,6 +52,9 @@ strndup_checks(void)
     char *firsthalf = strndup(sample, 8);
     char *secondhalf = strndup(sample + 8, 8);
 
+    assert(firsthalf != NULL);
+    assert(secondhalf != NULL);
+
     assert(strcmp(firsthalf, "01234567") == 0);
     assert(strcmp(secondhalf, "89abcdef") == 0);
 
@@ -58,14 +62,18 @@ strndup_checks(void)
     free(secondhalf);
 
     allofit = strndup(sample, 20);
+    assert(allofit != NULL);
     assert(strcmp(allofit, sample) == 0);
     free(allofit);
 }
 
-int
+const testfunc_t*
 string_test(void)
 {
-    strndup_checks();
+    static const testfunc_t testfuncs[] = {
+        strndup_checks,
+        NULL,
+    };
 
-    return 0;
+    return testfuncs;
 }

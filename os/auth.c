@@ -31,63 +31,59 @@ from The Open Group.
  * Author:  Keith Packard, MIT X Consortium
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
-#include   <X11/X.h>
-#include   <X11/Xauth.h>
-#include   "misc.h"
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <errno.h>
+#include <X11/X.h>
+#include <X11/Xauth.h>
+
+#include "include/misc.h"
+#include "os/auth.h"
+
 #include   "osdep.h"
 #include   "dixstruct.h"
-#include   <sys/types.h>
-#include   <sys/stat.h>
-#include   <errno.h>
 #ifdef WIN32
 #include    <X11/Xw32defs.h>
 #endif
-#ifdef HAVE_LIBBSD
-#include   <bsd/stdlib.h>       /* for arc4random_buf() */
+
+#ifdef XDMCP
+#include "xdmcp.h"
 #endif
 
+#include "xdmauth.h"
+#include "mitauth.h"
+
 struct protocol {
-    unsigned short name_length;
     const char *name;
     AuthAddCFunc Add;           /* new authorization data */
     AuthCheckFunc Check;        /* verify client authorization data */
     AuthRstCFunc Reset;         /* delete all authorization data entries */
     AuthFromIDFunc FromID;      /* convert ID to cookie */
     AuthRemCFunc Remove;        /* remove a specific cookie */
-#ifdef XCSECURITY
     AuthGenCFunc Generate;
-#endif
 };
 
 static struct protocol protocols[] = {
-    {(unsigned short) 18, "MIT-MAGIC-COOKIE-1",
-     MitAddCookie, MitCheckCookie, MitResetCookie,
-     MitFromID, MitRemoveCookie,
-#ifdef XCSECURITY
-     MitGenerateCookie
-#endif
-     },
+    {
+        .name = XAUTH_PROTO_MIT,
+        .Add = MitAddCookie,
+        .Check = MitCheckCookie,
+        .Reset = MitResetCookie,
+        .FromID = MitFromID,
+        .Remove = MitRemoveCookie,
+        .Generate = MitGenerateCookie
+    },
 #ifdef HASXDMAUTH
-    {(unsigned short) 19, "XDM-AUTHORIZATION-1",
-     XdmAddCookie, XdmCheckCookie, XdmResetCookie,
-     XdmFromID, XdmRemoveCookie,
-#ifdef XCSECURITY
-     NULL
-#endif
-     },
-#endif
-#ifdef SECURE_RPC
-    {(unsigned short) 9, "SUN-DES-1",
-     SecureRPCAdd, SecureRPCCheck, SecureRPCReset,
-     SecureRPCFromID, SecureRPCRemove,
-#ifdef XCSECURITY
-     NULL
-#endif
-     },
+    {
+        .name = XAUTH_PROTO_XDM,
+        .Add = XdmAddCookie,
+        .Check = XdmCheckCookie,
+        .Reset = XdmResetCookie,
+        .FromID = XdmFromID,
+        .Remove = XdmRemoveCookie,
+    },
 #endif
 };
 
@@ -132,12 +128,11 @@ LoadAuthorization(void)
 
     while ((auth = XauReadAuth(f)) != 0) {
         for (i = 0; i < NUM_AUTHORIZATION; i++) {
-            if (protocols[i].name_length == auth->name_length &&
+            if (strlen(protocols[i].name) == auth->name_length &&
                 memcmp(protocols[i].name, auth->name,
                        (int) auth->name_length) == 0 && protocols[i].Add) {
-                ++count;
-                (*protocols[i].Add) (auth->data_length, auth->data,
-                                     FakeClientID(0));
+                if (protocols[i].Add(auth->data_length, auth->data))
+                    count++;
             }
         }
         XauDisposeAuth(auth);
@@ -158,8 +153,7 @@ RegisterAuthorizations(void)
     int i;
 
     for (i = 0; i < NUM_AUTHORIZATION; i++)
-        XdmcpRegisterAuthorization(protocols[i].name,
-                                   (int) protocols[i].name_length);
+        XdmcpRegisterAuthorization(protocols[i].name);
 }
 #endif
 
@@ -210,16 +204,16 @@ CheckAuthorization(unsigned int name_length,
     }
     if (name_length) {
         for (i = 0; i < NUM_AUTHORIZATION; i++) {
-            if (protocols[i].name_length == name_length &&
+            if (strlen(protocols[i].name) == name_length &&
                 memcmp(protocols[i].name, name, (int) name_length) == 0) {
                 return (*protocols[i].Check) (data_length, data, client,
                                               reason);
             }
-            *reason = "Protocol not supported by server\n";
+            *reason = "Authorization protocol not supported by server\n";
         }
     }
     else
-        *reason = "No protocol specified\n";
+        *reason = "Authorization required, but no authorization protocol specified\n";
     return (XID) ~0L;
 }
 
@@ -244,7 +238,7 @@ AuthorizationFromID(XID id,
     for (i = 0; i < NUM_AUTHORIZATION; i++) {
         if (protocols[i].FromID &&
             (*protocols[i].FromID) (id, data_lenp, datap)) {
-            *name_lenp = protocols[i].name_length;
+            *name_lenp = strlen(protocols[i].name);
             *namep = protocols[i].name;
             return 1;
         }
@@ -260,7 +254,7 @@ RemoveAuthorization(unsigned short name_length,
     int i;
 
     for (i = 0; i < NUM_AUTHORIZATION; i++) {
-        if (protocols[i].name_length == name_length &&
+        if (strlen(protocols[i].name) == name_length &&
             memcmp(protocols[i].name, name, (int) name_length) == 0 &&
             protocols[i].Remove) {
             return (*protocols[i].Remove) (data_length, data);
@@ -276,16 +270,14 @@ AddAuthorization(unsigned name_length, const char *name,
     int i;
 
     for (i = 0; i < NUM_AUTHORIZATION; i++) {
-        if (protocols[i].name_length == name_length &&
+        if (strlen(protocols[i].name) == name_length &&
             memcmp(protocols[i].name, name, (int) name_length) == 0 &&
             protocols[i].Add) {
-            return (*protocols[i].Add) (data_length, data, FakeClientID(0));
+            return protocols[i].Add(data_length, data);
         }
     }
     return 0;
 }
-
-#ifdef XCSECURITY
 
 XID
 GenerateAuthorization(unsigned name_length,
@@ -297,29 +289,12 @@ GenerateAuthorization(unsigned name_length,
     int i;
 
     for (i = 0; i < NUM_AUTHORIZATION; i++) {
-        if (protocols[i].name_length == name_length &&
+        if (strlen(protocols[i].name) == name_length &&
             memcmp(protocols[i].name, name, (int) name_length) == 0 &&
             protocols[i].Generate) {
-            return (*protocols[i].Generate) (data_length, data,
-                                             FakeClientID(0),
-                                             data_length_return, data_return);
+            return protocols[i].Generate(data_length, data,
+                                         data_length_return, data_return);
         }
     }
-    return -1;
-}
-
-#endif                          /* XCSECURITY */
-
-void
-GenerateRandomData(int len, char *buf)
-{
-#ifdef HAVE_ARC4RANDOM_BUF
-    arc4random_buf(buf, len);
-#else
-    int fd;
-
-    fd = open("/dev/urandom", O_RDONLY);
-    read(fd, buf, len);
-    close(fd);
-#endif
+    return 0;
 }

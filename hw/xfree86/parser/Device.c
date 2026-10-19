@@ -51,10 +51,7 @@
  * the sale, use or other dealings in this Software without prior written
  * authorization from the copyright holder(s) and author(s).
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
 #include "xf86Parser.h"
 #include "xf86tokens.h"
@@ -75,7 +72,7 @@ static const xf86ConfigSymTabRec DeviceTab[] = {
     {VIDEORAM, "videoram"},
     {BIOSBASE, "biosbase"},
     {MEMBASE, "membase"},
-    {IOBASE, "iobase"},
+    {XF86_TOKEN_IOBASE, "iobase"},
     {CLOCKCHIP, "clockchip"},
     {CHIPID, "chipid"},
     {CHIPREV, "chiprev"},
@@ -106,9 +103,11 @@ xf86parseDeviceSection(void)
         switch (token) {
         case COMMENT:
             ptr->dev_comment = xf86addComment(ptr->dev_comment, xf86_lex_val.str);
+            free(xf86_lex_val.str);
+            xf86_lex_val.str = NULL;
             break;
         case IDENTIFIER:
-            if (xf86getSubToken(&(ptr->dev_comment)) != STRING)
+            if (xf86getSubToken(&(ptr->dev_comment)) != XF86_TOKEN_STRING)
                 Error(QUOTE_MSG, "Identifier");
             if (has_ident == TRUE)
                 Error(MULTIPLE_MSG, "Identifier");
@@ -116,32 +115,32 @@ xf86parseDeviceSection(void)
             has_ident = TRUE;
             break;
         case VENDOR:
-            if (xf86getSubToken(&(ptr->dev_comment)) != STRING)
+            if (xf86getSubToken(&(ptr->dev_comment)) != XF86_TOKEN_STRING)
                 Error(QUOTE_MSG, "Vendor");
             ptr->dev_vendor = xf86_lex_val.str;
             break;
         case BOARD:
-            if (xf86getSubToken(&(ptr->dev_comment)) != STRING)
+            if (xf86getSubToken(&(ptr->dev_comment)) != XF86_TOKEN_STRING)
                 Error(QUOTE_MSG, "Board");
             ptr->dev_board = xf86_lex_val.str;
             break;
         case CHIPSET:
-            if (xf86getSubToken(&(ptr->dev_comment)) != STRING)
+            if (xf86getSubToken(&(ptr->dev_comment)) != XF86_TOKEN_STRING)
                 Error(QUOTE_MSG, "Chipset");
             ptr->dev_chipset = xf86_lex_val.str;
             break;
         case CARD:
-            if (xf86getSubToken(&(ptr->dev_comment)) != STRING)
+            if (xf86getSubToken(&(ptr->dev_comment)) != XF86_TOKEN_STRING)
                 Error(QUOTE_MSG, "Card");
             ptr->dev_card = xf86_lex_val.str;
             break;
         case DRIVER:
-            if (xf86getSubToken(&(ptr->dev_comment)) != STRING)
+            if (xf86getSubToken(&(ptr->dev_comment)) != XF86_TOKEN_STRING)
                 Error(QUOTE_MSG, "Driver");
             ptr->dev_driver = xf86_lex_val.str;
             break;
         case RAMDAC:
-            if (xf86getSubToken(&(ptr->dev_comment)) != STRING)
+            if (xf86getSubToken(&(ptr->dev_comment)) != XF86_TOKEN_STRING)
                 Error(QUOTE_MSG, "Ramdac");
             ptr->dev_ramdac = xf86_lex_val.str;
             break;
@@ -179,13 +178,13 @@ xf86parseDeviceSection(void)
                 Error(NUMBER_MSG, "MemBase");
             ptr->dev_mem_base = xf86_lex_val.num;
             break;
-        case IOBASE:
+        case XF86_TOKEN_IOBASE:
             if (xf86getSubToken(&(ptr->dev_comment)) != NUMBER)
                 Error(NUMBER_MSG, "IOBase");
             ptr->dev_io_base = xf86_lex_val.num;
             break;
         case CLOCKCHIP:
-            if (xf86getSubToken(&(ptr->dev_comment)) != STRING)
+            if (xf86getSubToken(&(ptr->dev_comment)) != XF86_TOKEN_STRING)
                 Error(QUOTE_MSG, "ClockChip");
             ptr->dev_clockchip = xf86_lex_val.str;
             break;
@@ -207,11 +206,13 @@ xf86parseDeviceSection(void)
                 ptr->dev_clock[i] = (int) (xf86_lex_val.realnum * 1000.0 + 0.5);
                 token = xf86getSubToken(&(ptr->dev_comment));
             }
+            if (token == NUMBER && i >= CONF_MAXCLOCKS)
+                Error(CLOCKS_TOO_MANY, CONF_MAXCLOCKS);
             ptr->dev_clocks = i;
             xf86unGetToken(token);
             break;
         case MATCHSEAT:
-            if (xf86getSubToken(&(ptr->dev_comment)) != STRING)
+            if (xf86getSubToken(&(ptr->dev_comment)) != XF86_TOKEN_STRING)
                 Error(QUOTE_MSG, "MatchSeat");
             ptr->match_seat = xf86_lex_val.str;
             break;
@@ -219,7 +220,7 @@ xf86parseDeviceSection(void)
             ptr->dev_option_lst = xf86parseOption(ptr->dev_option_lst);
             break;
         case BUSID:
-            if (xf86getSubToken(&(ptr->dev_comment)) != STRING)
+            if (xf86getSubToken(&(ptr->dev_comment)) != XF86_TOKEN_STRING)
                 Error(QUOTE_MSG, "BusID");
             ptr->dev_busid = xf86_lex_val.str;
             break;

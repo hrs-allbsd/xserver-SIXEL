@@ -28,11 +28,15 @@
  * Authors:	Harold L Hunt II
  *		Kensuke Matsuzaki
  */
-
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
+
+#include <stdbool.h>
+
+#include "dix/window_priv.h"
+#include "mi/mi_priv.h"
+
 #include "win.h"
+
 
 /*
  * Prototypes for local functions
@@ -55,19 +59,15 @@ static
 Bool
 winCreateWindowRootless(WindowPtr pWin)
 {
-    Bool fResult = FALSE;
-    ScreenPtr pScreen = pWin->drawable.pScreen;
+    bool fResult = FALSE;
 
     winWindowPriv(pWin);
-    winScreenPriv(pScreen);
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
     winTrace("winCreateWindowRootless (%p)\n", pWin);
 #endif
 
-    WIN_UNWRAP(CreateWindow);
-    fResult = (*pScreen->CreateWindow) (pWin);
-    WIN_WRAP(CreateWindow, winCreateWindowRootless);
+    fResult = fbCreateWindow(pWin);
 
     pWinPriv->hRgn = NULL;
 
@@ -80,19 +80,13 @@ winCreateWindowRootless(WindowPtr pWin)
 Bool
 winDestroyWindowRootless(WindowPtr pWin)
 {
-    Bool fResult = FALSE;
-    ScreenPtr pScreen = pWin->drawable.pScreen;
-
     winWindowPriv(pWin);
-    winScreenPriv(pScreen);
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
     winTrace("winDestroyWindowRootless (%p)\n", pWin);
 #endif
 
-    WIN_UNWRAP(DestroyWindow);
-    fResult = (*pScreen->DestroyWindow) (pWin);
-    WIN_WRAP(DestroyWindow, winDestroyWindowRootless);
+    Bool fResult = fbDestroyWindow(pWin);
 
     if (pWinPriv->hRgn != NULL) {
         DeleteObject(pWinPriv->hRgn);
@@ -110,18 +104,11 @@ winDestroyWindowRootless(WindowPtr pWin)
 Bool
 winPositionWindowRootless(WindowPtr pWin, int x, int y)
 {
-    Bool fResult = FALSE;
-    ScreenPtr pScreen = pWin->drawable.pScreen;
-
-    winScreenPriv(pScreen);
-
-#if CYGDEBUG
+#if ENABLE_DEBUG
     winTrace("winPositionWindowRootless (%p)\n", pWin);
 #endif
 
-    WIN_UNWRAP(PositionWindow);
-    fResult = (*pScreen->PositionWindow) (pWin, x, y);
-    WIN_WRAP(PositionWindow, winPositionWindowRootless);
+    Bool fResult = fbPositionWindow(pWin, x, y);
 
     winUpdateRgnRootless(pWin);
 
@@ -134,18 +121,11 @@ winPositionWindowRootless(WindowPtr pWin, int x, int y)
 Bool
 winChangeWindowAttributesRootless(WindowPtr pWin, unsigned long mask)
 {
-    Bool fResult = FALSE;
-    ScreenPtr pScreen = pWin->drawable.pScreen;
-
-    winScreenPriv(pScreen);
-
-#if CYGDEBUG
+#if ENABLE_DEBUG
     winTrace("winChangeWindowAttributesRootless (%p)\n", pWin);
 #endif
 
-    WIN_UNWRAP(ChangeWindowAttributes);
-    fResult = (*pScreen->ChangeWindowAttributes) (pWin, mask);
-    WIN_WRAP(ChangeWindowAttributes, winChangeWindowAttributesRootless);
+    Bool fResult = fbChangeWindowAttributes(pWin, mask);
 
     winUpdateRgnRootless(pWin);
 
@@ -159,19 +139,13 @@ winChangeWindowAttributesRootless(WindowPtr pWin, unsigned long mask)
 Bool
 winUnmapWindowRootless(WindowPtr pWin)
 {
-    Bool fResult = FALSE;
-    ScreenPtr pScreen = pWin->drawable.pScreen;
-
     winWindowPriv(pWin);
-    winScreenPriv(pScreen);
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
     winTrace("winUnmapWindowRootless (%p)\n", pWin);
 #endif
 
-    WIN_UNWRAP(UnrealizeWindow);
-    fResult = (*pScreen->UnrealizeWindow) (pWin);
-    WIN_WRAP(UnrealizeWindow, winUnmapWindowRootless);
+    Bool fResult = fbUnrealizeWindow(pWin);
 
     if (pWinPriv->hRgn != NULL) {
         DeleteObject(pWinPriv->hRgn);
@@ -190,18 +164,11 @@ winUnmapWindowRootless(WindowPtr pWin)
 Bool
 winMapWindowRootless(WindowPtr pWin)
 {
-    Bool fResult = FALSE;
-    ScreenPtr pScreen = pWin->drawable.pScreen;
-
-    winScreenPriv(pScreen);
-
-#if CYGDEBUG
+#if ENABLE_DEBUG
     winTrace("winMapWindowRootless (%p)\n", pWin);
 #endif
 
-    WIN_UNWRAP(RealizeWindow);
-    fResult = (*pScreen->RealizeWindow) (pWin);
-    WIN_WRAP(RealizeWindow, winMapWindowRootless);
+    Bool fResult = fbRealizeWindow(pWin);
 
     winReshapeRootless(pWin);
 
@@ -213,17 +180,11 @@ winMapWindowRootless(WindowPtr pWin)
 void
 winSetShapeRootless(WindowPtr pWin, int kind)
 {
-    ScreenPtr pScreen = pWin->drawable.pScreen;
-
-    winScreenPriv(pScreen);
-
-#if CYGDEBUG
+#if ENABLE_DEBUG
     winTrace("winSetShapeRootless (%p, %i)\n", pWin, kind);
 #endif
 
-    WIN_UNWRAP(SetShape);
-    (*pScreen->SetShape) (pWin, kind);
-    WIN_WRAP(SetShape, winSetShapeRootless);
+    miSetShape(pWin, kind);
 
     winReshapeRootless(pWin);
     winUpdateRgnRootless(pWin);
@@ -247,7 +208,7 @@ winAddRgn(WindowPtr pWin, void *data)
 
     /* If pWin is not Root */
     if (pWin->parent != NULL) {
-#if CYGDEBUG
+#if ENABLE_DEBUG
         winDebug("winAddRgn ()\n");
 #endif
         if (pWin->mapped) {
@@ -320,7 +281,7 @@ winReshapeRootless(WindowPtr pWin)
 
     winWindowPriv(pWin);
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
     winDebug("winReshapeRootless ()\n");
 #endif
 

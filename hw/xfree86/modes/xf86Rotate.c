@@ -20,32 +20,33 @@
  * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
  * OF THIS SOFTWARE.
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
-#include "mi.h"
+#include <X11/Xatom.h>
+#include <X11/extensions/render.h>
+#include <X11/extensions/dpmsconst.h>
+
+#include "dix/dix_priv.h"
+#include "include/xf86DDC.h"
+#include "mi/mi_priv.h"
+
 #include "xf86.h"
-#include "xf86DDC.h"
 #include "windowstr.h"
 #include "xf86Crtc.h"
 #include "xf86Modes.h"
 #include "xf86RandR12.h"
-#include "X11/extensions/render.h"
-#include "X11/extensions/dpmsconst.h"
-#include "X11/Xatom.h"
 
-static void
-xf86RotateCrtcRedisplay(xf86CrtcPtr crtc, RegionPtr region)
+void
+xf86RotateCrtcRedisplay(xf86CrtcPtr crtc, PixmapPtr dst_pixmap,
+                        DrawableRec *src_drawable, RegionPtr region,
+                        Bool transform_src)
 {
     ScrnInfoPtr scrn = crtc->scrn;
     ScreenPtr screen = scrn->pScreen;
-    WindowPtr root = screen->root;
-    PixmapPtr dst_pixmap = crtc->rotatedPixmap;
     PictFormatPtr format = PictureWindowFormat(screen->root);
     int error;
     PicturePtr src, dst;
@@ -57,7 +58,7 @@ xf86RotateCrtcRedisplay(xf86CrtcPtr crtc, RegionPtr region)
         return;
 
     src = CreatePicture(None,
-                        &root->drawable,
+                        src_drawable,
                         format,
                         CPSubwindowMode,
                         &include_inferiors, serverClient, &error);
@@ -70,9 +71,11 @@ xf86RotateCrtcRedisplay(xf86CrtcPtr crtc, RegionPtr region)
     if (!dst)
         return;
 
-    error = SetPictureTransform(src, &crtc->crtc_to_framebuffer);
-    if (error)
-        return;
+    if (transform_src) {
+        error = SetPictureTransform(src, &crtc->crtc_to_framebuffer);
+        if (error)
+            return;
+    }
     if (crtc->transform_in_use && crtc->filter)
         SetPicturePictFilter(src, crtc->filter, crtc->params, crtc->nparams);
 
@@ -205,7 +208,9 @@ xf86RotateRedisplay(ScreenPtr pScreen)
 
                 /* update damaged region */
                 if (RegionNotEmpty(&crtc_damage))
-                    xf86RotateCrtcRedisplay(crtc, &crtc_damage);
+                    xf86RotateCrtcRedisplay(crtc, crtc->rotatedPixmap,
+                                            &pScreen->root->drawable,
+                                            &crtc_damage, TRUE);
 
                 RegionUninit(&crtc_damage);
             }
@@ -305,7 +310,7 @@ xf86RotateCloseScreen(ScreenPtr screen)
 }
 
 static Bool
-xf86CrtcFitsScreen(xf86CrtcPtr crtc, struct pict_f_transform *crtc_to_fb)
+xf86CrtcFitsScreen(xf86CrtcPtr crtc, struct pixman_f_transform *crtc_to_fb)
 {
     ScrnInfoPtr pScrn = crtc->scrn;
     BoxRec b;
@@ -315,8 +320,8 @@ xf86CrtcFitsScreen(xf86CrtcPtr crtc, struct pict_f_transform *crtc_to_fb)
      */
     if (pScrn->is_gpu) {
 	ScreenPtr pScreen = xf86ScrnToScreen(pScrn);
-	if (pScreen->current_master)
-	    pScrn = xf86ScreenToScrn(pScreen->current_master);
+	if (pScreen->current_primary)
+	    pScrn = xf86ScreenToScrn(pScreen->current_primary);
     }
 
     if (pScrn->virtualX == 0 || pScrn->virtualY == 0)
@@ -346,14 +351,14 @@ xf86CrtcRotate(xf86CrtcPtr crtc)
     xf86CrtcConfigPtr xf86_config = XF86_CRTC_CONFIG_PTR(pScrn);
     ScreenPtr pScreen = xf86ScrnToScreen(pScrn);
     PictTransform crtc_to_fb;
-    struct pict_f_transform f_crtc_to_fb, f_fb_to_crtc;
+    struct pixman_f_transform f_crtc_to_fb, f_fb_to_crtc;
     xFixed *new_params = NULL;
     int new_nparams = 0;
     PictFilterPtr new_filter = NULL;
     int new_width = 0;
     int new_height = 0;
     RRTransformPtr transform = NULL;
-    Bool damage = FALSE;
+    bool damage = FALSE;
 
     if (pScreen->isGPU)
         return TRUE;
@@ -447,10 +452,9 @@ xf86CrtcRotate(xf86CrtcPtr crtc)
                 return FALSE;
             }
         }
-#ifdef RANDR_12_INTERFACE
         if (transform) {
             if (transform->nparams) {
-                new_params = malloc(transform->nparams * sizeof(xFixed));
+                new_params = calloc(transform->nparams, sizeof(xFixed));
                 if (new_params) {
                     memcpy(new_params, transform->params,
                            transform->nparams * sizeof(xFixed));
@@ -465,7 +469,6 @@ xf86CrtcRotate(xf86CrtcPtr crtc)
                 new_height = new_filter->height;
             }
         }
-#endif
         crtc->transform_in_use = TRUE;
     }
     crtc->crtc_to_framebuffer = crtc_to_fb;

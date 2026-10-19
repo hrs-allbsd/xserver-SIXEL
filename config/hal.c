@@ -24,19 +24,21 @@
  * Author: Daniel Stone <daniel@fooishbar.org>
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
-#include <dbus/dbus.h>
-#include <hal/libhal.h>
 #include <string.h>
 #include <sys/select.h>
+#include <dbus/dbus.h>
+#include <hal/libhal.h>
 
-#include "dbus-core.h"
+#include "config/config-hal.h"
+#include "config/hotplug_priv.h"
+#include "config/dbus-core.h"
+#include "dix/inputdev_priv.h"
+#include "os/fmt.h"
+
 #include "input.h"
 #include "inputstr.h"
-#include "hotplug.h"
 #include "config-backends.h"
 #include "os.h"
 
@@ -101,7 +103,7 @@ get_prop_string_array(LibHalContext * hal_ctx, const char *udi,
         for (i = 0; props[i]; i++)
             len += strlen(props[i]);
 
-        ret = calloc(sizeof(char), len + i);    /* i - 1 commas, 1 NULL */
+        ret = calloc(len + i, sizeof(char));    /* i - 1 commas, 1 NULL */
         if (!ret) {
             libhal_free_string_array(props);
             return NULL;
@@ -241,7 +243,8 @@ device_added(LibHalContext * hal_ctx, const char *udi)
     }
 
     /* Check for duplicate devices */
-    if (device_is_duplicate(config_info)) {
+    if (dixInputDeviceFindByConf(config_info) ||
+        dixInputDeviceOffFindByConf(config_info)) {
         LogMessage(X_WARNING,
                    "config/hal: device %s already added. Ignoring.\n", name);
         goto unwind;

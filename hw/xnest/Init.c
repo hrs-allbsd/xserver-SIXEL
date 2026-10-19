@@ -11,25 +11,32 @@ the suitability of this software for any purpose.  It is provided "as
 is" without express or implied warranty.
 
 */
+#include <dix-config.h>
 
-#ifdef HAVE_XNEST_CONFIG_H
-#include <xnest-config.h>
-#endif
-
+#include <stddef.h>
 #include <X11/X.h>
+#include <X11/Xdefs.h>
 #include <X11/Xproto.h>
+#include <X11/fonts/fontstruct.h>
+#include <X11/fonts/libxfont2.h>
+
+#include "dix/screenint_priv.h"
+#include "include/misc.h"
+#include "mi/mi_priv.h"
+#include "miext/extinit_priv.h"
+#include "os/ddx_priv.h"
+#include "os/log_priv.h"
+#include "os/osdep.h"
+#include "Xext/dpms/dpms_priv.h"
+
 #include "screenint.h"
 #include "input.h"
-#include "misc.h"
 #include "scrnintstr.h"
 #include "windowstr.h"
 #include "servermd.h"
-#include "mi.h"
-#include <X11/fonts/fontstruct.h>
 #include "dixfontstr.h"
 
-#include "Xnest.h"
-
+#include "xnest-xcb.h"
 #include "Display.h"
 #include "Screen.h"
 #include "Pointer.h"
@@ -41,45 +48,54 @@ is" without express or implied warranty.
 #include "Drawable.h"
 #include "XNGC.h"
 #include "XNFont.h"
-#ifdef DPMSExtension
-#include "dpmsproc.h"
-#endif
 
-Bool xnestDoFullGeneration = True;
+Bool xnestDoFullGeneration = TRUE;
 
+/* Xnest doesn't support GLX yet, so we don't link it, but still have
+   satisfy DIX's symbol requirements */
 #ifdef GLXEXT
 void
 GlxExtensionInit(void)
 {
 }
+
+Bool noGlxExtension = FALSE;
 #endif
 
 void
-InitOutput(ScreenInfo * screen_info, int argc, char *argv[])
+InitOutput(int argc, char *argv[])
 {
-    int i, j;
+    int i;
 
     xnestOpenDisplay(argc, argv);
 
-    screen_info->imageByteOrder = ImageByteOrder(xnestDisplay);
-    screen_info->bitmapScanlineUnit = BitmapUnit(xnestDisplay);
-    screen_info->bitmapScanlinePad = BitmapPad(xnestDisplay);
-    screen_info->bitmapBitOrder = BitmapBitOrder(xnestDisplay);
+    screenInfo.imageByteOrder = xnestUpstreamInfo.setup->image_byte_order;
+    screenInfo.bitmapScanlineUnit = xnestUpstreamInfo.setup->bitmap_format_scanline_unit;
+    screenInfo.bitmapScanlinePad = xnestUpstreamInfo.setup->bitmap_format_scanline_pad;
+    screenInfo.bitmapBitOrder = xnestUpstreamInfo.setup->bitmap_format_bit_order;
+    screenInfo.numPixmapFormats = 0;
 
-    screen_info->numPixmapFormats = 0;
-    for (i = 0; i < xnestNumPixmapFormats; i++)
-        for (j = 0; j < xnestNumDepths; j++)
-            if ((xnestPixmapFormats[i].depth == 1) ||
-                (xnestPixmapFormats[i].depth == xnestDepths[j])) {
-                screen_info->formats[screen_info->numPixmapFormats].depth =
-                    xnestPixmapFormats[i].depth;
-                screen_info->formats[screen_info->numPixmapFormats].bitsPerPixel =
-                    xnestPixmapFormats[i].bits_per_pixel;
-                screen_info->formats[screen_info->numPixmapFormats].scanlinePad =
-                    xnestPixmapFormats[i].scanline_pad;
-                screen_info->numPixmapFormats++;
+    xcb_format_t *fmt = xcb_setup_pixmap_formats(xnestUpstreamInfo.setup);
+    const xcb_format_t *fmtend = fmt + xcb_setup_pixmap_formats_length(xnestUpstreamInfo.setup);
+    for(; fmt != fmtend; ++fmt) {
+        xcb_depth_iterator_t depth_iter;
+        for (depth_iter = xcb_screen_allowed_depths_iterator(xnestUpstreamInfo.screenInfo);
+             depth_iter.rem;
+             xcb_depth_next(&depth_iter))
+        {
+            if ((fmt->depth == 1) ||
+                (fmt->depth == depth_iter.data->depth)) {
+                screenInfo.formats[screenInfo.numPixmapFormats].depth =
+                    fmt->depth;
+                screenInfo.formats[screenInfo.numPixmapFormats].bitsPerPixel =
+                    fmt->bits_per_pixel;
+                screenInfo.formats[screenInfo.numPixmapFormats].scanlinePad =
+                    fmt->scanline_pad;
+                screenInfo.numPixmapFormats++;
                 break;
             }
+        }
+    }
 
     xnestFontPrivateIndex = xfont2_allocate_font_private_index();
 
@@ -87,11 +103,11 @@ InitOutput(ScreenInfo * screen_info, int argc, char *argv[])
         xnestNumScreens = 1;
 
     for (i = 0; i < xnestNumScreens; i++)
-        AddScreen(xnestOpenScreen, argc, argv);
+        AddScreen(xnestOpenScreen, argc, argv, NULL);
 
-    xnestNumScreens = screen_info->numScreens;
+    xnestNumScreens = screenInfo.numScreens;
 
-    xnestDoFullGeneration = xnestFullGeneration;
+    xnestDoFullGeneration = FALSE;
 }
 
 static void
@@ -115,7 +131,10 @@ InitInput(int argc, char *argv[])
 
     mieqInit();
 
-    SetNotifyFd(XConnectionNumber(xnestDisplay), xnestNotifyConnection, X_NOTIFY_READ, NULL);
+    SetNotifyFd(xcb_get_file_descriptor(xnestUpstreamInfo.conn),
+                xnestNotifyConnection,
+                X_NOTIFY_READ,
+                NULL);
 
     RegisterBlockAndWakeupHandlers(xnestBlockHandler, xnestWakeupHandler, NULL);
 }
@@ -126,49 +145,20 @@ CloseInput(void)
     mieqFini();
 }
 
-/*
- * DDX - specific abort routine.  Called by AbortServer().
- */
-void
-AbortDDX(enum ExitCode error)
-{
-    xnestDoFullGeneration = True;
-    xnestCloseDisplay();
-}
-
-/* Called by GiveUp(). */
 void
 ddxGiveUp(enum ExitCode error)
 {
-    AbortDDX(error);
+    xnestDoFullGeneration = TRUE;
+    xnestCloseDisplay();
 }
 
-#ifdef __APPLE__
-void
-DarwinHandleGUI(int argc, char *argv[])
+void ddxInit(void)
 {
-}
-#endif
-
-void
-OsVendorInit(void)
-{
-    return;
 }
 
-void
-OsVendorFatalError(const char *f, va_list args)
+void ddxFatalError(const char *f, va_list args)
 {
-    return;
 }
-
-#if defined(DDXBEFORERESET)
-void
-ddxBeforeReset(void)
-{
-    return;
-}
-#endif
 
 #if INPUTTHREAD
 /** This function is called in Xserver/os/inputthread.c when starting

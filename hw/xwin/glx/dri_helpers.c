@@ -20,14 +20,13 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
  */
-
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
 
-#include <glx/glxserver.h>
-#include <glx/glxutil.h>
+#include <assert.h>
 #include <X11/extensions/windowsdriconst.h>
+
+#include "Xext/glx/glxserver.h"
+#include "Xext/glx/glxutil.h"
 
 #include "indirect.h"
 #include "winpriv.h"

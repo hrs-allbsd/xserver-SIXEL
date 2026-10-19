@@ -21,13 +21,13 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
-#include "fb.h"
-#include	<X11/fonts/fontstruct.h>
-#include	"dixfontstr.h"
+#include <stdbool.h>
+#include <X11/fonts/fontstruct.h>
+
+#include "fb/fb_priv.h"
+#include "include/dixfontstr.h"
 
 static Bool
 fbGlyphIn(RegionPtr pRegion, int x, int y, int width, int height)
@@ -95,7 +95,7 @@ fbPolyGlyphBlt(DrawablePtr pDrawable,
         pglyph = FONTGLYPHBITS(pglyphBase, pci);
         gWidth = GLYPHWIDTHPIXELS(pci);
         gHeight = GLYPHHEIGHTPIXELS(pci);
-        if (gWidth && gHeight) {
+        if (gWidth > 0 && gHeight > 0) {
             gx = x + pci->metrics.leftSideBearing;
             gy = y - pci->metrics.ascent;
             if (glyph && gWidth <= sizeof(FbStip) * 8 &&
@@ -131,7 +131,7 @@ fbImageGlyphBlt(DrawablePtr pDrawable,
     unsigned char *pglyph;      /* pointer bits in glyph */
     int gWidth, gHeight;        /* width and height of glyph */
     FbStride gStride;           /* stride of glyph */
-    Bool opaque;
+    bool opaque;
     int n;
     int gx, gy;
     void (*glyph) (FbBits *, FbStride, int, FbStip *, FbBits, int, int);
@@ -197,7 +197,7 @@ fbImageGlyphBlt(DrawablePtr pDrawable,
         pglyph = FONTGLYPHBITS(pglyphBase, pci);
         gWidth = GLYPHWIDTHPIXELS(pci);
         gHeight = GLYPHHEIGHTPIXELS(pci);
-        if (gWidth && gHeight) {
+        if (gWidth > 0 && gHeight > 0) {
             gx = x + pci->metrics.leftSideBearing;
             gy = y - pci->metrics.ascent;
             if (glyph && gWidth <= sizeof(FbStip) * 8 &&

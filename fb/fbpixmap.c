@@ -20,13 +20,16 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <stdlib.h>
 
-#include "fb.h"
+#include "fb/fb_priv.h"
+
+#ifdef FB_DEBUG
+static void fbInitializeDrawable(DrawablePtr pDrawable);
+#endif
 
 PixmapPtr
 fbCreatePixmap(ScreenPtr pScreen, int width, int height, int depth,
@@ -55,30 +58,21 @@ fbCreatePixmap(ScreenPtr pScreen, int width, int height, int depth,
     if (!pPixmap)
         return NullPixmap;
     pPixmap->drawable.type = DRAWABLE_PIXMAP;
-    pPixmap->drawable.class = 0;
     pPixmap->drawable.pScreen = pScreen;
     pPixmap->drawable.depth = depth;
     pPixmap->drawable.bitsPerPixel = bpp;
-    pPixmap->drawable.id = 0;
     pPixmap->drawable.serialNumber = NEXT_SERIAL_NUMBER;
-    pPixmap->drawable.x = 0;
-    pPixmap->drawable.y = 0;
     pPixmap->drawable.width = width;
     pPixmap->drawable.height = height;
     pPixmap->devKind = paddedWidth;
     pPixmap->refcnt = 1;
     pPixmap->devPrivate.ptr = (void *) ((char *) pPixmap + base + adjust);
-    pPixmap->master_pixmap = NULL;
+    pPixmap->primary_pixmap = NULL;
 
 #ifdef FB_DEBUG
     pPixmap->devPrivate.ptr =
         (void *) ((char *) pPixmap->devPrivate.ptr + paddedWidth);
     fbInitializeDrawable(&pPixmap->drawable);
-#endif
-
-#ifdef COMPOSITE
-    pPixmap->screen_x = 0;
-    pPixmap->screen_y = 0;
 #endif
 
     pPixmap->usage_hint = usage_hint;
@@ -98,27 +92,27 @@ fbDestroyPixmap(PixmapPtr pPixmap)
 #define ADDRECT(reg,r,fr,rx1,ry1,rx2,ry2)			\
 if (((rx1) < (rx2)) && ((ry1) < (ry2)) &&			\
     (!((reg)->data->numRects &&					\
-       ((r-1)->y1 == (ry1)) &&					\
-       ((r-1)->y2 == (ry2)) &&					\
-       ((r-1)->x1 <= (rx1)) &&					\
-       ((r-1)->x2 >= (rx2)))))					\
+       (((r)-1)->y1 == (ry1)) &&				\
+       (((r)-1)->y2 == (ry2)) &&				\
+       (((r)-1)->x1 <= (rx1)) &&				\
+       (((r)-1)->x2 >= (rx2)))))				\
 {								\
     if ((reg)->data->numRects == (reg)->data->size)		\
     {								\
-	RegionRectAlloc(reg, 1);					\
-	fr = RegionBoxptr(reg);				\
-	r = fr + (reg)->data->numRects;				\
+	RegionRectAlloc((reg), 1);				\
+	(fr) = RegionBoxptr((reg));				\
+	(r) = (fr) + (reg)->data->numRects;			\
     }								\
-    r->x1 = (rx1);						\
-    r->y1 = (ry1);						\
-    r->x2 = (rx2);						\
-    r->y2 = (ry2);						\
+    (r)->x1 = (rx1);						\
+    (r)->y1 = (ry1);						\
+    (r)->x2 = (rx2);						\
+    (r)->y2 = (ry2);						\
     (reg)->data->numRects++;					\
-    if(r->x1 < (reg)->extents.x1)				\
-	(reg)->extents.x1 = r->x1;				\
-    if(r->x2 > (reg)->extents.x2)				\
-	(reg)->extents.x2 = r->x2;				\
-    r++;							\
+    if((r)->x1 < (reg)->extents.x1)				\
+	(reg)->extents.x1 = (r)->x1;				\
+    if((r)->x2 > (reg)->extents.x2)				\
+	(reg)->extents.x2 = (r)->x2;				\
+    (r)++;							\
 }
 
 /* Convert bitmap clip mask into clipping region.
@@ -138,7 +132,7 @@ fbPixmapToRegion(PixmapPtr pPix)
     int irectPrevStart, irectLineStart;
     register BoxPtr prectO, prectN;
     BoxPtr FirstRect, rects, prectLineStart;
-    Bool fInBox, fSame;
+    bool fInBox, fSame;
     register FbBits mask0 = FB_ALLONES & ~FbScrRight(FB_ALLONES, 1);
     FbBits *pwLine;
     int nWidth;
@@ -321,7 +315,7 @@ fbValidateDrawable(DrawablePtr pDrawable)
     int stride, bpp;
     int xoff, yoff;
     int height;
-    Bool failed;
+    bool failed;
 
     if (pDrawable->type != DRAWABLE_PIXMAP)
         pDrawable = (DrawablePtr) fbGetWindowPixmap(pDrawable);

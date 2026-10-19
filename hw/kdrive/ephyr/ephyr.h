@@ -1,5 +1,5 @@
 /*
- * Xephyr - A kdrive X server thats runs in a host X window.
+ * Xephyr - A kdrive X server that runs in a host X window.
  *          Authored by Matthew Allum <mallum@o-hand.com>
  *
  * Copyright © 2004 Nokia
@@ -30,15 +30,12 @@
 #include <libgen.h>
 #include <xcb/xcb_image.h>
 
+#include "include/randrstr.h"
+
 #include "os.h"                 /* for OsSignal() */
 #include "kdrive.h"
 #include "hostx.h"
 #include "exa.h"
-
-#ifdef RANDR
-#include "randrstr.h"
-#endif
-
 #include "damage.h"
 
 typedef struct _ephyrPriv {
@@ -71,10 +68,12 @@ typedef struct _ephyrScrPriv {
     xcb_window_t win;
     xcb_window_t win_pre_existing;    /* Set via -parent option like xnest */
     xcb_window_t peer_win;            /* Used for GL; should be at most one */
+    xcb_visualid_t vid;
     xcb_image_t *ximg;
     Bool win_explicit_position;
     int win_x, win_y;
     int win_width, win_height;
+    int win_width_mm, win_height_mm;
     int server_depth;
     const char *output;         /* Set via -output option */
     unsigned char *fb_data;     /* only used when host bpp != server bpp */
@@ -87,10 +86,6 @@ typedef struct _ephyrScrPriv {
 
     ScreenBlockHandlerProcPtr   BlockHandler;
 
-    /**
-     * Per-screen Xlib-using state for glamor (private to
-     * ephyr_glamor_glx.c)
-     */
     struct ephyr_glamor *glamor;
 } EphyrScrPriv;
 
@@ -169,6 +164,14 @@ Bool
 
 Bool
  ephyrCreateColormap(ColormapPtr pmap);
+
+/**
+ * @param desc examples: "ctrl+shift", "ctrl+mod1+a", "a",
+ *             NULL (disables host grab)
+ * @return TRUE if success, otherwise FALSE
+ */
+Bool
+ ephyrSetGrabShortcut(char const* const desc);
 
 #ifdef RANDR
 Bool

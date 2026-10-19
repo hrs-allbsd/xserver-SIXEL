@@ -27,39 +27,14 @@
  *
  * Authors: Alexander Gottwald	
  */
-
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
+
 #include "win.h"
 #include "winmsg.h"
-#if CYGDEBUG
+#if ENABLE_DEBUG
 #include "winmessages.h"
 #endif
 #include <stdarg.h>
-
-#ifdef XWIN_XF86CONFIG
-void
-winDrvMsg(int scrnIndex, MessageType type, const char *format, ...)
-{
-    va_list ap;
-
-    va_start(ap, format);
-    LogVMessageVerb(type, 0, format, ap);
-    va_end(ap);
-}
-
-void
-winDrvMsgVerb(int scrnIndex, MessageType type, int verb, const char *format,
-              ...)
-{
-    va_list ap;
-
-    va_start(ap, format);
-    LogVMessageVerb(type, verb, format, ap);
-    va_end(ap);
-}
-#endif
 
 void
 winErrorFVerb(int verb, const char *format, ...)
@@ -117,7 +92,7 @@ winW32ErrorEx(int verb, const char *msg, DWORD errorcode)
     }
 }
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
 void
 winDebugWin32Message(const char *function, HWND hwnd, UINT message,
                      WPARAM wParam, LPARAM lParam)

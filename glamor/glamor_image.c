@@ -19,6 +19,7 @@
  * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
  * OF THIS SOFTWARE.
  */
+#include <dix-config.h>
 
 #include "glamor_priv.h"
 #include "glamor_transfer.h"
@@ -76,7 +77,7 @@ glamor_put_image_gl(DrawablePtr drawable, GCPtr gc, int depth, int x, int y,
 
     glamor_make_current(glamor_priv);
 
-    glamor_upload_region(pixmap, &region, x, y, (uint8_t *) bits, byte_stride);
+    glamor_upload_region(drawable, &region, x, y, (uint8_t *) bits, byte_stride);
 
     RegionUninit(&region);
     return TRUE;
@@ -124,12 +125,12 @@ glamor_get_image_gl(DrawablePtr drawable, int x, int y, int w, int h,
     box.x2 = x + w;
     box.y1 = y;
     box.y2 = y + h;
-    glamor_download_boxes(pixmap, &box, 1,
+    glamor_download_boxes(drawable, &box, 1,
                           drawable->x + off_x, drawable->y + off_y,
                           -x, -y,
                           (uint8_t *) d, byte_stride);
 
-    if (!glamor_pm_is_solid(drawable->depth, plane_mask)) {
+    if (!glamor_pm_is_solid(glamor_drawable_effective_depth(drawable), plane_mask)) {
         FbStip pm = fbReplicatePixel(plane_mask, drawable->bitsPerPixel);
         FbStip *dst = (void *)d;
         uint32_t dstStride = byte_stride / sizeof(FbStip);

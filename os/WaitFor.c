@@ -48,30 +48,34 @@ SOFTWARE.
  * OS Dependent input routines:
  *
  *  WaitForSomething
- *  TimerForce, TimerSet, TimerCheck, TimerFree
+ *  TimerForce, TimerSet, TimerFree
  *
  *****************************************************************/
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
+#include <errno.h>
+#include <stdio.h>
 #ifdef WIN32
 #include <X11/Xwinsock.h>
 #endif
 #include <X11/Xos.h>            /* for strings, fcntl, time */
-#include <errno.h>
-#include <stdio.h>
 #include <X11/X.h>
-#include "misc.h"
 
-#include "osdep.h"
-#include "dixstruct.h"
-#include "opaque.h"
-#ifdef DPMSExtension
-#include "dpmsproc.h"
-#endif
-#include "busfault.h"
+#include "dix/dix_priv.h"
+#include "dix/dixstruct_priv.h"
+#include "dix/screensaver_priv.h"
+#include "include/misc.h"
+#include "os/busfault.h"
+#include "os/client_priv.h"
+#include "os/mathx_priv.h"
+#include "os/osdep.h"
+#include "os/ossock.h"
+#include "os/screensaver.h"
+#include "Xext/dpms/dpms_priv.h"
+
+#include "globals.h"
 
 #ifdef WIN32
 /* Error codes from windows sockets differ from fileio error codes  */
@@ -103,7 +107,6 @@ struct _OsTimerRec {
 };
 
 static void DoTimer(OsTimerPtr timer, CARD32 now);
-static void DoTimers(CARD32 now);
 static void CheckAllTimers(void);
 static volatile struct xorg_list timers;
 
@@ -169,9 +172,7 @@ WaitForSomething(Bool are_ready)
     int timeout;
     int pollerr;
     static Bool were_ready;
-    Bool timer_is_running;
-
-    timer_is_running = were_ready;
+    bool timer_is_running = !!were_ready;
 
     if (were_ready && !are_ready) {
         timer_is_running = FALSE;
@@ -180,17 +181,13 @@ WaitForSomething(Bool are_ready)
 
     were_ready = FALSE;
 
-#ifdef BUSFAULT
     busfault_check();
-#endif
 
     /* We need a while loop here to handle
        crashed connections and the screen saver timeout */
     while (1) {
         /* deal with any blocked jobs */
-        if (workQueue) {
-            ProcessWorkQueue();
-        }
+        ProcessWorkQueue();
 
         timeout = check_timers();
         are_ready = clients_are_ready();
@@ -212,7 +209,7 @@ WaitForSomething(Bool are_ready)
             if (dispatchException)
                 return FALSE;
             if (i < 0) {
-                if (pollerr != EINTR && !ETEST(pollerr)) {
+                if (pollerr != EINTR && ossock_wouldblock(pollerr)) {
                     ErrorF("WaitForSomething(): poll: %s\n",
                            strerror(pollerr));
                 }
@@ -278,8 +275,7 @@ DoTimer(OsTimerPtr timer, CARD32 now)
         TimerSet(timer, 0, newTime, timer->callback, timer->arg);
 }
 
-static void
-DoTimers(CARD32 now)
+void DoTimers(CARD32 now)
 {
     OsTimerPtr  timer;
 
@@ -296,7 +292,7 @@ OsTimerPtr
 TimerSet(OsTimerPtr timer, int flags, CARD32 millis,
          OsTimerCallback func, void *arg)
 {
-    OsTimerPtr existing, tmp;
+    OsTimerPtr existing;
     CARD32 now = GetTimeInMillis();
 
     if (!timer) {
@@ -329,11 +325,11 @@ TimerSet(OsTimerPtr timer, int flags, CARD32 millis,
     input_lock();
 
     /* Sort into list */
-    xorg_list_for_each_entry_safe(existing, tmp, &timers, list)
+    xorg_list_for_each_entry(existing, &timers, list)
         if ((int) (existing->expires - millis) > 0)
             break;
     /* This even works at the end of the list -- existing->list will be timers */
-    xorg_list_add(&timer->list, existing->list.prev);
+    xorg_list_append(&timer->list, &existing->list);
 
     /* Check to see if the timer is ready to run now */
     if ((int) (millis - now) <= 0)
@@ -376,12 +372,6 @@ TimerFree(OsTimerPtr timer)
 }
 
 void
-TimerCheck(void)
-{
-    DoTimers(GetTimeInMillis());
-}
-
-void
 TimerInit(void)
 {
     static Bool been_here;
@@ -401,12 +391,12 @@ TimerInit(void)
 #ifdef DPMSExtension
 
 #define DPMS_CHECK_MODE(mode,time)\
-    if (time > 0 && DPMSPowerLevel < mode && timeout >= time)\
-	DPMSSet(serverClient, mode);
+    if ((time) > 0 && DPMSPowerLevel < (mode) && timeout >= (time))\
+	DPMSSet(serverClient, (mode));
 
 #define DPMS_CHECK_TIMEOUT(time)\
-    if (time > 0 && (time - timeout) > 0)\
-	return time - timeout;
+    if ((time) > 0 && ((time) - timeout) > 0)\
+	return (time) - timeout;
 
 static CARD32
 NextDPMSTimeout(INT32 timeout)
@@ -418,13 +408,13 @@ NextDPMSTimeout(INT32 timeout)
     switch (DPMSPowerLevel) {
     case DPMSModeOn:
         DPMS_CHECK_TIMEOUT(DPMSStandbyTime)
-
+        /* fallthrough */
     case DPMSModeStandby:
         DPMS_CHECK_TIMEOUT(DPMSSuspendTime)
-
+        /* fallthrough */
     case DPMSModeSuspend:
         DPMS_CHECK_TIMEOUT(DPMSOffTime)
-
+        /* fallthrough */
     default:                   /* DPMSModeOff */
         return 0;
     }
@@ -463,7 +453,7 @@ ScreenSaverTimeoutExpire(OsTimerPtr timer, CARD32 now, void *arg)
 
     if (timeout < ScreenSaverTime) {
         return nextTimeout > 0 ?
-            min(ScreenSaverTime - timeout, nextTimeout) :
+            MIN(ScreenSaverTime - timeout, nextTimeout) :
             ScreenSaverTime - timeout;
     }
 
@@ -472,7 +462,7 @@ ScreenSaverTimeoutExpire(OsTimerPtr timer, CARD32 now, void *arg)
 
     if (ScreenSaverInterval > 0) {
         nextTimeout = nextTimeout > 0 ?
-            min(ScreenSaverInterval, nextTimeout) : ScreenSaverInterval;
+            MIN(ScreenSaverInterval, nextTimeout) : ScreenSaverInterval;
     }
 
     return nextTimeout;
@@ -512,7 +502,7 @@ SetScreenSaverTimer(void)
 #endif
 
     if (ScreenSaverTime > 0) {
-        timeout = timeout > 0 ? min(ScreenSaverTime, timeout) : ScreenSaverTime;
+        timeout = timeout > 0 ? MIN(ScreenSaverTime, timeout) : ScreenSaverTime;
     }
 
 #ifdef SCREENSAVER

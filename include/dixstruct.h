@@ -24,14 +24,17 @@ SOFTWARE.
 #ifndef DIXSTRUCT_H
 #define DIXSTRUCT_H
 
-#include "client.h"
+#include <X11/Xmd.h>
+
+#include "xlibre_ptrtypes.h"
+
+#include "callback.h"
 #include "dix.h"
 #include "resource.h"
 #include "cursor.h"
 #include "gc.h"
 #include "pixmap.h"
 #include "privates.h"
-#include <X11/Xmd.h>
 
 /*
  * 	direct-mapped hash table, used by resource manager to store
@@ -50,36 +53,19 @@ typedef void (*ReplySwapPtr) (ClientPtr /* pClient */ ,
                               int /* size */ ,
                               void * /* pbuf */ );
 
-extern _X_EXPORT void
-ReplyNotSwappd(ClientPtr /* pClient */ ,
-               int /* size */ ,
-               void * /* pbuf */ ) _X_NORETURN;
-
 typedef enum { ClientStateInitial,
     ClientStateRunning,
     ClientStateRetained,
     ClientStateGone
 } ClientState;
 
-typedef struct _saveSet {
-    struct _Window *windowPtr;
-    Bool toRoot;
-    Bool map;
-} SaveSetElt;
-#define SaveSetWindow(ss)   ((ss).windowPtr)
-#define SaveSetToRoot(ss)   ((ss).toRoot)
-#define SaveSetShouldMap(ss)	    ((ss).map)
-#define SaveSetAssignWindow(ss,w)   ((ss).windowPtr = (w))
-#define SaveSetAssignToRoot(ss,tr)  ((ss).toRoot = (tr))
-#define SaveSetAssignMap(ss,m)      ((ss).map = (m))
-
-typedef struct _Client {
+struct _Client {
     void *requestBuffer;
     void *osPrivate;             /* for OS layer, including scheduler */
     struct xorg_list ready;      /* List of clients ready to run */
     struct xorg_list output_pending; /* List of clients with output queued */
     Mask clientAsMask;
-    short index;
+    unsigned short index;
     unsigned char majorOp, minorOp;
     unsigned int swapped:1;
     unsigned int local:1;
@@ -94,8 +80,8 @@ typedef struct _Client {
     XID errorValue;
     int sequence;
     int ignoreCount;            /* count for Attend/IgnoreClient */
-    int numSaved;
-    SaveSetElt *saveSet;
+    int __dummy0;                       /* used to be numSave */
+    void *__dummy1;                     /* used to be saveSet */
     int (**requestVector) (ClientPtr /* pClient */ );
     CARD32 req_len;             /* length of current request */
     unsigned int replyBytesRemaining;
@@ -109,87 +95,12 @@ typedef struct _Client {
     int smart_stop_tick;
 
     DeviceIntPtr clientPtr;
-    ClientIdPtr clientIds;
+    struct _ClientId *clientIds;
     int req_fds;
-} ClientRec;
 
-static inline void
-SetReqFds(ClientPtr client, int req_fds) {
-    if (client->req_fds != 0 && req_fds != client->req_fds)
-        LogMessage(X_ERROR, "Mismatching number of request fds %d != %d\n", req_fds, client->req_fds);
-    client->req_fds = req_fds;
-}
-
-/*
- * Scheduling interface
- */
-extern long SmartScheduleTime;
-extern long SmartScheduleInterval;
-extern long SmartScheduleSlice;
-extern long SmartScheduleMaxSlice;
-#ifdef HAVE_SETITIMER
-extern Bool SmartScheduleSignalEnable;
-#else
-#define SmartScheduleSignalEnable FALSE
-#endif
-extern void SmartScheduleStartTimer(void);
-extern void SmartScheduleStopTimer(void);
-
-/* Client has requests queued or data on the network */
-void mark_client_ready(ClientPtr client);
-
-/*
- * Client has requests queued or data on the network, but awaits a
- * server grab release
- */
-void mark_client_saved_ready(ClientPtr client);
-
-/* Client has no requests queued and no data on network */
-void mark_client_not_ready(ClientPtr client);
-
-static inline Bool client_is_ready(ClientPtr client)
-{
-    return !xorg_list_is_empty(&client->ready);
-}
-
-Bool
-clients_are_ready(void);
-
-extern struct xorg_list output_pending_clients;
-
-static inline void
-output_pending_mark(ClientPtr client)
-{
-    if (!client->clientGone && xorg_list_is_empty(&client->output_pending))
-        xorg_list_append(&client->output_pending, &output_pending_clients);
-}
-
-static inline void
-output_pending_clear(ClientPtr client)
-{
-    xorg_list_del(&client->output_pending);
-}
-
-static inline Bool any_output_pending(void) {
-    return !xorg_list_is_empty(&output_pending_clients);
-}
-
-#define SMART_MAX_PRIORITY  (20)
-#define SMART_MIN_PRIORITY  (-20)
-
-extern void SmartScheduleInit(void);
-
-/* This prototype is used pervasively in Xext, dix */
-#define DISPATCH_PROC(func) int func(ClientPtr /* client */)
-
-typedef struct _WorkQueue {
-    struct _WorkQueue *next;
-    Bool (*function) (ClientPtr /* pClient */ ,
-                      void *    /* closure */
-        );
-    ClientPtr client;
-    void *closure;
-} WorkQueueRec;
+    /* driver should never ever touch anything beyond here */
+    struct xorg_list saveSets;
+};
 
 extern _X_EXPORT TimeStamp currentTime;
 
@@ -200,31 +111,13 @@ CompareTimeStamps(TimeStamp /*a */ ,
 extern _X_EXPORT TimeStamp
 ClientTimeToServerTime(CARD32 /*c */ );
 
-typedef struct _CallbackRec {
-    CallbackProcPtr proc;
-    void *data;
-    Bool deleted;
-    struct _CallbackRec *next;
-} CallbackRec, *CallbackPtr;
-
-typedef struct _CallbackList {
-    int inCallback;
-    Bool deleted;
-    int numDeleted;
-    CallbackPtr list;
-} CallbackListRec;
-
 /* proc vectors */
-
-extern int (*InitialVector[3]) (ClientPtr /*client */ );
 
 extern _X_EXPORT int (*ProcVector[256]) (ClientPtr /*client */ );
 
 extern _X_EXPORT int (*SwappedProcVector[256]) (ClientPtr /*client */ );
 
+/* fixme: still needed by (public) dix.h */
 extern ReplySwapPtr ReplySwapVector[256];
-
-extern _X_EXPORT int
-ProcBadRequest(ClientPtr /*client */ );
 
 #endif                          /* DIXSTRUCT_H */

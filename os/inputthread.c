@@ -25,15 +25,19 @@
  *          Tiago Vignatti <vignatti at freedesktop org>
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <pthread.h>
+
+#include "dix/input_priv.h"
+#include "os/ddx_priv.h"
+#include "os/log_priv.h"
+#include "os/ossock.h"
 
 #include "inputstr.h"
 #include "opaque.h"
@@ -72,8 +76,8 @@ typedef struct {
     struct ospoll *fds;
     int readPipe;
     int writePipe;
-    Bool changed;
-    Bool running;
+    bool changed;
+    bool running;
 } InputThreadInfo;
 
 static InputThreadInfo *inputThreadInfo;
@@ -146,7 +150,7 @@ InputThreadFillPipe(int writeHead)
 
     do {
         ret = write(writeHead, &byte, 1);
-    } while (ret < 0 && ETEST(errno));
+    } while (ret < 0 && ossock_wouldblock(errno));
 }
 
 /**
@@ -252,7 +256,7 @@ int
 InputThreadUnregisterDev(int fd)
 {
     InputThreadDevice *dev;
-    Bool found_device = FALSE;
+    bool found_device = FALSE;
 
     /* return silently if input thread is already finished (e.g., at
      * DisableDevice time, evdev tries to call this function again through
@@ -408,7 +412,7 @@ InputThreadPreInit(void)
      if (pipe(hotplugPipe) < 0)
         FatalError("input-thread: could not create pipe");
 
-    inputThreadInfo = malloc(sizeof(InputThreadInfo));
+    inputThreadInfo = calloc(1, sizeof(InputThreadInfo));
     if (!inputThreadInfo)
         FatalError("input-thread: could not allocate memory");
 
@@ -427,7 +431,7 @@ InputThreadPreInit(void)
     flags = fcntl(inputThreadInfo->readPipe, F_GETFD);
     if (flags != -1) {
         flags |= FD_CLOEXEC;
-        (void)fcntl(inputThreadInfo->readPipe, F_SETFD, &flags);
+        (void)fcntl(inputThreadInfo->readPipe, F_SETFD, flags);
     }
     SetNotifyFd(inputThreadInfo->readPipe, InputThreadNotifyPipe, X_NOTIFY_READ, NULL);
 
@@ -438,7 +442,7 @@ InputThreadPreInit(void)
     flags = fcntl(hotplugPipeRead, F_GETFD);
     if (flags != -1) {
         flags |= FD_CLOEXEC;
-        (void)fcntl(hotplugPipeRead, F_SETFD, &flags);
+        (void)fcntl(hotplugPipeRead, F_SETFD, flags);
     }
     hotplugPipeWrite = hotplugPipe[1];
 
@@ -479,6 +483,12 @@ InputThreadInit(void)
     if (pthread_attr_setscope(&attr, PTHREAD_SCOPE_SYSTEM) != 0)
         ErrorF("input-thread: error setting thread scope\n");
 
+#if defined(__APPLE__) && defined(QOS_CLASS_USER_INTERACTIVE)
+    if (&pthread_attr_set_qos_class_np) {
+        pthread_attr_set_qos_class_np(&attr, QOS_CLASS_USER_INTERACTIVE, 0);
+    }
+#endif
+
     DebugF("input-thread: creating thread\n");
     pthread_create(&inputThreadInfo->thread, &attr,
                    &InputThreadDoWork, NULL);
@@ -492,7 +502,7 @@ InputThreadInit(void)
  * This function is supposed to be called at server shutdown time only.
  */
 void
-InputThreadFini(void)
+InputThreadFinish(void)
 {
     InputThreadDevice *dev, *next;
 
@@ -540,7 +550,7 @@ void input_force_unlock(void) {}
 
 void InputThreadPreInit(void) {}
 void InputThreadInit(void) {}
-void InputThreadFini(void) {}
+void InputThreadFinish(void) {}
 int in_input_thread(void) { return 0; }
 
 int InputThreadRegisterDev(int fd,
@@ -558,7 +568,11 @@ extern int InputThreadUnregisterDev(int fd)
 
 int xthread_sigmask(int how, const sigset_t *set, sigset_t *oldset)
 {
+#ifdef HAVE_SIGPROCMASK
     return sigprocmask(how, set, oldset);
+#else
+    return 0;
+#endif
 }
 
 #endif

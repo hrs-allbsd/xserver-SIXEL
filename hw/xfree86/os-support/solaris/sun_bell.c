@@ -1,4 +1,4 @@
-/* Copyright (c) 2004-2005, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2004-2005, Oracle and/or its affiliates.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -19,19 +19,20 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
+#include <errno.h>
 #include <sys/audio.h>
 #include <sys/uio.h>
 #include <limits.h>
 #include <math.h>
-#include <xserver_poll.h>
+
+#include "os/mathx_priv.h"
+#include "os/xserver_poll.h"
 
 #include "xf86.h"
 #include "xf86Priv.h"
+#include "xf86_os_support.h"
 #include "xf86_OSlib.h"
 
 #define BELL_RATE       48000   /* Samples per second */
@@ -68,14 +69,14 @@ xf86OSRingBell(int loudness, int pitch, int duration)
 
     audioFD = open(AUDIO_DEVICE, O_WRONLY | O_NONBLOCK);
     if (audioFD == -1) {
-        xf86Msg(X_ERROR, "Bell: cannot open audio device \"%s\": %s\n",
-                AUDIO_DEVICE, strerror(errno));
+        LogMessageVerb(X_ERROR, 1, "Bell: cannot open audio device \"%s\": %s\n",
+                       AUDIO_DEVICE, strerror(errno));
         return;
     }
 
     freq = pitch;
-    freq = min(freq, (BELL_RATE / 2) - 1);
-    freq = max(freq, 2 * BELL_HZ);
+    freq = MIN(freq, (BELL_RATE / 2) - 1);
+    freq = MAX(freq, 2 * BELL_HZ);
 
     /*
      * Ensure full waves per buffer
@@ -98,10 +99,10 @@ xf86OSRingBell(int loudness, int pitch, int duration)
     }
 
     repeats = (duration + (BELL_MS / 2)) / BELL_MS;
-    repeats = max(repeats, BELL_MIN);
+    repeats = MAX(repeats, BELL_MIN);
 
-    loudness = max(0, loudness);
-    loudness = min(loudness, 100);
+    loudness = MAX(0, loudness);
+    loudness = MIN(loudness, 100);
 
 #ifdef DEBUG
     ErrorF("BELL : freq %d volume %d duration %d repeats %d\n",
@@ -113,12 +114,12 @@ xf86OSRingBell(int loudness, int pitch, int duration)
     audioInfo.play.sample_rate = BELL_RATE;
     audioInfo.play.channels = 2;
     audioInfo.play.precision = 16;
-    audioInfo.play.gain = min(AUDIO_MAX_GAIN, AUDIO_MAX_GAIN * loudness / 100);
+    audioInfo.play.gain = MIN(AUDIO_MAX_GAIN, AUDIO_MAX_GAIN * loudness / 100);
 
     if (ioctl(audioFD, AUDIO_SETINFO, &audioInfo) < 0) {
-        xf86Msg(X_ERROR,
-                "Bell: AUDIO_SETINFO failed on audio device \"%s\": %s\n",
-                AUDIO_DEVICE, strerror(errno));
+        LogMessageVerb(X_ERROR, 1,
+                       "Bell: AUDIO_SETINFO failed on audio device \"%s\": %s\n",
+                       AUDIO_DEVICE, strerror(errno));
         close(audioFD);
         return;
     }
@@ -147,9 +148,9 @@ xf86OSRingBell(int loudness, int pitch, int duration)
 
                 if (written == -1) {
                     if (errno != EAGAIN) {
-                        xf86Msg(X_ERROR,
-                                "Bell: writev failed on audio device \"%s\": %s\n",
-                                AUDIO_DEVICE, strerror(errno));
+                        LogMessageVerb(X_ERROR, 1,
+                                       "Bell: writev failed on audio device \"%s\": %s\n",
+                                       AUDIO_DEVICE, strerror(errno));
                         close(audioFD);
                         return;
                     }

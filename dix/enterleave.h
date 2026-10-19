@@ -24,12 +24,10 @@
  *
  */
 
-#ifdef HAVE_DIX_CONFIG_H
-#include <dix-config.h>
-#endif
-
 #ifndef ENTERLEAVE_H
 #define ENTERLEAVE_H
+
+#include <dix-config.h>
 
 #include <dix.h> /* DoFocusEvents() */
 
@@ -57,8 +55,6 @@ extern void DeviceFocusEvent(DeviceIntPtr dev,
                              WindowPtr pWin);
 
 extern void EnterWindow(DeviceIntPtr dev, WindowPtr win, int mode);
-
-extern void LeaveWindow(DeviceIntPtr dev);
 
 extern void CoreFocusEvent(DeviceIntPtr kbd,
                            int type, int mode, int detail, WindowPtr pWin);

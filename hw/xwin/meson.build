@@ -15,8 +15,14 @@ else
 endif
 
 xwin_c_args = []
-xwin_c_args += '-DHAVE_XWIN_CONFIG_H'
 xwin_c_args += '-Wno-bad-function-cast'
+
+# mingw lacking setenv(), so we need to do it on our own
+if cc.has_function('setenv',
+                   prefix : '#include <stdlib.h>',
+                   args : ['-D_XOPEN_SOURCE=600'])
+    xwin_c_args += '-DHAVE_SETENV'
+endif
 
 srcs_windows = [
     'winclipboardinit.c',
@@ -24,6 +30,8 @@ srcs_windows = [
 ]
 subdir('winclipboard')
 
+xwin_glx = []
+xwin_windowsdri = []
 if build_glx
     if build_windowsdri
         xwin_c_args += '-DXWIN_WINDOWS_DRI'
@@ -42,7 +50,7 @@ srcs_windows += [
      'propertystore.h',
      'winSetAppUserModelID.c',
 ]
-xwin_sys_libs += ['-lshlwapi', '-lole32']
+xwin_sys_libs += ['-lshlwapi', '-lole32', '-ldwmapi']
 
 srcs_windows += [
      'winrandr.c',
@@ -102,9 +110,14 @@ srcs_windows += [
     'windisplay.c',
     'windisplay.h',
     '../../mi/miinitext.c',
+    '../../mi/miinitext.h',
 ]
 
-rsrc = windows.compile_resources('XWin.rc', include_directories: include_directories('../../include/'))
+rsrc = windows.compile_resources(
+     'XWin.rc',
+     include_directories: include_directories('../../include/', '../..'),
+     depend_files: ['XWin.exe.manifest', 'X.ico'],
+)
 srcs_windows += rsrc
 
 flex = find_program('flex')
@@ -130,17 +143,17 @@ srcs_windows += pfiles
 
 xwin_dep = [
     common_dep,
-    dependency('x11-xcb'),
     dependency('xcb-aux'),
     dependency('xcb-image'),
     dependency('xcb-ewmh'),
     dependency('xcb-icccm'),
+    dependency('xcb-composite'),
 ]
 
 executable(
     server_name,
     srcs_windows,
-    include_directories: [inc, top_srcdir_inc],
+    include_directories: [inc, top_dir_inc],
     dependencies: xwin_dep,
     link_with: [
         xwin_windowsdri,
@@ -150,7 +163,7 @@ executable(
         libxserver,
         libxserver_glx,
         libglxvnd,
-        libxserver_xkb_stubs,
+        libxserver_xkeyboard_stubs,
         libxserver_miext_shadow,
         libxserver_pseudoramix,
         libxserver_xi_stubs,

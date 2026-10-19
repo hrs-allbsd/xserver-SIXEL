@@ -20,25 +20,24 @@
  * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
  * OF THIS SOFTWARE.
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
 #include <stddef.h>
 #include <string.h>
+#include <stdbool.h>
 #include <stdio.h>
-
 #include <X11/Xarch.h>
+#include <X11/Xatom.h>
+#include <X11/extensions/render.h>
+#include <X11/extensions/dpmsconst.h>
+
+#include "include/xf86DDC.h"
+
 #include "xf86.h"
-#include "xf86DDC.h"
 #include "xf86Crtc.h"
 #include "xf86Modes.h"
 #include "xf86RandR12.h"
 #include "xf86CursorPriv.h"
-#include "X11/extensions/render.h"
-#include "X11/extensions/dpmsconst.h"
-#include "X11/Xatom.h"
 #include "picturestr.h"
 #include "cursorstr.h"
 #include "inputstr.h"
@@ -209,12 +208,6 @@ set_bit(CARD8 *image, xf86CursorInfoPtr cursor_info, int x, int y, Bool mask)
  * *_cursor_*_check
  */
 static inline Bool
-xf86_driver_has_show_cursor(xf86CrtcPtr crtc)
-{
-    return crtc->funcs->show_cursor_check || crtc->funcs->show_cursor;
-}
-
-static inline Bool
 xf86_driver_has_load_cursor_image(xf86CrtcPtr crtc)
 {
     return crtc->funcs->load_cursor_image_check || crtc->funcs->load_cursor_image;
@@ -301,7 +294,8 @@ xf86_set_cursor_colors(ScrnInfoPtr scrn, int bg, int fg)
     CursorPtr cursor = xf86CurrentCursor(screen);
     int c;
     CARD8 *bits = cursor ?
-        dixLookupScreenPrivate(&cursor->devPrivates, CursorScreenKey, screen)
+        dixLookupScreenPrivate(&cursor->devPrivates,
+                               &xf86ScreenCursorBitsKeyRec, screen)
         : NULL;
 
     /* Save ARGB versions of these colors */
@@ -384,9 +378,9 @@ xf86_crtc_transform_cursor_position(xf86CrtcPtr crtc, int *x, int *y)
     xf86CursorInfoPtr cursor_info = xf86_config->cursor_info;
     xf86CursorScreenPtr ScreenPriv =
         (xf86CursorScreenPtr) dixLookupPrivate(&screen->devPrivates,
-                                               xf86CursorScreenKey);
+                                               &xf86CursorScreenKeyRec);
     int dx, dy, t;
-    Bool swap_reflection = FALSE;
+    bool swap_reflection = FALSE;
 
     *x = *x - crtc->x + ScreenPriv->HotX;
     *y = *y - crtc->y + ScreenPriv->HotY;
@@ -654,7 +648,7 @@ xf86_cursors_init(ScreenPtr screen, int max_width, int max_height, int flags)
     if (!cursor_info)
         return FALSE;
 
-    xf86_config->cursor_image = malloc(max_width * max_height * 4);
+    xf86_config->cursor_image = calloc(max_width * max_height, 4);
 
     if (!xf86_config->cursor_image) {
         xf86DestroyCursorInfoRec(cursor_info);

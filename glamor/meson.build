@@ -3,8 +3,8 @@ srcs_glamor = [
     'glamor_copy.c',
     'glamor_core.c',
     'glamor_dash.c',
+    'glamor_egl.c',
     'glamor_font.c',
-    'glamor_glx.c',
     'glamor_composite_glyphs.c',
     'glamor_image.c',
     'glamor_lines.c',
@@ -34,6 +34,9 @@ srcs_glamor = [
     'glamor_sync.c',
 ]
 
+if build_glx
+    srcs_glamor += 'glamor_glx_provider.c'
+endif
 if build_xv
     srcs_glamor += 'glamor_xv.c'
 endif
@@ -42,19 +45,11 @@ epoxy_dep = dependency('epoxy')
 
 glamor = static_library('glamor',
     srcs_glamor,
-    include_directories: inc,
+    include_directories: [inc],
     dependencies: [
         common_dep,
+        libdrm_dep,
         epoxy_dep,
+        gbm_dep,
     ],
 )
-
-glamor_egl_stubs = static_library('glamor_egl_stubs',
-    'glamor_egl_stubs.c',
-    include_directories: inc,
-    dependencies: common_dep,
-)
-
-if build_xorg
-    install_data('glamor.h', install_dir: xorgsdkdir)
-endif

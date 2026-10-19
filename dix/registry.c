@@ -17,16 +17,16 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ********************************************************/
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
 #include <stdlib.h>
 #include <string.h>
 #include <X11/X.h>
 #include <X11/Xproto.h>
+
+#include "dix/registry_priv.h"
+
 #include "resource.h"
-#include "registry.h"
 
 #define BASE_SIZE 16
 
@@ -58,6 +58,7 @@ static int
 double_size(void *p, unsigned n, unsigned size)
 {
     char **ptr = (char **) p;
+    char *grown;
     unsigned s, f;
 
     if (n) {
@@ -70,11 +71,16 @@ double_size(void *p, unsigned n, unsigned size)
         n = f = BASE_SIZE * size;
     }
 
-    *ptr = realloc(*ptr, n);
-    if (!*ptr) {
-        dixResetRegistry();
+    grown = realloc(*ptr, n);
+    if (!grown) {
+        /* Leave the still-valid old buffer/count in place on failure,
+         * instead of overwriting *ptr with the failed realloc()'s NULL
+         * (which would leak the old buffer and desync the caller's size
+         * counter from it) and nuking the whole registry via
+         * dixResetRegistry() over one failed growth. */
         return FALSE;
     }
+    *ptr = grown;
     memset(*ptr + s, 0, f - s);
     return TRUE;
 }
@@ -260,6 +266,54 @@ LookupErrorName(int error)
 }
 #endif /* X_REGISTRY_REQUEST */
 
+static inline void __accbit(Mask val, Mask mask, const char* name, char *buf, int *sz) {
+    if ((val & mask) == mask) {
+        if (buf[0] && *sz > 0)
+            strncat(buf, ",", (*sz)--);
+        if (*sz > 0) {
+            strncat(buf, name, *sz);
+            *sz -= strlen(name);
+        }
+    }
+}
+
+void
+LookupDixAccessName(Mask acc, char *buf, int sz) {
+    int size = sz;
+    sz--;
+    buf[0] = 0;
+    __accbit(acc, DixReadAccess,      "Read",      buf, &sz);
+    __accbit(acc, DixWriteAccess,     "Write",     buf, &sz);
+    __accbit(acc, DixDestroyAccess,   "Destroy",   buf, &sz);
+    __accbit(acc, DixCreateAccess,    "Create",    buf, &sz);
+    __accbit(acc, DixGetAttrAccess,   "GetAttr",   buf, &sz);
+    __accbit(acc, DixSetAttrAccess,   "SetAttr",   buf, &sz);
+    __accbit(acc, DixListPropAccess,  "ListProp",  buf, &sz);
+    __accbit(acc, DixGetPropAccess,   "GetProp",   buf, &sz);
+    __accbit(acc, DixSetPropAccess,   "SetProp",   buf, &sz);
+    __accbit(acc, DixGetFocusAccess,  "GetFocus",  buf, &sz);
+    __accbit(acc, DixSetFocusAccess,  "SetFocus",  buf, &sz);
+    __accbit(acc, DixListAccess,      "List",      buf, &sz);
+    __accbit(acc, DixAddAccess,       "Add",       buf, &sz);
+    __accbit(acc, DixRemoveAccess,    "Remove",    buf, &sz);
+    __accbit(acc, DixHideAccess,      "Hide",      buf, &sz);
+    __accbit(acc, DixShowAccess,      "Show",      buf, &sz);
+    __accbit(acc, DixBlendAccess,     "Blend",     buf, &sz);
+    __accbit(acc, DixGrabAccess,      "Grab",      buf, &sz);
+    __accbit(acc, DixFreezeAccess,    "Freeze",    buf, &sz);
+    __accbit(acc, DixForceAccess,     "Force",     buf, &sz);
+    __accbit(acc, DixInstallAccess,   "Install",   buf, &sz);
+    __accbit(acc, DixUninstallAccess, "Uninstall", buf, &sz);
+    __accbit(acc, DixSendAccess,      "Send",      buf, &sz);
+    __accbit(acc, DixReceiveAccess,   "Receive",   buf, &sz);
+    __accbit(acc, DixUseAccess,       "Use",       buf, &sz);
+    __accbit(acc, DixManageAccess,    "Manage",    buf, &sz);
+    __accbit(acc, DixDebugAccess,     "Debug",     buf, &sz);
+    __accbit(acc, DixBellAccess,      "Bell",      buf, &sz);
+    __accbit(acc, DixPostAccess,      "Post",      buf, &sz);
+    buf[size-1] = 0;
+}
+
 #ifdef X_REGISTRY_RESOURCE
 /*
  * Resource registry functions
@@ -361,15 +415,15 @@ dixResetRegistry(void)
 
 #ifdef X_REGISTRY_RESOURCE
     /* Add built-in resources */
-    RegisterResourceName(RT_NONE, "NONE");
-    RegisterResourceName(RT_WINDOW, "WINDOW");
-    RegisterResourceName(RT_PIXMAP, "PIXMAP");
-    RegisterResourceName(RT_GC, "GC");
-    RegisterResourceName(RT_FONT, "FONT");
-    RegisterResourceName(RT_CURSOR, "CURSOR");
-    RegisterResourceName(RT_COLORMAP, "COLORMAP");
-    RegisterResourceName(RT_CMAPENTRY, "COLORMAP ENTRY");
-    RegisterResourceName(RT_OTHERCLIENT, "OTHER CLIENT");
-    RegisterResourceName(RT_PASSIVEGRAB, "PASSIVE GRAB");
+    RegisterResourceName(X11_RESTYPE_NONE, "NONE");
+    RegisterResourceName(X11_RESTYPE_WINDOW, "WINDOW");
+    RegisterResourceName(X11_RESTYPE_PIXMAP, "PIXMAP");
+    RegisterResourceName(X11_RESTYPE_GC, "GC");
+    RegisterResourceName(X11_RESTYPE_FONT, "FONT");
+    RegisterResourceName(X11_RESTYPE_CURSOR, "CURSOR");
+    RegisterResourceName(X11_RESTYPE_COLORMAP, "COLORMAP");
+    RegisterResourceName(X11_RESTYPE_CMAPENTRY, "COLORMAP ENTRY");
+    RegisterResourceName(X11_RESTYPE_OTHERCLIENT, "OTHER CLIENT");
+    RegisterResourceName(X11_RESTYPE_PASSIVEGRAB, "PASSIVE GRAB");
 #endif
 }

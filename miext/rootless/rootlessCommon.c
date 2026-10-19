@@ -29,15 +29,15 @@
  * use or other dealings in this Software without prior written authorization.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
 #include <stddef.h>             /* For NULL */
 #include <limits.h>             /* For CHAR_BIT */
 
+#include "dix/colormap_priv.h"
+#include "os/mathx_priv.h"
+
 #include "rootlessCommon.h"
-#include "colormapst.h"
 
 unsigned int rootless_CopyBytes_threshold = 0;
 unsigned int rootless_CopyWindow_threshold = 0;
@@ -107,8 +107,8 @@ RootlessResolveColormap(ScreenPtr pScreen, int first_color,
     if (map == NULL || map->class != PseudoColor)
         return FALSE;
 
-    last = min(map->pVisual->ColormapEntries, first_color + n_colors);
-    for (i = max(0, first_color); i < last; i++) {
+    last = MIN(map->pVisual->ColormapEntries, first_color + n_colors);
+    for (i = MAX(0, first_color); i < last; i++) {
         Entry *ent = map->red + i;
         uint16_t red, green, blue;
 
@@ -134,6 +134,21 @@ RootlessResolveColormap(ScreenPtr pScreen, int first_color,
     return TRUE;
 }
 
+unsigned long RootlessWID(WindowPtr pWindow) {
+    WindowPtr top = TopLevelParent(pWindow);
+    RootlessWindowRec *winRec;
+
+    if (top == NULL) {
+        return 0;
+    }
+    winRec = WINREC(top);
+    if (winRec == NULL) {
+        return 0;
+    }
+
+    return (unsigned long)(uintptr_t)winRec->wid;
+}
+
 /*
  * RootlessStartDrawing
  *  Prepare a window for direct access to its backing buffer.
@@ -148,11 +163,15 @@ RootlessStartDrawing(WindowPtr pWindow)
     RootlessWindowRec *winRec;
     PixmapPtr curPixmap;
 
-    if (top == NULL)
+    if (top == NULL) {
+        RL_DEBUG_MSG("RootlessStartDrawing is a no-op because top == NULL.\n");
         return;
+    }
     winRec = WINREC(top);
-    if (winRec == NULL)
+    if (winRec == NULL) {
+        RL_DEBUG_MSG("RootlessStartDrawing is a no-op because winRec == NULL.\n");
         return;
+    }
 
     // Make sure the window's top-level parent is prepared for drawing.
     if (!winRec->is_drawing) {
@@ -166,10 +185,23 @@ RootlessStartDrawing(WindowPtr pWindow)
                                    top->drawable.depth,
                                    top->drawable.bitsPerPixel,
                                    winRec->bytesPerRow, winRec->pixelData);
+
+        RL_DEBUG_MSG("GetScratchPixmapHeader gave us %p %p (%d,%d %dx%d %d) for wid=%lu\n",
+                     winRec->pixmap, winRec->pixmap->devPrivate.ptr, winRec->pixmap->drawable.x,
+                     winRec->pixmap->drawable.y, winRec->pixmap->drawable.width, winRec->pixmap->drawable.height,
+                     winRec->pixmap->drawable.bitsPerPixel, RootlessWID(pWindow));
+
         SetPixmapBaseToScreen(winRec->pixmap,
                               top->drawable.x - bw, top->drawable.y - bw);
 
+        RL_DEBUG_MSG("After SetPixmapBaseToScreen(%d %d %d): %p (%d,%d %dx%d %d) for wid=%lu\n",
+                     top->drawable.x, top->drawable.y, bw, winRec->pixmap->devPrivate.ptr, winRec->pixmap->drawable.x,
+                     winRec->pixmap->drawable.y, winRec->pixmap->drawable.width, winRec->pixmap->drawable.height,
+                     winRec->pixmap->drawable.bitsPerPixel, RootlessWID(pWindow));
+
         winRec->is_drawing = TRUE;
+    } else {
+        RL_DEBUG_MSG("Skipped call to xprStartDrawing (wid: %lu) because winRec->is_drawing says we already did.\n", RootlessWID(pWindow));
     }
 
     curPixmap = pScreen->GetWindowPixmap(pWindow);
@@ -181,6 +213,10 @@ RootlessStartDrawing(WindowPtr pWindow)
         PixmapPtr oldPixmap =
             dixLookupPrivate(&pWindow->devPrivates,
                              rootlessWindowOldPixmapPrivateKey);
+
+        RL_DEBUG_MSG("curPixmap is %p %p for wid=%lu\n", curPixmap, curPixmap ? curPixmap->devPrivate.ptr : NULL, RootlessWID(pWindow));
+        RL_DEBUG_MSG("oldPixmap is %p %p for wid=%lu\n", oldPixmap, oldPixmap ? oldPixmap->devPrivate.ptr : NULL, RootlessWID(pWindow));
+
         if (oldPixmap != NULL) {
             if (oldPixmap == curPixmap)
                 RL_DEBUG_MSG
@@ -277,7 +313,7 @@ RootlessDamageRegion(WindowPtr pWindow, RegionPtr pRegion)
     WindowPtr pTop;
     BoxPtr b1, b2;
 
-    RL_DEBUG_MSG("Damaged win 0x%x ", pWindow);
+    RL_DEBUG_MSG("Damaged win %p\n", pWindow);
 
     pTop = TopLevelParent(pWindow);
     if (pTop == NULL)

@@ -43,9 +43,7 @@ ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
 SOFTWARE.
 
 ******************************************************************/
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
 #include <X11/X.h>
 #include <X11/Xprotostr.h>
@@ -67,7 +65,7 @@ miPolyPoint(DrawablePtr pDrawable, GCPtr pGC, int mode, /* Origin or Previous */
     int i;
     xPoint *ppt;
 
-    if (!(pwidthInit = xallocarray(npt, sizeof(int))))
+    if (!(pwidthInit = calloc(npt, sizeof(int))))
         return;
 
     /* make pointlist origin relative */
@@ -96,7 +94,7 @@ miPolyPoint(DrawablePtr pDrawable, GCPtr pGC, int mode, /* Origin or Previous */
     fsOld.val = pGC->fillStyle;
     fsNew.val = FillSolid;
     if (pGC->fillStyle != FillSolid) {
-        ChangeGC(NullClient, pGC, GCFillStyle, &fsNew);
+        ChangeGC(NULL, pGC, GCFillStyle, &fsNew);
         ValidateGC(pDrawable, pGC);
     }
     pwidth = pwidthInit;
@@ -105,7 +103,7 @@ miPolyPoint(DrawablePtr pDrawable, GCPtr pGC, int mode, /* Origin or Previous */
     (*pGC->ops->FillSpans) (pDrawable, pGC, npt, pptInit, pwidthInit, FALSE);
 
     if (fsOld.val != FillSolid) {
-        ChangeGC(NullClient, pGC, GCFillStyle, &fsOld);
+        ChangeGC(NULL, pGC, GCFillStyle, &fsOld);
         ValidateGC(pDrawable, pGC);
     }
     free(pwidthInit);

@@ -3,15 +3,12 @@
  *   execute BIOS int 10h calls in x86 real mode environment
  *                 Copyright 1999 Egbert Eich
  */
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
 #include "xf86.h"
 #include "xf86str.h"
 #include "xf86_OSproc.h"
-#define _INT10_PRIVATE
-#include "xf86int10.h"
+#include "xf86int10_priv.h"
 
 xf86Int10InfoPtr
 xf86InitInt10(int entityIndex)

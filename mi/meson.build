@@ -1,6 +1,5 @@
 srcs_mi = [
     'miarc.c',
-    'mibitblt.c',
     'micmap.c',
     'micopy.c',
     'midash.c',
@@ -8,10 +7,8 @@ srcs_mi = [
     'mieq.c',
     'miexpose.c',
     'mifillarc.c',
-    'mifillrct.c',
     'migc.c',
     'miglblt.c',
-    'mioverlay.c',
     'mipointer.c',
     'mipoly.c',
     'mipolypnt.c',
@@ -29,20 +26,7 @@ srcs_mi = [
     'mizerline.c',
 ]
 
-hdrs_mi = [
-  'micmap.h',
-  'micoord.h',
-  'migc.h',
-  'mi.h',
-  'miline.h',
-  'mioverlay.h',
-  'mipointer.h',
-  'mipointrst.h',
-  'mistruct.h',
-  'mizerarc.h',
-]
-
-libxserver_mi = static_library('libxserver_mi',
+libxserver_mi = static_library('xserver_mi',
     srcs_mi,
     include_directories: inc,
     dependencies: [
@@ -50,5 +34,3 @@ libxserver_mi = static_library('libxserver_mi',
         m_dep,
     ],
 )
-
-install_data(hdrs_mi, install_dir: xorgsdkdir)

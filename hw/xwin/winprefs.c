@@ -29,20 +29,22 @@
  * Authors:     Earle F. Philhower, III
  *              Colin Harrison
  */
-
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
+
+#include <stdbool.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #ifdef __CYGWIN__
 #include <sys/resource.h>
+#include <sys/cygwin.h>
 #endif
 #include "win.h"
 
 #include <X11/Xwindows.h>
 #include <shellapi.h>
 
+#include "os-compat.h"
 #include "winprefs.h"
 #include "windisplay.h"
 #include "winmultiwindowclass.h"
@@ -58,9 +60,6 @@ extern int parse_file(FILE * fp);
 
 /* Currently in use command ID, incremented each new menu item created */
 static int g_cmdid = STARTMENUID;
-
-/* Local function to handle comma-ified icon names */
-static HICON LoadImageComma(char *fname, int sx, int sy, int flags);
 
 /*
  * Creates or appends a menu from a MENUPARSED structure
@@ -297,7 +296,7 @@ HandleCustomWM_INITMENU(HWND hwnd, HMENU hmenu)
 
 /*
  * Searches for the custom WM_COMMAND command ID and performs action.
- * Return TRUE if command is proccessed, FALSE otherwise.
+ * Return TRUE if command is processed, FALSE otherwise.
  */
 Bool
 HandleCustomWM_COMMAND(HWND hwnd, WORD command, winPrivScreenPtr pScreenPriv)
@@ -474,7 +473,7 @@ winOverrideDefaultIcon(int size)
     HICON hicon;
 
     if (pref.defaultIconName[0]) {
-        hicon = LoadImageComma(pref.defaultIconName, size, size, 0);
+        hicon = LoadImageComma(pref.defaultIconName, pref.iconDirectory, size, size, 0);
         if (hicon == NULL)
             ErrorF("winOverrideDefaultIcon: LoadImageComma(%s) failed\n",
                    pref.defaultIconName);
@@ -496,9 +495,12 @@ winTaskbarIcon(void)
     hicon = 0;
     /* First try and load an overridden, if success then return it */
     if (pref.trayIconName[0]) {
-        hicon = LoadImageComma(pref.trayIconName,
+        hicon = LoadImageComma(pref.trayIconName, pref.iconDirectory,
                                GetSystemMetrics(SM_CXSMICON),
                                GetSystemMetrics(SM_CYSMICON), 0);
+        if (hicon == NULL)
+            ErrorF("winTaskbarIcon: LoadImageComma(%s) failed\n",
+                   pref.trayIconName);
     }
 
     /* Otherwise return the default */
@@ -513,17 +515,18 @@ winTaskbarIcon(void)
 }
 
 /*
+ * Handle comma-ified icon names
+ *
  * Parse a filename to extract an icon:
  *  If fname is exactly ",nnn" then extract icon from our resource
  *  else if it is "file,nnn" then extract icon nnn from that file
  *  else try to load it as an .ico file and if that fails return NULL
  */
-static HICON
-LoadImageComma(char *fname, int sx, int sy, int flags)
+HICON
+LoadImageComma(char *fname, char *iconDirectory, int sx, int sy, int flags)
 {
     HICON hicon;
     int i;
-    char file[PATH_MAX + NAME_MAX + 2];
 
     /* Some input error checking */
     if (!fname || !fname[0])
@@ -539,31 +542,69 @@ LoadImageComma(char *fname, int sx, int sy, int flags)
                           MAKEINTRESOURCE(i), IMAGE_ICON, sx, sy, flags);
     }
     else {
+        char *file = calloc(1, PATH_MAX + NAME_MAX + 2);
+#ifdef  __CYGWIN__
+        bool convert = FALSE;
+#endif
+
+        if (!file)
+            return NULL;
+
         file[0] = 0;
-        /* Prepend path if not given a "X:\" filename */
+
+        /* If fname starts 'X:\', it's an absolute Windows path, do nothing */
         if (!(fname[0] && fname[1] == ':' && fname[2] == '\\')) {
-            strcpy(file, pref.iconDirectory);
-            if (pref.iconDirectory[0])
-                if (fname[strlen(fname) - 1] != '\\')
-                    strcat(file, "\\");
+#ifdef  __CYGWIN__
+            /* If fname starts with '/', it's an absolute cygwin path, we'll
+               need to convert it */
+            if (fname[0] == '/') {
+                convert = TRUE;
+            }
+            else
+#endif
+            if (iconDirectory) {
+                /* Otherwise, prepend the default icon directory, which
+                   currently must be in absolute Windows path form */
+                strcpy(file, iconDirectory);
+                if (iconDirectory[0])
+                    if (iconDirectory[strlen(iconDirectory) - 1] != '\\')
+                        strcat(file, "\\");
+            }
         }
         strcat(file, fname);
 
+        /* Trim off any ',index' */
         if (strrchr(file, ',')) {
-            /* Specified as <fname>,<index> */
-
             *(strrchr(file, ',')) = 0;  /* End string at comma */
             i = atoi(strrchr(fname, ',') + 1);
+        }
+        else {
+            i = -1;
+        }
+
+#ifdef  __CYGWIN__
+        /* Convert from Cygwin path to Windows path */
+        if (convert) {
+            char *converted_file = cygwin_create_path(CCP_POSIX_TO_WIN_A | CCP_ABSOLUTE, file);
+            if (converted_file) {
+                free(file);
+                file = converted_file;
+            }
+        }
+#endif
+
+        if (i >= 0) {
+            /* Specified as <fname>,<index> */
             hicon = ExtractIcon(g_hInstance, file, i);
         }
         else {
-            /* Just an .ico file... */
-
+            /* Specified as just an .ico file */
             hicon = (HICON) LoadImage(NULL,
                                       file,
                                       IMAGE_ICON,
                                       sx, sy, LR_LOADFROMFILE | flags);
         }
+        free(file);
     }
     return hicon;
 }
@@ -585,7 +626,7 @@ winOverrideIcon(char *res_name, char *res_class, char *wmName)
             if (pref.icon[i].hicon)
                 return pref.icon[i].hicon;
 
-            hicon = LoadImageComma(pref.icon[i].iconFile, 0, 0, LR_DEFAULTSIZE);
+            hicon = LoadImageComma(pref.icon[i].iconFile, pref.iconDirectory, 0, 0, LR_DEFAULTSIZE);
             if (hicon == NULL)
                 ErrorF("winOverrideIcon: LoadImageComma(%s) failed\n",
                        pref.icon[i].iconFile);
@@ -620,7 +661,7 @@ winIconIsOverride(HICON hicon)
 
 /*
  * Open and parse the XWinrc config file @path.
- * If @path is NULL, use the built-in default.
+ * @path must not be NULL
  */
 static int
 winPrefsLoadPreferences(const char *path)
@@ -670,7 +711,6 @@ LoadPreferences(void)
     char *home;
     char fname[PATH_MAX + NAME_MAX + 2];
     char szDisplay[512];
-    char *szEnvDisplay;
     int i, j;
     char param[PARAM_MAX + 1];
     char *srcParam, *dstParam;
@@ -706,17 +746,10 @@ LoadPreferences(void)
     if (!parsed) {
         ErrorF
             ("LoadPreferences: See \"man XWinrc\" to customize the XWin menu.\n");
-        parsed = winPrefsLoadPreferences(NULL);
     }
 
-    /* Setup a DISPLAY environment variable, need to allocate on heap */
-    /* because putenv doesn't copy the argument... */
     winGetDisplayName(szDisplay, 0);
-    szEnvDisplay = (char *) (malloc(strlen(szDisplay) + strlen("DISPLAY=") + 1));
-    if (szEnvDisplay) {
-        snprintf(szEnvDisplay, 512, "DISPLAY=%s", szDisplay);
-        putenv(szEnvDisplay);
-    }
+    setenv("DISPLAY", szDisplay, 1);
 
     /* Replace any "%display%" in menu commands with display string */
     for (i = 0; i < pref.menuItems; i++) {

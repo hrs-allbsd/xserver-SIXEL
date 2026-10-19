@@ -21,84 +21,93 @@
  *  DEALINGS IN THE SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
-#include <dix-config.h>
-#endif
+/* Test relies on assert() */
+#undef NDEBUG
 
+#include <dix-config.h>
+
+#include <assert.h>
 #include <stdint.h>
 #include <X11/X.h>
 #include <X11/Xproto.h>
 #include <X11/extensions/XI2proto.h>
 #include <X11/Xatom.h>
+
+#include "dix/inpututils_priv.h"
+#include "miext/extinit_priv.h"
+#include "Xext/xinput/handlers.h"
+
 #include "inputstr.h"
-#include "extinit.h"
-#include "exglobals.h"
+#include "Xext/xinput/exglobals.h"
 #include "scrnintstr.h"
 #include "xkbsrv.h"
 
-#include "xiquerydevice.h"
+#include "Xext/xinput/xiquerydevice.h"
 
 #include "protocol-common.h"
+
+DECLARE_WRAP_FUNCTION(dixWriteToClient, void, ClientPtr client, int len, void *data);
 /*
  * Protocol testing for XIQueryDevice request and reply.
  *
  * Test approach:
- * Wrap WriteToClient to intercept server's reply. ProcXIQueryDevice returns
+ * Wrap dixWriteToClient to intercept server's reply. ProcXIQueryDevice returns
  * data in two batches, once for the request, once for the trailing data
  * with the device information.
  * Repeatedly test with varying deviceids and check against data in reply.
  */
 
-struct test_data {
+static struct test_data {
     int which_device;
     int num_devices_in_reply;
-};
+} test_data;
 
 extern ClientRec client_window;
 
-static void reply_XIQueryDevice_data(ClientPtr client, int len, char *data,
-                                     void *closure);
-static void reply_XIQueryDevice(ClientPtr client, int len, char *data,
-                                void *closure);
+static void reply_XIQueryDevice_data(ClientPtr client, int len, void *data);
 
 /* reply handling for the first bytes that constitute the reply */
 static void
-reply_XIQueryDevice(ClientPtr client, int len, char *data, void *userdata)
+reply_XIQueryDevice(ClientPtr client, int len, void *data)
 {
-    xXIQueryDeviceReply *rep = (xXIQueryDeviceReply *) data;
-    struct test_data *querydata = (struct test_data *) userdata;
+    xXIQueryDeviceReply *repptr = (xXIQueryDeviceReply *) data;
+    xXIQueryDeviceReply reply = *repptr; /* copy so swapping doesn't touch the real reply */
+
+    assert(len < 0xffff); /* suspicious size, swapping bug */
 
     if (client->swapped) {
-        swapl(&rep->length);
-        swaps(&rep->sequenceNumber);
-        swaps(&rep->num_devices);
+        swapl(&reply.length);
+        swaps(&reply.sequenceNumber);
+        swaps(&reply.num_devices);
     }
 
-    reply_check_defaults(rep, len, XIQueryDevice);
+    reply_check_defaults(&reply, len, XIQueryDevice);
 
-    if (querydata->which_device == XIAllDevices)
-        assert(rep->num_devices == devices.num_devices);
-    else if (querydata->which_device == XIAllMasterDevices)
-        assert(rep->num_devices == devices.num_master_devices);
+    if (test_data.which_device == XIAllDevices)
+        assert(reply.num_devices == devices.num_devices);
+    else if (test_data.which_device == XIAllMasterDevices)
+        assert(reply.num_devices == devices.num_master_devices);
     else
-        assert(rep->num_devices == 1);
+        assert(reply.num_devices == 1);
 
-    querydata->num_devices_in_reply = rep->num_devices;
-    reply_handler = reply_XIQueryDevice_data;
+    test_data.num_devices_in_reply = reply.num_devices;
+
+    wrapped_dixWriteToClient = reply_XIQueryDevice_data;
 }
 
 /* reply handling for the trailing bytes that constitute the device info */
 static void
-reply_XIQueryDevice_data(ClientPtr client, int len, char *data, void *closure)
+reply_XIQueryDevice_data(ClientPtr client, int len, void *data)
 {
     int i, j;
-    struct test_data *querydata = (struct test_data *) closure;
 
     DeviceIntPtr dev;
     xXIDeviceInfo *info = (xXIDeviceInfo *) data;
     xXIAnyInfo *any;
 
-    for (i = 0; i < querydata->num_devices_in_reply; i++) {
+    assert(len < 0xffff); /* suspicious size, swapping bug */
+
+    for (i = 0; i < test_data.num_devices_in_reply; i++) {
         if (client->swapped) {
             swaps(&info->deviceid);
             swaps(&info->attachment);
@@ -107,8 +116,8 @@ reply_XIQueryDevice_data(ClientPtr client, int len, char *data, void *closure)
             swaps(&info->name_len);
         }
 
-        if (querydata->which_device > XIAllMasterDevices)
-            assert(info->deviceid == querydata->which_device);
+        if (test_data.which_device > XIAllMasterDevices)
+            assert(info->deviceid == test_data.which_device);
 
         assert(info->deviceid >= 2);    /* 0 and 1 is reserved */
 
@@ -195,6 +204,7 @@ reply_XIQueryDevice_data(ClientPtr client, int len, char *data, void *closure)
                     if (client->swapped) {
                         swaps(&si->number);
                         swaps(&si->scroll_type);
+                        swapl(&si->flags);
                         swapl(&si->increment.integral);
                         swapl(&si->increment.frac);
                     }
@@ -247,11 +257,14 @@ reply_XIQueryDevice_data(ClientPtr client, int len, char *data, void *closure)
                         swapl(&vi->min.frac);
                         swapl(&vi->max.integral);
                         swapl(&vi->max.frac);
+                        swapl(&vi->value.integral);
+                        swapl(&vi->value.frac);
                         swapl(&vi->resolution);
                     }
 
                     assert(vi->length == 11);
-                    assert(vi->number >= 0 && vi->number < 4);
+                    assert(vi->number >= 0);
+                    assert(vi->number < 4);
                     if (info->deviceid == 2)    /* VCP */
                         assert(vi->number < 2);
 
@@ -263,6 +276,15 @@ reply_XIQueryDevice_data(ClientPtr client, int len, char *data, void *closure)
                     assert(vi->max.integral == -1);
                     assert(vi->max.frac == 0);
                     assert(vi->resolution == 0);
+
+                    if (info->deviceid == devices.mouse->id &&
+                        (vi->number == 2 || vi->number == 3)) {
+                        FP3232 expected = double_to_fp3232(
+                            devices.mouse->valuator->axisVal[vi->number]);
+
+                        assert(vi->value.integral == expected.integral);
+                        assert(vi->value.frac == expected.frac);
+                    }
                 }
             }
                 break;
@@ -283,7 +305,7 @@ request_XIQueryDevice(struct test_data *querydata, int deviceid, int error)
 
     request_init(&request, XIQueryDevice);
     client = init_client(request.length, &request);
-    reply_handler = reply_XIQueryDevice;
+    wrapped_dixWriteToClient = reply_XIQueryDevice;
 
     querydata->which_device = deviceid;
 
@@ -294,12 +316,12 @@ request_XIQueryDevice(struct test_data *querydata, int deviceid, int error)
     if (rc != Success)
         assert(client.errorValue == deviceid);
 
-    reply_handler = reply_XIQueryDevice;
+    wrapped_dixWriteToClient = reply_XIQueryDevice;
 
     client.swapped = TRUE;
     swaps(&request.length);
     swaps(&request.deviceid);
-    rc = SProcXIQueryDevice(&client);
+    rc = ProcXIQueryDevice(&client);
     assert(rc == error);
 
     if (rc != Success)
@@ -311,35 +333,36 @@ test_XIQueryDevice(void)
 {
     int i;
     xXIQueryDeviceReq request;
-    struct test_data data;
 
-    reply_handler = reply_XIQueryDevice;
-    global_userdata = &data;
-    request_init(&request, XIQueryDevice);
-
-    printf("Testing XIAllDevices.\n");
-    request_XIQueryDevice(&data, XIAllDevices, Success);
-    printf("Testing XIAllMasterDevices.\n");
-    request_XIQueryDevice(&data, XIAllMasterDevices, Success);
-
-    printf("Testing existing device ids.\n");
-    for (i = 2; i < 6; i++)
-        request_XIQueryDevice(&data, i, Success);
-
-    printf("Testing non-existing device ids.\n");
-    for (i = 6; i <= 0xFFFF; i++)
-        request_XIQueryDevice(&data, i, BadDevice);
-
-    reply_handler = NULL;
-
-}
-
-int
-protocol_xiquerydevice_test(void)
-{
     init_simple();
 
-    test_XIQueryDevice();
+    devices.mouse->valuator->axisVal[2] = 240.5;
+    devices.mouse->valuator->axisVal[3] = -350.25;
 
-    return 0;
+    wrapped_dixWriteToClient = reply_XIQueryDevice;
+    request_init(&request, XIQueryDevice);
+
+    dbg("Testing XIAllDevices.\n");
+    request_XIQueryDevice(&test_data, XIAllDevices, Success);
+    dbg("Testing XIAllMasterDevices.\n");
+    request_XIQueryDevice(&test_data, XIAllMasterDevices, Success);
+
+    dbg("Testing existing device ids.\n");
+    for (i = 2; i < 6; i++)
+        request_XIQueryDevice(&test_data, i, Success);
+
+    dbg("Testing non-existing device ids.\n");
+    for (i = 6; i <= 0xFFFF; i++)
+        request_XIQueryDevice(&test_data, i, BadDevice);
+}
+
+const testfunc_t*
+protocol_xiquerydevice_test(void)
+{
+    static const testfunc_t testfuncs[] = {
+        test_XIQueryDevice,
+        NULL,
+    };
+
+    return testfuncs;
 }

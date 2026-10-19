@@ -1,12 +1,12 @@
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
+#include "dix/dix_priv.h"
 #include <stdio.h>
 #include <pthread.h>
 #include "kdrive.h"
 #include "opaque.h"
 
 extern char *kdExecuteCommand;
+void KdExecuteChildCommand(void);
 
 static void *child_command(void *unused)
 {

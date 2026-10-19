@@ -20,12 +20,12 @@
  * OF THIS SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
+
+#include "dix/input_priv.h"
 
 #include "scrnintstr.h"
-#include "misync.h"
+#include "misync_priv.h"
 #include "misyncstr.h"
 #include "misyncfd.h"
 #include "pixmapstr.h"
@@ -38,9 +38,20 @@ typedef struct _SyncFdScreenPrivate {
 
 static inline SyncFdScreenPrivatePtr sync_fd_screen_priv(ScreenPtr pScreen)
 {
+    SyncFdScreenPrivatePtr      priv;
+
     if (!dixPrivateKeyRegistered(&syncFdScreenPrivateKey))
         return NULL;
-    return dixLookupPrivate(&pScreen->devPrivates, &syncFdScreenPrivateKey);
+
+    /* The private is preallocated on every screen as soon as the key is
+     * registered by any single screen, so its mere presence says nothing.
+     * Only screens that went through miSyncFdScreenInit() have funcs set.
+     */
+    priv = dixLookupPrivate(&pScreen->devPrivates, &syncFdScreenPrivateKey);
+    if (priv->funcs.version <= 0)
+        return NULL;
+
+    return priv;
 }
 
 int
@@ -66,7 +77,7 @@ miSyncFDFromFence(DrawablePtr pDraw, SyncFence *pFence)
     return (*priv->funcs.GetFenceFd)(pDraw->pScreen, pFence);
 }
 
-_X_EXPORT Bool miSyncFdScreenInit(ScreenPtr pScreen,
+Bool miSyncFdScreenInit(ScreenPtr pScreen,
                                   const SyncFdScreenFuncsRec *funcs)
 {
     SyncFdScreenPrivatePtr     priv;
@@ -79,21 +90,18 @@ _X_EXPORT Bool miSyncFdScreenInit(ScreenPtr pScreen,
         return FALSE;
 
     if (!dixPrivateKeyRegistered(&syncFdScreenPrivateKey)) {
-        if (!dixRegisterPrivateKey(&syncFdScreenPrivateKey, PRIVATE_SCREEN, 0))
+        if (!dixRegisterPrivateKey(&syncFdScreenPrivateKey, PRIVATE_SCREEN, sizeof(SyncFdScreenPrivateRec)))
             return FALSE;
     }
 
-    priv = calloc(1, sizeof (SyncFdScreenPrivateRec));
-    if (!priv)
-        return FALSE;
+    priv = dixLookupPrivate(&pScreen->devPrivates, &syncFdScreenPrivateKey);
+    memset(priv, 0, sizeof(*priv));
 
     /* Will require version checks when there are multiple versions
      * of the funcs structure
      */
 
     priv->funcs = *funcs;
-
-    dixSetPrivate(&pScreen->devPrivates, &syncFdScreenPrivateKey, priv);
 
     return TRUE;
 }

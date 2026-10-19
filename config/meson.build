@@ -19,16 +19,11 @@ if build_udev
     config_dep += udev_dep
 endif
 
-if host_machine.system() == 'openbsd'
+if host_machine.system() in ['netbsd', 'openbsd']
     srcs_config += 'wscons.c'
 endif
 
-if build_xorg
-    install_data('10-quirks.conf',
-                 install_dir: join_paths(get_option('datadir'), 'X11/xorg.conf.d'))
-endif
-
-libxserver_config = static_library('libxserver_config',
+libxserver_config = static_library('xserver_config',
     srcs_config,
     include_directories: inc,
     dependencies: config_dep,

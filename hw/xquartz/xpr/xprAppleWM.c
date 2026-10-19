@@ -27,9 +27,7 @@
  * use or other dealings in this Software without prior written authorization.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
 #include "xpr.h"
 
@@ -82,6 +80,7 @@ xprSetWindowLevel(WindowPtr pWin, int level)
     return Success;
 }
 
+#if defined(XPLUGIN_VERSION) && XPLUGIN_VERSION >= 3
 static int
 xprAttachTransient(WindowPtr pWinChild, WindowPtr pWinParent)
 {
@@ -113,6 +112,7 @@ xprAttachTransient(WindowPtr pWinChild, WindowPtr pWinParent)
 
     return Success;
 }
+#endif
 
 static int
 xprFrameDraw(WindowPtr pWin,
@@ -129,6 +129,12 @@ xprFrameDraw(WindowPtr pWin,
     if (wid == 0)
         return BadWindow;
 
+    /* xp_frame_draw() renders the decorations into the window's backing store, so the frame must not be locked for
+     * our own drawing when it runs.  Otherwise Xplugin re-enters the backing lock on an already-locked window, which
+     * remaps the backing store out from under whichever of the two writers loses the race.
+     */
+    RootlessStopDrawing(pWin, FALSE);
+
     if (xp_frame_draw(wid, class, attr, outer, inner,
                       title_len, title_bytes) != Success) {
         return BadValue;
@@ -144,8 +150,16 @@ static AppleWMProcsRec xprAppleWMProcs = {
     xp_frame_get_rect,
     xp_frame_hit_test,
     xprFrameDraw,
+#if defined(XPLUGIN_VERSION) && XPLUGIN_VERSION >= 3
     xp_set_dock_proxy,
     xprAttachTransient
+#elif defined(XPLUGIN_VERSION) && XPLUGIN_VERSION >= 2
+    xp_set_dock_proxy,
+    NULL
+#else
+    NULL,
+    NULL
+#endif
 };
 
 void

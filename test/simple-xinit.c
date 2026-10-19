@@ -21,9 +21,9 @@
  * IN THE SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
+
+#include <X11/Xfuncproto.h>
 
 #include <errno.h>
 #include <signal.h>
@@ -53,11 +53,23 @@ kill_server(int server_pid)
     }
 }
 
-static void
+_X_NORETURN static void
 usage(int argc, char **argv)
 {
     fprintf(stderr, "%s <client command> -- <server command>\n", argv[0]);
     exit(1);
+}
+
+static int server_displayfd;
+static const char *server_dead = "server_dead";
+
+static void
+handle_sigchld(int sig)
+{
+    /* nasty trick to silence compiler warning on unused result.
+       we really have no practical use for it here */
+    if (write(server_displayfd, server_dead, strlen(server_dead)) == -1)
+        fprintf(stderr, "writing to server_displayfd failed: %s\n", strerror(errno));
 }
 
 /* Starts the X server, returning its pid. */
@@ -71,6 +83,17 @@ start_server(char *const *server_args)
         exit(1);
     } else if (server_pid != 0) {
         /* Continue along the main process that will exec the client. */
+
+        struct sigaction sa;
+        sa.sa_handler = handle_sigchld;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+        if (sigaction(SIGCHLD, &sa, 0) == -1) {
+            fprintf(stderr, "Failed to set up signal handler: %s\n",
+                    strerror(errno));
+            exit(1);
+        }
+
         return server_pid;
     }
 
@@ -84,7 +107,7 @@ start_server(char *const *server_args)
 static int
 get_display(int displayfd)
 {
-    char display_string[10];
+    char display_string[20];
     ssize_t ret;
 
     ret = read(displayfd, display_string, sizeof(display_string) - 1);
@@ -97,6 +120,12 @@ get_display(int displayfd)
      * '\n', but not '\0'.  Cap it and parse the number.
      */
     display_string[ret] = '\0';
+
+    if (strncmp(display_string, server_dead, strlen(server_dead)) == 0) {
+        fprintf(stderr, "Server failed to start before setting up displayfd\n");
+        exit(1);
+    }
+
     return atoi(display_string);
 }
 
@@ -184,7 +213,13 @@ parse_args(int argc, char **argv,
             continue;
         }
 
-        *next_arg = argv[i];
+        /* A sort of escaped "--" argument so we can nest server
+         * invocations for testing.
+         */
+        if (strcmp(argv[i], "----") == 0)
+            *next_arg = (char *)"--";
+        else
+            *next_arg = argv[i];
         next_arg++;
     }
 
@@ -222,7 +257,8 @@ main(int argc, char **argv)
         exit(1);
     }
 
-    parse_args(argc, argv, &client_args, &server_args, displayfd_pipe[1]);
+    server_displayfd = displayfd_pipe[1];
+    parse_args(argc, argv, &client_args, &server_args, server_displayfd);
     server_pid = start_server(server_args);
     display = get_display(displayfd_pipe[0]);
     ret = start_client(client_args, display);

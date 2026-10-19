@@ -28,11 +28,13 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
-#include "dri.h"
+#include <assert.h>
+/* XQuartz's own DRI header (hw/xquartz/xpr/xpr_dri.h), renamed from dri.h in
+ * 9bd146a39; use the new name so we don't fall through to the generic
+ * include/dri.h, which pulls in Linux-only <pciaccess.h> and xf86dri.h. */
+#include "xpr_dri.h"
 
 #include <OpenGL/OpenGL.h>
 #include <OpenGL/gl.h>
@@ -40,17 +42,19 @@
 #include <OpenGL/CGLContext.h>
 
 #include <GL/glxproto.h>
-#include <windowstr.h>
-#include <resource.h>
 #include <GL/glxint.h>
 #include <GL/glxtokens.h>
+
+#include "Xext/glx/glxscreens.h"
+#include "Xext/glx/glxserver.h"
+#include "Xext/glx/glxutil.h"
+#include "Xext/glx/glxdrawable.h"
+#include "Xext/glx/glxcontext.h"
+#include "Xext/glx/glxext.h"
+
+#include <windowstr.h>
+#include <resource.h>
 #include <scrnintstr.h>
-#include <glxserver.h>
-#include <glxscreens.h>
-#include <glxdrawable.h>
-#include <glxcontext.h>
-#include <glxext.h>
-#include <glxutil.h>
 
 #include "capabilities.h"
 #include "visualConfigs.h"
@@ -117,7 +121,7 @@ __GLXconfig *__glXAquaCreateVisualConfigs(int *numConfigsPtr, int screenNumber) 
      * __glXScreenDestroy now walks all the fbconfigs and frees them one at a time.
      * See 4b0a3cbab131eb453e2b3fc0337121969258a7be.
      */
-    visualConfigs = calloc(sizeof(*visualConfigs), 1);
+    visualConfigs = calloc(1, sizeof(*visualConfigs));
 
     l = NULL;
     c = visualConfigs; /* current buffer */
@@ -136,7 +140,7 @@ __GLXconfig *__glXAquaCreateVisualConfigs(int *numConfigsPtr, int screenNumber) 
                                         // Global
                                         c->visualID = -1;
                                         c->visualType = GLX_TRUE_COLOR;
-                                        c->next = calloc(sizeof(*visualConfigs), 1);
+                                        c->next = calloc(1, sizeof(*visualConfigs));
                                         assert(c->next);
 
                                         c->level = 0;

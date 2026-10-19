@@ -80,20 +80,25 @@ Author:  Adobe Systems Incorporated
 
 */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <X11/X.h>
 #include <X11/Xmd.h>
-#include "misc.h"
+
+#include "dix/callback_priv.h"
+#include "dix/client_priv.h"
+#include "dix/dix_priv.h"
+#include "dix/resource_priv.h"
+#include "dix/screenint_priv.h"
+#include "dix/saveset_priv.h"
+#include "include/misc.h"
+
 #include "windowstr.h"
 #include "dixstruct.h"
 #include "pixmapstr.h"
 #include "gcstruct.h"
 #include "scrnintstr.h"
-#define  XK_LATIN1
-#include <X11/keysymdef.h>
 #include "xace.h"
 
 /*
@@ -138,47 +143,6 @@ ClientTimeToServerTime(CARD32 c)
             ts.months += 1;
     }
     return ts;
-}
-
-/*
- * ISO Latin-1 case conversion routine
- *
- * this routine always null-terminates the result, so
- * beware of too-small buffers
- */
-
-static unsigned char
-ISOLatin1ToLower(unsigned char source)
-{
-    unsigned char dest;
-
-    if ((source >= XK_A) && (source <= XK_Z))
-        dest = source + (XK_a - XK_A);
-    else if ((source >= XK_Agrave) && (source <= XK_Odiaeresis))
-        dest = source + (XK_agrave - XK_Agrave);
-    else if ((source >= XK_Ooblique) && (source <= XK_Thorn))
-        dest = source + (XK_oslash - XK_Ooblique);
-    else
-        dest = source;
-    return dest;
-}
-
-int
-CompareISOLatin1Lowered(const unsigned char *s1, int s1len,
-                        const unsigned char *s2, int s2len)
-{
-    unsigned char c1, c2;
-
-    for (;;) {
-        /* note -- compare against zero so that -1 ignores len */
-        c1 = s1len-- ? *s1++ : '\0';
-        c2 = s2len-- ? *s2++ : '\0';
-        if (!c1 ||
-            (c1 != c2 &&
-             (c1 = ISOLatin1ToLower(c1)) != (c2 = ISOLatin1ToLower(c2))))
-            break;
-    }
-    return (int) c1 - (int) c2;
 }
 
 /*
@@ -236,21 +200,21 @@ dixLookupWindow(WindowPtr *pWin, XID id, ClientPtr client, Mask access)
 int
 dixLookupGC(GCPtr *pGC, XID id, ClientPtr client, Mask access)
 {
-    return dixLookupResourceByType((void **) pGC, id, RT_GC, client, access);
+    return dixLookupResourceByType((void **) pGC, id, X11_RESTYPE_GC, client, access);
 }
 
 int
 dixLookupFontable(FontPtr *pFont, XID id, ClientPtr client, Mask access)
 {
     int rc;
-    GC *pGC;
+    GCPtr pGC;
 
     client->errorValue = id;    /* EITHER font or gc */
-    rc = dixLookupResourceByType((void **) pFont, id, RT_FONT, client,
+    rc = dixLookupResourceByType((void **) pFont, id, X11_RESTYPE_FONT, client,
                                  access);
     if (rc != BadFont)
         return rc;
-    rc = dixLookupResourceByType((void **) &pGC, id, RT_GC, client, access);
+    rc = dixLookupResourceByType((void **) &pGC, id, X11_RESTYPE_GC, client, access);
     if (rc == BadGC)
         return BadFont;
     if (rc == Success)
@@ -259,93 +223,76 @@ dixLookupFontable(FontPtr *pFont, XID id, ClientPtr client, Mask access)
 }
 
 int
-dixLookupClient(ClientPtr *pClient, XID rid, ClientPtr client, Mask access)
+dixLookupResourceOwner(ClientPtr *result, XID id, ClientPtr client, Mask access_mode)
 {
     void *pRes;
-    int rc = BadValue, clientIndex = CLIENT_ID(rid);
+    int rc = BadValue, clientIndex = dixClientIdForXID(id);
 
-    if (!clientIndex || !clients[clientIndex] || (rid & SERVER_BIT))
+    if (!clientIndex || !clients[clientIndex] || (id & SERVER_BIT))
         goto bad;
 
-    rc = dixLookupResourceByClass(&pRes, rid, RC_ANY, client, DixGetAttrAccess);
+    rc = dixLookupResourceByClass(&pRes, id, RC_ANY, client, DixGetAttrAccess);
     if (rc != Success)
         goto bad;
 
-    rc = XaceHook(XACE_CLIENT_ACCESS, client, clients[clientIndex], access);
+    rc = dixCallClientAccessCallback(client, clients[clientIndex], access_mode);
     if (rc != Success)
         goto bad;
 
-    *pClient = clients[clientIndex];
+    *result = clients[clientIndex];
     return Success;
  bad:
     if (client)
-        client->errorValue = rid;
-    *pClient = NULL;
+        client->errorValue = id;
+    *result = NULL;
     return rc;
 }
 
-int
+XRetCode
 AlterSaveSetForClient(ClientPtr client, WindowPtr pWin, unsigned mode,
                       Bool toRoot, Bool map)
 {
-    int numnow;
-    SaveSetElt *pTmp = NULL;
-    int j;
+    if (mode == SetModeDelete) {
+        SaveSetEntry *walk, *tmp;
+        xorg_list_for_each_entry_safe(walk, tmp, &client->saveSets, entry) {
+            if (walk->windowPtr == pWin) {
+                xorg_list_del(&(walk->entry));
+                free(walk);
+            }
+        }
+        return Success;
+    }
 
-    numnow = client->numSaved;
-    j = 0;
-    if (numnow) {
-        pTmp = client->saveSet;
-        while ((j < numnow) && (SaveSetWindow(pTmp[j]) != (void *) pWin))
-            j++;
-    }
     if (mode == SetModeInsert) {
-        if (j < numnow)         /* duplicate */
-            return Success;
-        numnow++;
-        pTmp = (SaveSetElt *) realloc(client->saveSet, sizeof(*pTmp) * numnow);
-        if (!pTmp)
+        SaveSetEntry *walk;
+        xorg_list_for_each_entry(walk, &client->saveSets, entry) {
+            if (walk->windowPtr == pWin)
+                return Success; /* duplicate */
+        }
+
+        SaveSetEntry *newent = calloc(1, sizeof(SaveSetEntry));
+        if (!newent)
             return BadAlloc;
-        client->saveSet = pTmp;
-        client->numSaved = numnow;
-        SaveSetAssignWindow(client->saveSet[numnow - 1], pWin);
-        SaveSetAssignToRoot(client->saveSet[numnow - 1], toRoot);
-        SaveSetAssignMap(client->saveSet[numnow - 1], map);
+
+        newent->windowPtr = pWin;
+        newent->toRoot = toRoot;
+        newent->map = map;
+        xorg_list_add(&newent->entry, &client->saveSets);
         return Success;
     }
-    else if ((mode == SetModeDelete) && (j < numnow)) {
-        while (j < numnow - 1) {
-            pTmp[j] = pTmp[j + 1];
-            j++;
-        }
-        numnow--;
-        if (numnow) {
-            pTmp =
-                (SaveSetElt *) realloc(client->saveSet, sizeof(*pTmp) * numnow);
-            if (pTmp)
-                client->saveSet = pTmp;
-        }
-        else {
-            free(client->saveSet);
-            client->saveSet = (SaveSetElt *) NULL;
-        }
-        client->numSaved = numnow;
-        return Success;
-    }
+
     return Success;
 }
 
 void
 DeleteWindowFromAnySaveSet(WindowPtr pWin)
 {
-    int i;
     ClientPtr client;
 
-    for (i = 0; i < currentMaxClients; i++) {
+    for (int i = 0; i < currentMaxClients; i++) {
         client = clients[i];
-        if (client && client->numSaved)
-            (void) AlterSaveSetForClient(client, pWin, SetModeDelete, FALSE,
-                                         TRUE);
+        if (client)
+            (void) AlterSaveSetForClient(client, pWin, SetModeDelete, FALSE, TRUE);
     }
 }
 
@@ -363,40 +310,41 @@ typedef struct _BlockHandler {
     ServerBlockHandlerProcPtr BlockHandler;
     ServerWakeupHandlerProcPtr WakeupHandler;
     void *blockData;
-    Bool deleted;
+    bool deleted;
 } BlockHandlerRec, *BlockHandlerPtr;
 
 static BlockHandlerPtr handlers;
-static int numHandlers;
-static int sizeHandlers;
+static size_t numHandlers;
+static size_t sizeHandlers;
 static Bool inHandler;
 static Bool handlerDeleted;
 
 /**
  *
  *  \param pTimeout   DIX doesn't want to know how OS represents time
- *  \param pReadMask  nor how it represents the det of descriptors
  */
 void
 BlockHandler(void *pTimeout)
 {
-    int i, j;
-
     ++inHandler;
-    for (i = 0; i < numHandlers; i++)
+    for (size_t i = 0; i < numHandlers; i++)
         if (!handlers[i].deleted)
             (*handlers[i].BlockHandler) (handlers[i].blockData, pTimeout);
 
-    for (i = 0; i < screenInfo.numGPUScreens; i++)
-        (*screenInfo.gpuscreens[i]->BlockHandler) (screenInfo.gpuscreens[i], pTimeout);
+    DIX_FOR_EACH_GPU_SCREEN({
+        if (walkScreen->BlockHandler)
+            walkScreen->BlockHandler(walkScreen, pTimeout);
+    });
 
-    for (i = 0; i < screenInfo.numScreens; i++)
-        (*screenInfo.screens[i]->BlockHandler) (screenInfo.screens[i], pTimeout);
+    DIX_FOR_EACH_SCREEN({
+        if (walkScreen->BlockHandler)
+            walkScreen->BlockHandler(walkScreen, pTimeout);
+    });
 
     if (handlerDeleted) {
-        for (i = 0; i < numHandlers;)
+        for (size_t i = 0; i < numHandlers;)
             if (handlers[i].deleted) {
-                for (j = i; j < numHandlers - 1; j++)
+                for (size_t j = i; j < numHandlers - 1; j++)
                     handlers[j] = handlers[j + 1];
                 numHandlers--;
             }
@@ -415,20 +363,25 @@ BlockHandler(void *pTimeout)
 void
 WakeupHandler(int result)
 {
-    int i, j;
-
     ++inHandler;
-    for (i = 0; i < screenInfo.numScreens; i++)
-        (*screenInfo.screens[i]->WakeupHandler) (screenInfo.screens[i], result);
-    for (i = 0; i < screenInfo.numGPUScreens; i++)
-        (*screenInfo.gpuscreens[i]->WakeupHandler) (screenInfo.gpuscreens[i], result);
-    for (i = numHandlers - 1; i >= 0; i--)
-        if (!handlers[i].deleted)
-            (*handlers[i].WakeupHandler) (handlers[i].blockData, result);
+
+    DIX_FOR_EACH_SCREEN({
+        if (walkScreen->WakeupHandler)
+            walkScreen->WakeupHandler(walkScreen, result);
+    });
+
+    DIX_FOR_EACH_GPU_SCREEN({
+        if (walkScreen->WakeupHandler)
+            walkScreen->WakeupHandler(walkScreen, result);
+    });
+
+    for (size_t i = numHandlers; i > 0; i--)
+        if (!handlers[i-1].deleted)
+            handlers[i-1].WakeupHandler(handlers[i-1].blockData, result);
     if (handlerDeleted) {
-        for (i = 0; i < numHandlers;)
+        for (size_t i = 0; i < numHandlers;)
             if (handlers[i].deleted) {
-                for (j = i; j < numHandlers - 1; j++)
+                for (size_t j = i; j < numHandlers - 1; j++)
                     handlers[j] = handlers[j + 1];
                 numHandlers--;
             }
@@ -471,9 +424,7 @@ RemoveBlockAndWakeupHandlers(ServerBlockHandlerProcPtr blockHandler,
                              ServerWakeupHandlerProcPtr wakeupHandler,
                              void *blockData)
 {
-    int i;
-
-    for (i = 0; i < numHandlers; i++)
+    for (size_t i = 0; i < numHandlers; i++)
         if (handlers[i].BlockHandler == blockHandler &&
             handlers[i].WakeupHandler == wakeupHandler &&
             handlers[i].blockData == blockData) {
@@ -504,6 +455,13 @@ InitBlockAndWakeupHandlers(void)
  * sleeps for input.
  */
 
+typedef struct _WorkQueue {
+    struct _WorkQueue *next;
+    Bool (*function) (ClientPtr pClient, void *closure);
+    ClientPtr client;
+    void *closure;
+} *WorkQueuePtr;
+
 WorkQueuePtr workQueue;
 static WorkQueuePtr *workQueueLast = &workQueue;
 
@@ -524,6 +482,10 @@ void
 ProcessWorkQueue(void)
 {
     WorkQueuePtr q, *p;
+
+    // don't have a work queue yet
+    if (!workQueue)
+        return;
 
     p = &workQueue;
     /*
@@ -569,9 +531,7 @@ Bool
 QueueWorkProc(Bool (*function) (ClientPtr pClient, void *closure),
               ClientPtr client, void *closure)
 {
-    WorkQueuePtr q;
-
-    q = malloc(sizeof *q);
+    WorkQueuePtr q = calloc(1, sizeof *q);
     if (!q)
         return FALSE;
     q->function = function;
@@ -603,9 +563,7 @@ static SleepQueuePtr sleepQueue = NULL;
 Bool
 ClientSleep(ClientPtr client, ClientSleepProcPtr function, void *closure)
 {
-    SleepQueuePtr q;
-
-    q = malloc(sizeof *q);
+    SleepQueuePtr q = calloc(1, sizeof *q);
     if (!q)
         return FALSE;
 
@@ -618,12 +576,9 @@ ClientSleep(ClientPtr client, ClientSleepProcPtr function, void *closure)
     return TRUE;
 }
 
-Bool
-ClientSignal(ClientPtr client)
+Bool dixClientSignal(ClientPtr client)
 {
-    SleepQueuePtr q;
-
-    for (q = sleepQueue; q; q = q->next)
+    for (SleepQueuePtr q = sleepQueue; q; q = q->next)
         if (q->client == client) {
             return QueueWorkProc(q->function, q->client, q->closure);
         }
@@ -633,10 +588,9 @@ ClientSignal(ClientPtr client)
 int
 ClientSignalAll(ClientPtr client, ClientSleepProcPtr function, void *closure)
 {
-    SleepQueuePtr q;
     int count = 0;
 
-    for (q = sleepQueue; q; q = q->next) {
+    for (SleepQueuePtr q = sleepQueue; q; q = q->next) {
         if (!(client == CLIENT_SIGNAL_ANY || q->client == client))
             continue;
 
@@ -672,9 +626,7 @@ ClientWakeup(ClientPtr client)
 Bool
 ClientIsAsleep(ClientPtr client)
 {
-    SleepQueuePtr q;
-
-    for (q = sleepQueue; q; q = q->next)
+    for (SleepQueuePtr q = sleepQueue; q; q = q->next)
         if (q->client == client)
             return TRUE;
     return FALSE;
@@ -686,15 +638,13 @@ ClientIsAsleep(ClientPtr client)
 
 /* ===== Private Procedures ===== */
 
-static int numCallbackListsToCleanup = 0;
+static size_t numCallbackListsToCleanup = 0;
 static CallbackListPtr **listsToCleanup = NULL;
 
 static Bool
 _AddCallback(CallbackListPtr *pcbl, CallbackProcPtr callback, void *data)
 {
-    CallbackPtr cbr;
-
-    cbr = malloc(sizeof(CallbackRec));
+    CallbackPtr cbr = calloc(1, sizeof(CallbackRec));
     if (!cbr)
         return FALSE;
     cbr->proc = callback;
@@ -782,26 +732,26 @@ _CallCallbacks(CallbackListPtr *pcbl, void *call_data)
     }
 }
 
-static void
-_DeleteCallbackList(CallbackListPtr *pcbl)
+void DeleteCallbackList(CallbackListPtr *pcbl)
 {
+    if (!pcbl || !*pcbl)
+        return;
+
     CallbackListPtr cbl = *pcbl;
-    CallbackPtr cbr, nextcbr;
-    int i;
 
     if (cbl->inCallback) {
         cbl->deleted = TRUE;
         return;
     }
 
-    for (i = 0; i < numCallbackListsToCleanup; i++) {
+    for (size_t i = 0; i < numCallbackListsToCleanup; i++) {
         if (listsToCleanup[i] == pcbl) {
             listsToCleanup[i] = NULL;
             break;
         }
     }
 
-    for (cbr = cbl->list; cbr != NULL; cbr = nextcbr) {
+    for (CallbackPtr cbr = cbl->list, nextcbr; cbr != NULL; cbr = nextcbr) {
         nextcbr = cbr->next;
         free(cbr);
     }
@@ -812,12 +762,10 @@ _DeleteCallbackList(CallbackListPtr *pcbl)
 static Bool
 CreateCallbackList(CallbackListPtr *pcbl)
 {
-    CallbackListPtr cbl;
-    int i;
-
     if (!pcbl)
         return FALSE;
-    cbl = malloc(sizeof(CallbackListRec));
+
+    CallbackListPtr cbl = calloc(1, sizeof(CallbackListRec));
     if (!cbl)
         return FALSE;
     cbl->inCallback = 0;
@@ -826,14 +774,14 @@ CreateCallbackList(CallbackListPtr *pcbl)
     cbl->list = NULL;
     *pcbl = cbl;
 
-    for (i = 0; i < numCallbackListsToCleanup; i++) {
+    for (size_t i = 0; i < numCallbackListsToCleanup; i++) {
         if (!listsToCleanup[i]) {
             listsToCleanup[i] = pcbl;
             return TRUE;
         }
     }
 
-    listsToCleanup = (CallbackListPtr **) xnfrealloc(listsToCleanup,
+    listsToCleanup = (CallbackListPtr **) XNFrealloc(listsToCleanup,
                                                      sizeof(CallbackListPtr *) *
                                                      (numCallbackListsToCleanup
                                                       + 1));
@@ -865,19 +813,9 @@ DeleteCallback(CallbackListPtr *pcbl, CallbackProcPtr callback, void *data)
 }
 
 void
-DeleteCallbackList(CallbackListPtr *pcbl)
-{
-    if (!pcbl || !*pcbl)
-        return;
-    _DeleteCallbackList(pcbl);
-}
-
-void
 DeleteCallbackManager(void)
 {
-    int i;
-
-    for (i = 0; i < numCallbackListsToCleanup; i++) {
+    for (size_t i = 0; i < numCallbackListsToCleanup; i++) {
         DeleteCallbackList(listsToCleanup[i]);
     }
     free(listsToCleanup);

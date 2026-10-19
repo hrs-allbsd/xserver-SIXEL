@@ -17,11 +17,13 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ********************************************************/
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <stdarg.h>
+
+#include "os/client_priv.h"
+
 #include "scrnintstr.h"
 #include "extnsionst.h"
 #include "pixmapstr.h"
@@ -29,23 +31,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "gcstruct.h"
 #include "xacestr.h"
 
-_X_EXPORT CallbackListPtr XaceHooks[XACE_NUM_HOOKS] = { 0 };
+CallbackListPtr XaceHooks[XACE_NUM_HOOKS] = { 0 };
 
 /* Special-cased hook functions.  Called by Xserver.
  */
-#undef XaceHookDispatch
-int
-XaceHookDispatch(ClientPtr client, int major)
-{
-    /* Call the extension dispatch hook */
-    ExtensionEntry *ext = GetExtensionEntry(major);
-    XaceExtAccessRec erec = { client, ext, DixUseAccess, Success };
-    if (ext)
-        CallCallbacks(&XaceHooks[XACE_EXT_DISPATCH], &erec);
-    /* On error, pretend extension doesn't exist */
-    return (erec.status == Success) ? Success : BadRequest;
-}
-
 int
 XaceHookPropertyAccess(ClientPtr client, WindowPtr pWin,
                        PropertyPtr *ppProp, Mask access_mode)
@@ -63,130 +52,29 @@ XaceHookSelectionAccess(ClientPtr client, Selection ** ppSel, Mask access_mode)
     return rec.status;
 }
 
-/* Entry point for hook functions.  Called by Xserver.
- */
-int
-XaceHook(int hook, ...)
+int XaceHookResourceAccess(ClientPtr client, XID id, RESTYPE rtype, void *res,
+                           RESTYPE ptype, void *parent, Mask access_mode)
 {
-    union {
-        XaceResourceAccessRec res;
-        XaceDeviceAccessRec dev;
-        XaceSendAccessRec send;
-        XaceReceiveAccessRec recv;
-        XaceClientAccessRec client;
-        XaceExtAccessRec ext;
-        XaceServerAccessRec server;
-        XaceScreenAccessRec screen;
-        XaceAuthAvailRec auth;
-        XaceKeyAvailRec key;
-    } u;
-    int *prv = NULL;            /* points to return value from callback */
-    va_list ap;                 /* argument list */
+    XaceResourceAccessRec rec = { client, id, rtype, res, ptype, parent,
+                                  access_mode, Success };
+    CallCallbacks(&XaceHooks[XACE_RESOURCE_ACCESS], &rec);
+    return rec.status;
+}
 
-    if (!XaceHooks[hook])
-        return Success;
+int XaceHookSendAccess(ClientPtr client, DeviceIntPtr dev, WindowPtr win,
+                       xEventPtr ev, int count)
+{
+    XaceSendAccessRec rec = { client, dev, win, ev, count, Success };
+    CallCallbacks(&XaceHooks[XACE_SEND_ACCESS], &rec);
+    return rec.status;
+}
 
-    va_start(ap, hook);
-
-    /* Marshal arguments for passing to callback.
-     * Each callback has its own case, which sets up a structure to hold
-     * the arguments and integer return parameter, or in some cases just
-     * sets calldata directly to a single argument (with no return result)
-     */
-    switch (hook) {
-    case XACE_RESOURCE_ACCESS:
-        u.res.client = va_arg(ap, ClientPtr);
-        u.res.id = va_arg(ap, XID);
-        u.res.rtype = va_arg(ap, RESTYPE);
-        u.res.res = va_arg(ap, void *);
-        u.res.ptype = va_arg(ap, RESTYPE);
-        u.res.parent = va_arg(ap, void *);
-        u.res.access_mode = va_arg(ap, Mask);
-
-        u.res.status = Success; /* default allow */
-        prv = &u.res.status;
-        break;
-    case XACE_DEVICE_ACCESS:
-        u.dev.client = va_arg(ap, ClientPtr);
-        u.dev.dev = va_arg(ap, DeviceIntPtr);
-        u.dev.access_mode = va_arg(ap, Mask);
-
-        u.dev.status = Success; /* default allow */
-        prv = &u.dev.status;
-        break;
-    case XACE_SEND_ACCESS:
-        u.send.client = va_arg(ap, ClientPtr);
-        u.send.dev = va_arg(ap, DeviceIntPtr);
-        u.send.pWin = va_arg(ap, WindowPtr);
-
-        u.send.events = va_arg(ap, xEventPtr);
-        u.send.count = va_arg(ap, int);
-
-        u.send.status = Success;        /* default allow */
-        prv = &u.send.status;
-        break;
-    case XACE_RECEIVE_ACCESS:
-        u.recv.client = va_arg(ap, ClientPtr);
-        u.recv.pWin = va_arg(ap, WindowPtr);
-
-        u.recv.events = va_arg(ap, xEventPtr);
-        u.recv.count = va_arg(ap, int);
-
-        u.recv.status = Success;        /* default allow */
-        prv = &u.recv.status;
-        break;
-    case XACE_CLIENT_ACCESS:
-        u.client.client = va_arg(ap, ClientPtr);
-        u.client.target = va_arg(ap, ClientPtr);
-        u.client.access_mode = va_arg(ap, Mask);
-
-        u.client.status = Success;      /* default allow */
-        prv = &u.client.status;
-        break;
-    case XACE_EXT_ACCESS:
-        u.ext.client = va_arg(ap, ClientPtr);
-
-        u.ext.ext = va_arg(ap, ExtensionEntry *);
-        u.ext.access_mode = DixGetAttrAccess;
-        u.ext.status = Success; /* default allow */
-        prv = &u.ext.status;
-        break;
-    case XACE_SERVER_ACCESS:
-        u.server.client = va_arg(ap, ClientPtr);
-        u.server.access_mode = va_arg(ap, Mask);
-
-        u.server.status = Success;      /* default allow */
-        prv = &u.server.status;
-        break;
-    case XACE_SCREEN_ACCESS:
-    case XACE_SCREENSAVER_ACCESS:
-        u.screen.client = va_arg(ap, ClientPtr);
-        u.screen.screen = va_arg(ap, ScreenPtr);
-        u.screen.access_mode = va_arg(ap, Mask);
-
-        u.screen.status = Success;      /* default allow */
-        prv = &u.screen.status;
-        break;
-    case XACE_AUTH_AVAIL:
-        u.auth.client = va_arg(ap, ClientPtr);
-        u.auth.authId = va_arg(ap, XID);
-
-        break;
-    case XACE_KEY_AVAIL:
-        u.key.event = va_arg(ap, xEventPtr);
-        u.key.keybd = va_arg(ap, DeviceIntPtr);
-        u.key.count = va_arg(ap, int);
-
-        break;
-    default:
-        va_end(ap);
-        return 0;               /* unimplemented hook number */
-    }
-    va_end(ap);
-
-    /* call callbacks and return result, if any. */
-    CallCallbacks(&XaceHooks[hook], &u);
-    return prv ? *prv : Success;
+int XaceHookReceiveAccess(ClientPtr client, WindowPtr win,
+                          xEventPtr ev, int count)
+{
+    XaceReceiveAccessRec rec = { client, win, ev, count, Success };
+    CallCallbacks(&XaceHooks[XACE_RECEIVE_ACCESS], &rec);
+    return rec.status;
 }
 
 /* XaceHookIsSet
@@ -249,8 +137,7 @@ XaceCensorImage(ClientPtr client,
     if (nRects > 0) {           /* we have something to censor */
         GCPtr pScratchGC = NULL;
         PixmapPtr pPix = NULL;
-        xRectangle *pRects = NULL;
-        Bool failed = FALSE;
+        bool failed = FALSE;
         int depth = 1;
         int bitsPerPixel = 1;
         int i;
@@ -258,7 +145,7 @@ XaceCensorImage(ClientPtr client,
 
         /* convert region to list-of-rectangles for PolyFillRect */
 
-        pRects = malloc(nRects * sizeof(xRectangle));
+        xRectangle *pRects = calloc(1, nRects * sizeof(xRectangle));
         if (!pRects) {
             failed = TRUE;
             goto failSafe;
@@ -312,17 +199,14 @@ XaceCensorImage(ClientPtr client,
     RegionUninit(&censorRegion);
 }                               /* XaceCensorImage */
 
-/*
- * Xtrans wrappers for use by modules
- */
-int
-XaceGetConnectionNumber(ClientPtr client)
+Bool
+XaceRegisterCallback(int hook, CallbackProcPtr callback, void *data)
 {
-    return GetClientFd(client);
+    return AddCallback(XaceHooks+(hook), callback, data);
 }
 
-int
-XaceIsLocal(ClientPtr client)
+Bool
+XaceDeleteCallback(int hook, CallbackProcPtr callback, void *data)
 {
-    return ClientIsLocal(client);
+    return DeleteCallback(XaceHooks+(hook), callback, data);
 }

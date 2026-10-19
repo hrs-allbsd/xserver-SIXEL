@@ -22,13 +22,16 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <math.h>
+
+#include "dix/exevents_priv.h"
+#include "dix/ptrveloc_priv.h"
+#include "os/bug_priv.h"
+
 #include <ptrveloc.h>
-#include <exevents.h>
 #include <X11/Xatom.h>
 #include <os.h>
 
@@ -77,7 +80,7 @@ DeletePredictableAccelerationProperties(DeviceIntPtr,
 /*#define PTRACCEL_DEBUGGING*/
 
 #ifdef PTRACCEL_DEBUGGING
-#define DebugAccelF(...) ErrorFSigSafe("dix/ptraccel: " __VA_ARGS__)
+#define DebugAccelF(...) ErrorF("dix/ptraccel: " __VA_ARGS__)
 #else
 #define DebugAccelF(...)        /* */
 #endif
@@ -89,15 +92,16 @@ DeletePredictableAccelerationProperties(DeviceIntPtr,
 /* some int which is not a profile number */
 #define PROFILE_UNINITIALIZE (-100)
 
+static int SetAccelerationProfile(DeviceVelocityPtr vel, int profile_num);
+
 /**
  * Init DeviceVelocity struct so it should match the average case
  */
-void
-InitVelocityData(DeviceVelocityPtr vel)
+static void InitVelocityData(DeviceVelocityPtr vel)
 {
     memset(vel, 0, sizeof(DeviceVelocityRec));
 
-    vel->corr_mul = 10.0;       /* dots per 10 milisecond should be usable */
+    vel->corr_mul = 10.0;       /* dots per 10 millisecond should be usable */
     vel->const_acceleration = 1.0;      /* no acceleration/deceleration  */
     vel->reset_time = 300;
     vel->use_softening = 1;
@@ -113,8 +117,7 @@ InitVelocityData(DeviceVelocityPtr vel)
 /**
  * Clean up DeviceVelocityRec
  */
-void
-FreeVelocityData(DeviceVelocityPtr vel)
+static void FreeVelocityData(DeviceVelocityPtr vel)
 {
     free(vel->tracker);
     SetAccelerationProfile(vel, PROFILE_UNINITIALIZE);
@@ -140,9 +143,20 @@ InitPredictableAccelerationScheme(DeviceIntPtr dev,
         return FALSE;
     }
     InitVelocityData(vel);
+    if (!vel->tracker) {
+        /* InitVelocityData()'s InitTrackers(vel, 16) call failed to
+         * allocate the initial tracker buffer -- don't let the device go
+         * live with num_tracker == 0, which every tracker access divides
+         * by (TRACKER_INDEX()). */
+        FreeVelocityData(vel);
+        free(vel);
+        free(schemeData);
+        return FALSE;
+    }
     schemeData->vel = vel;
     scheme.accelData = schemeData;
     if (!InitializePredictableAccelerationProperties(dev, vel, schemeData)) {
+        FreeVelocityData(vel);
         free(vel);
         free(schemeData);
         return FALSE;
@@ -394,7 +408,6 @@ DeletePredictableAccelerationProperties(DeviceIntPtr dev,
 {
     DeviceVelocityPtr vel;
     Atom prop;
-    int i;
 
     prop = XIGetKnownProperty(ACCEL_PROP_VELOCITY_SCALING);
     XIDeleteDeviceProperty(dev, prop, FALSE);
@@ -407,7 +420,7 @@ DeletePredictableAccelerationProperties(DeviceIntPtr dev,
 
     vel = GetDevicePredictableAccelData(dev);
     if (vel) {
-        for (i = 0; i < scheme->num_prop_handlers; i++)
+        for (int i = 0; i < scheme->num_prop_handlers; i++)
             if (scheme->prop_handlers[i])
                 XIUnregisterPropertyHandler(dev, scheme->prop_handlers[i]);
     }
@@ -425,12 +438,29 @@ DeletePredictableAccelerationProperties(DeviceIntPtr dev,
 void
 InitTrackers(DeviceVelocityPtr vel, int ntracker)
 {
+    MotionTrackerPtr tracker;
+
     if (ntracker < 1) {
         ErrorF("invalid number of trackers\n");
         return;
     }
+
+    tracker = (MotionTrackerPtr) calloc(ntracker, sizeof(MotionTracker));
+    if (!tracker) {
+        /* Keep whatever tracker buffer/count vel already had (NULL/0 on
+         * the very first, calloc-fed InitVelocityData() call; the previous
+         * valid one on a later resize, e.g. the "VelocityTrackerCount"
+         * driver option in hw/xfree86/common/xf86Xinput.c) instead of
+         * freeing it and leaving num_tracker pointing at a NULL buffer --
+         * every tracker access divides by num_tracker (TRACKER_INDEX()),
+         * so a stale nonzero count over a NULL buffer is a NULL deref *and*
+         * a division-by-zero the moment num_tracker itself gets zeroed.
+         */
+        ErrorF("[dix] Failed to alloc %d motion trackers.\n", ntracker);
+        return;
+    }
     free(vel->tracker);
-    vel->tracker = (MotionTrackerPtr) calloc(ntracker, sizeof(MotionTracker));
+    vel->tracker = tracker;
     vel->num_tracker = ntracker;
 }
 
@@ -519,7 +549,7 @@ DoGetDirection(int dx, int dy)
 
 /* cache DoGetDirection().
  * To avoid excessive use of direction calculation, cache the values for
- * [-5..5] for both x/y. Anything outside of that is calcualted on the fly.
+ * [-5..5] for both x/y. Anything outside of that is calculated on the fly.
  *
  * @return A bitmask for N, NE, S, SE, etc. indicating the directions for
  * this movement.
@@ -597,7 +627,7 @@ CalcTracker(const MotionTracker * tracker, int cur_t)
 /* find the most plausible velocity. That is, the most distant
  * (in time) tracker which isn't too old, the movement vector was
  * in the same octant, and where the velocity is within an
- * acceptable range to the inital velocity.
+ * acceptable range to the initial velocity.
  *
  * @return The tracker's velocity or 0 if the above conditions are unmet
  */
@@ -688,8 +718,7 @@ QueryTrackers(DeviceVelocityPtr vel, int cur_t)
  * Perform velocity approximation based on 2D 'mickeys' (mouse motion delta).
  * return true if non-visible state reset is suggested
  */
-BOOL
-ProcessVelocityData2D(DeviceVelocityPtr vel, double dx, double dy, int time)
+static BOOL ProcessVelocityData2D(DeviceVelocityPtr vel, double dx, double dy, int time)
 {
     double velocity;
 
@@ -748,10 +777,11 @@ ApplyConstantDeceleration(DeviceVelocityPtr vel, double *fdx, double *fdy)
 /*
  * compute the acceleration for given velocity and enforce min_acceleration
  */
-double
-BasicComputeAcceleration(DeviceIntPtr dev,
-                         DeviceVelocityPtr vel,
-                         double velocity, double threshold, double acc)
+static double BasicComputeAcceleration(DeviceIntPtr dev,
+                                       DeviceVelocityPtr vel,
+                                       double velocity,
+                                       double threshold,
+                                       double acc)
 {
 
     double result;
@@ -860,7 +890,7 @@ PowerProfile(DeviceIntPtr dev,
 {
     double vel_dist;
 
-    acc = (acc - 1.0) * 0.1 + 1.0;     /* without this, acc of 2 is unuseable */
+    acc = (acc - 1.0) * 0.1 + 1.0;     /* without this, acc of 2 is unusable */
 
     if (velocity <= threshold)
         return vel->min_acceleration;
@@ -1011,8 +1041,7 @@ GetAccelerationProfile(DeviceVelocityPtr vel, int profile_num)
  *
  * returns FALSE if profile number is unavailable, TRUE otherwise.
  */
-int
-SetAccelerationProfile(DeviceVelocityPtr vel, int profile_num)
+static int SetAccelerationProfile(DeviceVelocityPtr vel, int profile_num)
 {
     PointerAccelerationProfileFunc profile;
 
@@ -1085,7 +1114,7 @@ acceleratePointerPredictable(DeviceIntPtr dev, ValuatorMask *val, CARD32 evtime)
 {
     double dx = 0, dy = 0;
     DeviceVelocityPtr velocitydata = GetDevicePredictableAccelData(dev);
-    Bool soften = TRUE;
+    bool soften = TRUE;
 
     if (valuator_mask_num_valuators(val) == 0 || !velocitydata)
         return;

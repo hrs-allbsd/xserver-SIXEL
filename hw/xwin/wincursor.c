@@ -30,16 +30,18 @@
  *		Peter Busch
  *		Harold L Hunt II
  */
-
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
+
 #include "win.h"
 #include "winmsg.h"
+
+#include "include/misc.h"
+#include "mi/mipointer_priv.h"
+#include "os/mathx_priv.h"
+
 #include <cursorstr.h>
 #include <mipointrst.h>
 #include <servermd.h>
-#include "misc.h"
 
 #define BRIGHTNESS(x) (x##Red * 0.299 + x##Green * 0.587 + x##Blue * 0.114)
 
@@ -143,11 +145,10 @@ reverse(unsigned char c)
  * FIXME: Perhaps there are more smart code
  */
 static HCURSOR
-winLoadCursor(ScreenPtr pScreen, CursorPtr pCursor, int screen)
+winLoadCursor(ScreenPtr pScreen, CursorPtr pCursor)
 {
     winScreenPriv(pScreen);
     HCURSOR hCursor = NULL;
-    unsigned char *pAnd;
     unsigned char *pXor;
     int nCX, nCY;
     int nBytes;
@@ -173,7 +174,7 @@ winLoadCursor(ScreenPtr pScreen, CursorPtr pCursor, int screen)
     dBackY = BRIGHTNESS(pCursor->back);
     fReverse = dForeY < dBackY;
 
-    /* Check wether the X11 cursor is bigger than the win32 cursor */
+    /* Check whether the X11 cursor is bigger than the win32 cursor */
     if (pScreenPriv->cursor.sm_cx < pCursor->bits->width ||
         pScreenPriv->cursor.sm_cy < pCursor->bits->height) {
         winErrorFVerb(3,
@@ -189,11 +190,11 @@ winLoadCursor(ScreenPtr pScreen, CursorPtr pCursor, int screen)
         bits_to_bytes(pScreenPriv->cursor.sm_cx) * pScreenPriv->cursor.sm_cy;
 
     /* Get the effective width and height */
-    nCX = min(pScreenPriv->cursor.sm_cx, pCursor->bits->width);
-    nCY = min(pScreenPriv->cursor.sm_cy, pCursor->bits->height);
+    nCX = MIN(pScreenPriv->cursor.sm_cx, pCursor->bits->width);
+    nCY = MIN(pScreenPriv->cursor.sm_cy, pCursor->bits->height);
 
     /* Allocate memory for the bitmaps */
-    pAnd = malloc(nBytes);
+    unsigned char *pAnd = calloc(1, nBytes);
     memset(pAnd, 0xFF, nBytes);
     pXor = calloc(1, nBytes);
 
@@ -205,7 +206,7 @@ winLoadCursor(ScreenPtr pScreen, CursorPtr pCursor, int screen)
         for (y = 0; y < nCY; ++y)
             for (x = 0; x < xmax; ++x) {
                 int nWinPix = bits_to_bytes(pScreenPriv->cursor.sm_cx) * y + x;
-                int nXPix = BitmapBytePad(pCursor->bits->width) * y + x;
+                size_t nXPix = BitmapBytePad(pCursor->bits->width) * y + x;
 
                 pAnd[nWinPix] = 0;
                 if (fReverse)
@@ -220,7 +221,7 @@ winLoadCursor(ScreenPtr pScreen, CursorPtr pCursor, int screen)
         for (y = 0; y < nCY; ++y)
             for (x = 0; x < xmax; ++x) {
                 int nWinPix = bits_to_bytes(pScreenPriv->cursor.sm_cx) * y + x;
-                int nXPix = BitmapBytePad(pCursor->bits->width) * y + x;
+                size_t nXPix = BitmapBytePad(pCursor->bits->width) * y + x;
 
                 unsigned char mask = pCursor->bits->mask[nXPix];
 
@@ -316,7 +317,7 @@ winLoadCursor(ScreenPtr pScreen, CursorPtr pCursor, int screen)
                         bit = pAnd[nWinPix];
                         bit = bit & (1 << (7 - (x & 7)));
                         if (!bit) {     /* Within the cursor mask? */
-                            int nXPix =
+                            size_t nXPix =
                                 BitmapBytePad(pCursor->bits->width) * y +
                                 (x / 8);
                             bit =
@@ -506,7 +507,7 @@ winSetCursor(DeviceIntPtr pDev, ScreenPtr pScreen, CursorPtr pCursor, int x,
             pScreenPriv->cursor.handle = NULL;
         }
         pScreenPriv->cursor.handle =
-            winLoadCursor(pScreen, pCursor, pScreen->myNum);
+            winLoadCursor(pScreen, pCursor);
         WIN_DEBUG_MSG("winSetCursor: handle=%p\n", pScreenPriv->cursor.handle);
 
         if (!bInhibit)

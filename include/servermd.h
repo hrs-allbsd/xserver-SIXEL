@@ -47,11 +47,7 @@ SOFTWARE.
 #ifndef SERVERMD_H
 #define SERVERMD_H 1
 
-#if !defined(_DIX_CONFIG_H_) && !defined(_XORG_SERVER_H_)
-#error Drivers must include xorg-server.h before any other xserver headers
-#error xserver code must include dix-config.h before any other headers
-#endif
-
+#include <stddef.h>
 #include <X11/Xarch.h>		/* for X_LITTLE_ENDIAN/X_BIG_ENDIAN */
 
 #if X_BYTE_ORDER == X_LITTLE_ENDIAN
@@ -64,28 +60,9 @@ SOFTWARE.
 #error "Too weird to live."
 #endif
 
-#ifndef GLYPHPADBYTES
-#define GLYPHPADBYTES           4
-#endif
-
-/* size of buffer to use with GetImage, measured in bytes. There's obviously
- * a trade-off between the amount of heap used and the number of times the
- * ddx routine has to be called.
- */
-#ifndef IMAGE_BUFSIZE
-#define IMAGE_BUFSIZE		(64*1024)
-#endif
-
-/* pad scanline to a longword */
-#ifndef BITMAP_SCANLINE_UNIT
-#define BITMAP_SCANLINE_UNIT	32
-#endif
-
-#ifndef BITMAP_SCANLINE_PAD
 #define BITMAP_SCANLINE_PAD  32
 #define LOG2_BITMAP_PAD		5
 #define LOG2_BYTES_PER_SCANLINE_PAD	2
-#endif
 
 #include <X11/Xfuncproto.h>
 /*
@@ -123,7 +100,8 @@ extern _X_EXPORT PaddingInfo PixmapWidthPaddingInfo[];
 #define PixmapBytePad(w, d) \
     (PixmapWidthInPadUnits(w, d) << PixmapWidthPaddingInfo[d].padBytesLog2)
 
-#define BitmapBytePad(w) \
-    (((int)((w) + BITMAP_SCANLINE_PAD - 1) >> LOG2_BITMAP_PAD) << LOG2_BYTES_PER_SCANLINE_PAD)
+static inline size_t BitmapBytePad(size_t w) {
+    return ((((w) + BITMAP_SCANLINE_PAD - 1) >> LOG2_BITMAP_PAD) << LOG2_BYTES_PER_SCANLINE_PAD);
+}
 
 #endif                          /* SERVERMD_H */

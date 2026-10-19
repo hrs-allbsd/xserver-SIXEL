@@ -43,13 +43,12 @@ ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
 SOFTWARE.
 
 ******************************************************************/
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
 #include <X11/X.h>
 
-#include "misc.h"
+#include "include/misc.h"
+
 #include "scrnintstr.h"
 #include "gcstruct.h"
 #include "windowstr.h"
@@ -396,6 +395,19 @@ the numerator is therefore (2^32 - 1), which does not overflow an unsigned
 #define EQN7B	(T_2NDX | T_ADDDY | T_SUBBIAS    | T_DIV2DY)
 #define EQN8	(T_2NDX | T_ADDDY | T_BIASSUBONE | T_DIV2DY)
 #define EQN8B	(T_2NDX | T_ADDDY | T_BIASSUBONE | T_DIV2DY)
+
+#define SWAPINT(i, j) \
+{  int _t = (i);  (i) = (j);  (j) = _t; }
+
+#define SWAPINT_PAIR(x1, y1, x2, y2)\
+{   int t = (x1);  (x1) = (x2);  (x2) = t;\
+        t = (y1);  (y1) = (y2);  (y2) = t;\
+}
+
+#define IsXMajorOctant(_octant)         (!((_octant) & YMAJOR))
+#define IsYMajorOctant(_octant)         ((_octant) & YMAJOR)
+#define IsXDecreasingOctant(_octant)    ((_octant) & XDECREASING)
+#define IsYDecreasingOctant(_octant)    ((_octant) & YDECREASING)
 
 /* miZeroClipLine
  *

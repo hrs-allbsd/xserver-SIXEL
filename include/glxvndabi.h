@@ -59,6 +59,8 @@
 #ifndef GLXVENDORABI_H
 #define GLXVENDORABI_H
 
+#include "xlibre_ptrtypes.h"
+
 #include <scrnintstr.h>
 #include <extnsionst.h>
 #include <GL/glxproto.h>
@@ -223,7 +225,7 @@ typedef struct GlxServerExportsRec {
      * up the old context private pointer.
      *
      * However, this function is not safe to use from a ClientStateCallback,
-     * because GLVND may have alraedy deleted the tag by that point.
+     * because GLVND may have already deleted the tag by that point.
      */
     void * (* getContextTagPrivate)(ClientPtr client, GLXContextTag tag);
 

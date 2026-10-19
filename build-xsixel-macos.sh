@@ -1,45 +1,21 @@
 #!/bin/sh
+set -eu
 
-prefix=/usr/local
-x11prefix=/opt/X11
-
-SIXEL=yes ACLOCAL="aclocal -I ${x11prefix}/share/aclocal" PKG_CONFIG_PATH="${prefix}/lib/pkgconfig:${x11prefix}/lib/pkgconfig:/opt/homebrew/lib" CFLAGS="-O3" ./autogen.sh \
-    --prefix=${prefix} \
-    --with-xkb-path=${x11prefix}/share/X11/xkb \
-    --with-xkb-bin-directory=${x11prefix}/bin \
-    --enable-debug \
-    --disable-xorg \
-    --disable-dmx \
-    --disable-xvfb \
-    --disable-xnest \
-    --disable-xquartz \
-    --disable-xwin \
-    --disable-xephyr \
-    --disable-xfake \
-    --disable-xfbdev \
-    --disable-unit-tests \
-    --enable-mitshm \
-    --disable-dri \
-    --disable-dri2 \
-    --disable-dri3 \
-    --disable-present \
-    --disable-glx \
-    --disable-xf86vidmode \
-    --disable-xquartz \
-    --disable-composite \
-    --disable-xv \
-    --disable-dga \
-    --disable-screensaver \
-    --disable-xdmcp \
-    --disable-xdm-auth-1 \
-    --disable-xinerama \
-    --disable-docs \
-    --disable-xtrans-send-fds \
-    --enable-xsixel \
-    --enable-kdrive \
-    --disable-kdrive-kbd \
-    --disable-kdrive-mouse \
-    --disable-kdrive-evdev \
-
-nice -n19 make -j8
-#make install
+prefix=${PREFIX:-/usr/local}
+x11prefix=${X11_PREFIX:-/opt/X11}
+build_dir=${BUILD_DIR:-build-xsixel}
+export PKG_CONFIG_PATH="${prefix}/lib/pkgconfig:${x11prefix}/lib/pkgconfig:/opt/homebrew/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+# Set CHAFA=true to enable the optional Chafa renderer.
+meson setup --reconfigure "$build_dir" --buildtype=debugoptimized \
+    --prefix="$prefix" \
+    -Dxkb_dir="${x11prefix}/share/X11/xkb" \
+    -Dxkb_bin_dir="${x11prefix}/bin" \
+    -Dxsixel=true \
+    -Dchafa="${CHAFA:-false}" \
+    -Dxorg=false -Dxnest=false -Dxvfb=false \
+    -Dxquartz=false -Dxwin=false -Dxephyr=false \
+    -Dxfake=false -Dxfbdev=false -Dxmodesetting=false \
+    -Dglamor=false -Dglx=false -Ddri1=false -Ddri2=false -Ddri3=false \
+    -Dinput_thread=false -Ddocs=false -Ddevel-docs=false \
+    "$@"
+meson compile -C "$build_dir"

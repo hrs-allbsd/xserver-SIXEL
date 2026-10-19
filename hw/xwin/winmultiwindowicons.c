@@ -27,10 +27,7 @@
  *
  * Authors:	Earle F. Philhower, III
  */
-
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
 
 #ifndef WINVER
 #define WINVER 0x0500
@@ -39,8 +36,6 @@
 #include <limits.h>
 #include <stdbool.h>
 
-#include <X11/Xwindows.h>
-#include <X11/Xlib.h>
 #include <xcb/xcb.h>
 #include <xcb/xcb_icccm.h>
 #include <xcb/xcb_image.h>
@@ -347,7 +342,7 @@ NetWMToWinIcon(int bpp, uint32_t * icon)
         osvi.dwMajorVersion = 5;
         osvi.dwMinorVersion = 1;
 
-        /* Windows versions later than XP have icon alpha channel suport, 2000 does not */
+        /* Windows versions later than XP have icon alpha channel support, 2000 does not */
         VER_SET_CONDITION(dwlConditionMask, VER_MAJORVERSION,
                           VER_GREATER_EQUAL);
         VER_SET_CONDITION(dwlConditionMask, VER_MINORVERSION,
@@ -512,9 +507,9 @@ winXIconToHICON(xcb_connection_t *conn, xcb_window_t id, int iconSize)
                     /* Mask is 1-bit deep */
                     maskStride = ((iconSize * 1 + 15) & (~15)) / 8;
 
-                    image = malloc(stride * iconSize);
-                    imageMask = malloc(stride * iconSize);
-                    mask = malloc(maskStride * iconSize);
+                    image = calloc(stride, iconSize);
+                    imageMask = calloc(stride, iconSize);
+                    mask = calloc(maskStride, iconSize);
 
                     /* Default to a completely black mask */
                     memset(imageMask, 0, stride * iconSize);
@@ -582,7 +577,7 @@ winXIconToHICON(xcb_connection_t *conn, xcb_window_t id, int iconSize)
  */
 
 void
-winUpdateIcon(HWND hWnd, xcb_connection_t *conn, Window id, HICON hIconNew)
+winUpdateIcon(HWND hWnd, xcb_connection_t *conn, xcb_window_t id, HICON hIconNew)
 {
     HICON hIcon, hIconSmall = NULL, hIconOld;
 

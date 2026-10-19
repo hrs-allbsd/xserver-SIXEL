@@ -21,12 +21,12 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
+
+#include <stdbool.h>
 
 #include "scrnintstr.h"
-#include "misync.h"
+#include "misync_priv.h"
 #include "misyncstr.h"
 
 DevPrivateKeyRec miSyncScreenPrivateKey;
@@ -115,10 +115,14 @@ miSyncDestroyFence(SyncFence * pFence)
         SyncScreenPrivPtr pScreenPriv = SYNC_SCREEN_PRIV(pScreen);
         SyncTriggerList *ptl, *pNext;
 
-        /* tell all the fence's triggers that the counter has been destroyed */
-        for (ptl = pFence->sync.pTriglist; ptl; ptl = pNext) {
-            (*ptl->pTrigger->CounterDestroyed) (ptl->pTrigger);
-            pNext = ptl->next;
+        /* tell all the fence's triggers that the fence has been destroyed.
+         * Update pTriglist before each callback and free so that FreeAwait
+         * sees a valid list head when scanning for triggers to NULL out.
+         */
+        nt_list_for_each_entry_safe(ptl, pNext, pFence->sync.pTriglist, next) {
+            pFence->sync.pTriglist = pNext;
+            if (ptl->pTrigger)
+                (*ptl->pTrigger->CounterDestroyed) (ptl->pTrigger);
             free(ptl); /* destroy the trigger list as we go */
         }
 
@@ -131,16 +135,22 @@ miSyncDestroyFence(SyncFence * pFence)
 void
 miSyncTriggerFence(SyncFence * pFence)
 {
-    SyncTriggerList *ptl, *pNext;
+    SyncTriggerList *ptl;
+    bool triggered;
 
     pFence->funcs.SetTriggered(pFence);
 
     /* run through triggers to see if any fired */
-    for (ptl = pFence->sync.pTriglist; ptl; ptl = pNext) {
-        pNext = ptl->next;
-        if ((*ptl->pTrigger->CheckTrigger) (ptl->pTrigger, 0))
-            (*ptl->pTrigger->TriggerFired) (ptl->pTrigger);
-    }
+    do {
+        triggered = FALSE;
+        for (ptl = pFence->sync.pTriglist; ptl; ptl = ptl->next) {
+            if ((*ptl->pTrigger->CheckTrigger) (ptl->pTrigger, 0)) {
+                (*ptl->pTrigger->TriggerFired) (ptl->pTrigger);
+                triggered = TRUE;
+                break;
+            }
+        }
+    } while (triggered);
 }
 
 SyncScreenFuncsPtr
@@ -149,16 +159,6 @@ miSyncGetScreenFuncs(ScreenPtr pScreen)
     SyncScreenPrivPtr pScreenPriv = SYNC_SCREEN_PRIV(pScreen);
 
     return &pScreenPriv->funcs;
-}
-
-static Bool
-SyncCloseScreen(ScreenPtr pScreen)
-{
-    SyncScreenPrivPtr pScreenPriv = SYNC_SCREEN_PRIV(pScreen);
-
-    pScreen->CloseScreen = pScreenPriv->CloseScreen;
-
-    return (*pScreen->CloseScreen) (pScreen);
 }
 
 Bool
@@ -181,10 +181,6 @@ miSyncSetup(ScreenPtr pScreen)
 
     if (!pScreenPriv->funcs.CreateFence) {
         pScreenPriv->funcs = miSyncScreenFuncs;
-
-        /* Wrap CloseScreen to clean up */
-        pScreenPriv->CloseScreen = pScreen->CloseScreen;
-        pScreen->CloseScreen = SyncCloseScreen;
     }
 
     return TRUE;

@@ -1,6 +1,7 @@
 /*
 
 Copyright 1993 by Davor Matic
+Copyright 2026 by Enrico Weigelt, metux IT consult
 
 Permission to use, copy, modify, distribute, and sell this software
 and its documentation for any purpose is hereby granted without fee,
@@ -15,11 +16,13 @@ is" without express or implied warranty.
 #ifndef XNESTSCREEN_H
 #define XNESTSCREEN_H
 
-extern Window xnestDefaultWindows[MAXSCREENS];
-extern Window xnestScreenSaverWindows[MAXSCREENS];
+#include <X11/X.h>
+#include <X11/Xdefs.h>
 
-ScreenPtr xnestScreen(Window window);
-Bool xnestOpenScreen(ScreenPtr pScreen, int argc, char *argv[]);
+#include <xcb/xcb.h>
+
+ScreenPtr xnestScreen(xcb_window_t window);
+bool xnestOpenScreen(ScreenPtr pScreen, int argc, char *argv[], void *closure);
 Bool xnestCloseScreen(ScreenPtr pScreen);
 
 #endif                          /* XNESTSCREEN_H */

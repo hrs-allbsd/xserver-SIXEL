@@ -20,11 +20,16 @@
  * OF THIS SOFTWARE.
  */
 
+#include <dix-config.h>
+
+#include <stddef.h>
+#include <X11/fonts/fontstruct.h> // libxfont2.h missed to include that
+#include <X11/fonts/libxfont2.h>
+
 #include "glamor_priv.h"
 #include "glamor_font.h"
 #include <dixfontstr.h>
 
-static int glamor_font_generation;
 static int glamor_font_private_index;
 static int glamor_font_screen_count;
 
@@ -45,9 +50,12 @@ glamor_font_get(ScreenPtr screen, FontPtr font)
     unsigned char       c[2];
     CharInfoPtr         glyph;
     unsigned long       count;
-    char                *bits;
 
-    if (glamor_priv->glsl_version < 130)
+    if (glamor_priv->flags & GLAMOR_NO_RENDER_ACCEL) {
+        return NULL;
+    }
+
+    if (!glamor_glsl_has_ints(glamor_priv))
         return NULL;
 
     privates = FontGetPrivate(font, glamor_font_private_index);
@@ -70,6 +78,9 @@ glamor_font_get(ScreenPtr screen, FontPtr font)
     /* Figure out the size of each glyph */
     glyph_width_pixels = font->info.maxbounds.rightSideBearing - font->info.minbounds.leftSideBearing;
     glyph_height = font->info.maxbounds.ascent + font->info.maxbounds.descent;
+
+    if (glyph_width_pixels <= 0 || glyph_height <= 0)
+        return NULL;
 
     glyph_width_bytes = (glyph_width_pixels + 7) >> 3;
 
@@ -96,7 +107,7 @@ glamor_font_get(ScreenPtr screen, FontPtr font)
         /* fallback if we don't fit inside a texture */
         return NULL;
     }
-    bits = malloc(overall_width * overall_height);
+    char *bits = calloc(overall_width, overall_height);
     if (!bits)
         return NULL;
 
@@ -130,7 +141,28 @@ glamor_font_get(ScreenPtr screen, FontPtr font)
             if (count) {
                 char *dst;
                 char *src = glyph->bits;
-                unsigned y;
+                int gw = GLYPHWIDTHBYTES(glyph);
+                int gh = GLYPHHEIGHTPIXELS(glyph);
+
+                /* Reject fonts where any per-glyph metric is negative
+                 * or exceeds the atlas slot size derived from maxbounds.
+                 * The PCF parser in libXfont2 does not recompute
+                 * maxbounds from per-glyph data, so a crafted PCF file
+                 * can violate the maxbounds invariant.
+                 *
+                 * gw is passed as size_t to memcpy and a negative value
+                 * would thus result in OOB access.
+                 *
+                 * Returning NULL makes glamor fall back to software
+                 * rendering.
+                 */
+                if (gw < 0 || gh < 0 ||
+                    gw > glyph_width_bytes || gh > glyph_height) {
+                    glDeleteTextures(1, &glamor_font->texture_id);
+                    glamor_font->texture_id = 0;
+                    free(bits);
+                    return NULL;
+                }
 
                 dst = bits;
                 /* get offset of start of first row */
@@ -139,8 +171,8 @@ glamor_font_get(ScreenPtr screen, FontPtr font)
                 dst += (row & 1) ? glamor_font->row_width : 0;
 
                 dst += col * glyph_width_bytes;
-                for (y = 0; y < GLYPHHEIGHTPIXELS(glyph); y++) {
-                    memcpy(dst, src, GLYPHWIDTHBYTES(glyph));
+                for (int y = 0; y < gh; y++) {
+                    memcpy(dst, src, gw);
                     dst += overall_width;
                     src += GLYPHWIDTHBYTESPADDED(glyph);
                 }
@@ -154,10 +186,13 @@ glamor_font_get(ScreenPtr screen, FontPtr font)
     glTexImage2D(GL_TEXTURE_2D, 0, GL_R8UI, overall_width, overall_height,
                  0, GL_RED_INTEGER, GL_UNSIGNED_BYTE, bits);
     glamor_priv->suppress_gl_out_of_memory_logging = false;
-    if (glGetError() == GL_OUT_OF_MEMORY)
-        return NULL;
-
     free(bits);
+
+    if (glGetError() != GL_NO_ERROR) {
+        glDeleteTextures(1, &glamor_font->texture_id);
+        glamor_font->texture_id = 0;
+        return NULL;
+    }
 
     glamor_font->realized = TRUE;
 
@@ -210,16 +245,13 @@ glamor_font_init(ScreenPtr screen)
 {
     glamor_screen_private *glamor_priv = glamor_get_screen_private(screen);
 
-    if (glamor_priv->glsl_version < 130)
+    if (!glamor_glsl_has_ints(glamor_priv))
         return TRUE;
 
-    if (glamor_font_generation != serverGeneration) {
-        glamor_font_private_index = xfont2_allocate_font_private_index();
-        if (glamor_font_private_index == -1)
-            return FALSE;
-        glamor_font_screen_count = 0;
-        glamor_font_generation = serverGeneration;
-    }
+    glamor_font_private_index = xfont2_allocate_font_private_index();
+    if (glamor_font_private_index == -1)
+        return FALSE;
+    glamor_font_screen_count = 0;
 
     if (screen->myNum >= glamor_font_screen_count)
         glamor_font_screen_count = screen->myNum + 1;

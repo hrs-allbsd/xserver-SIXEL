@@ -28,9 +28,7 @@
  * prior written authorization.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
 #include "x-hash.h"
 #include "x-list.h"
@@ -50,7 +48,7 @@ struct x_hash_table_struct {
     x_destroy_fun *destroy_value;
 };
 
-#define ITEM_NEW(k, v) X_PFX(list_prepend) ((x_list *)(k), v)
+#define ITEM_NEW(k, v) X_PFX(list_prepend) ((x_list *)(k), (v))
 #define ITEM_FREE(i)   X_PFX(list_free_1) (i)
 #define ITEM_KEY(i)    ((void *)(i)->next)
 #define ITEM_VALUE(i)  ((i)->data)

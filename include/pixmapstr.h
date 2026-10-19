@@ -78,18 +78,16 @@ typedef struct _Pixmap {
     int refcnt;
     int devKind;                /* This is the pitch of the pixmap, typically width*bpp/8. */
     DevUnion devPrivate;        /* When !NULL, devPrivate.ptr points to the raw pixel data. */
-#ifdef COMPOSITE
     short screen_x;
     short screen_y;
-#endif
     unsigned usage_hint;        /* see CREATE_PIXMAP_USAGE_* */
 
-    PixmapPtr master_pixmap;    /* pointer to master copy of pixmap for pixmap sharing */
+    PixmapPtr primary_pixmap;    /* pointer to primary copy of pixmap for pixmap sharing */
 } PixmapRec;
 
 typedef struct _PixmapDirtyUpdate {
     DrawablePtr src;            /* Root window / shared pixmap */
-    PixmapPtr slave_dst;        /* Shared / scanout pixmap */
+    PixmapPtr secondary_dst;    /* Shared / scanout pixmap */
     int x, y;
     DamagePtr damage;
     struct xorg_list ent;
@@ -100,22 +98,12 @@ typedef struct _PixmapDirtyUpdate {
 } PixmapDirtyUpdateRec;
 
 static inline void
-PixmapBox(BoxPtr box, PixmapPtr pixmap)
-{
-    box->x1 = 0;
-    box->x2 = pixmap->drawable.width;
-
-    box->y1 = 0;
-    box->y2 = pixmap->drawable.height;
-}
-
-
-static inline void
 PixmapRegionInit(RegionPtr region, PixmapPtr pixmap)
 {
-    BoxRec box;
-
-    PixmapBox(&box, pixmap);
+    BoxRec box = {
+        .x2 = (int16_t)pixmap->drawable.width,
+        .y2 = (int16_t)pixmap->drawable.height,
+    };
     RegionInit(region, &box, 1);
 }
 

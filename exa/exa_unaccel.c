@@ -20,10 +20,13 @@
  * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
  * PERFORMANCE OF THIS SOFTWARE.
  */
+#include <dix-config.h>
+
+#include <stdbool.h>
+
+#include "include/mipict.h"
 
 #include "exa_priv.h"
-
-#include "mipict.h"
 
 /*
  * These functions wrap the low-level fb rendering functions and
@@ -366,7 +369,7 @@ ExaCheckPushPixels(GCPtr pGC, PixmapPtr pBitmap,
 }
 
 void
-ExaCheckCopyWindow(WindowPtr pWin, DDXPointRec ptOldOrg, RegionPtr prgnSrc)
+ExaCheckCopyWindow(WindowPtr pWin, xPoint ptOldOrg, RegionPtr prgnSrc)
 {
     DrawablePtr pDrawable = &pWin->drawable;
     ScreenPtr pScreen = pDrawable->pScreen;
@@ -459,11 +462,9 @@ ExaSrcValidate(DrawablePtr pDrawable,
     RegionUnion(dst, dst, &reg);
     RegionUninit(&reg);
 
-    if (pExaScr->SavedSourceValidate) {
-        swap(pExaScr, pScreen, SourceValidate);
-        pScreen->SourceValidate(pDrawable, x, y, width, height, subWindowMode);
-        swap(pExaScr, pScreen, SourceValidate);
-    }
+    swap(pExaScr, pScreen, SourceValidate);
+    pScreen->SourceValidate(pDrawable, x, y, width, height, subWindowMode);
+    swap(pExaScr, pScreen, SourceValidate);
 }
 
 static Bool
@@ -487,7 +488,7 @@ ExaPrepareCompositeReg(ScreenPtr pScreen,
     PixmapPtr pDstPix;
 
     ExaScreenPriv(pScreen);
-    Bool ret;
+    bool ret;
 
     RegionNull(&region);
 

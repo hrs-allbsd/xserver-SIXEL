@@ -22,22 +22,20 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
 #include <errno.h>
 #include <string.h>
-
+#include <sys/mman.h>
 #include <X11/X.h>
+
 #include "input.h"
 #include "scrnintstr.h"
 
 #include "xf86.h"
+#include "xf86_os_support.h"
 #include "xf86Priv.h"
 #include "xf86_OSlib.h"
-#include "xf86OSpriv.h"
 
 static Bool ExtendedEnabled = FALSE;
 
@@ -50,7 +48,6 @@ static Bool ExtendedEnabled = FALSE;
       !defined(__mc68000__) && \
       !defined(__sparc__) && \
       !defined(__mips__) && \
-      !defined(__nds32__) && \
       !defined(__arm__) && \
       !defined(__aarch64__) && \
       !defined(__arc__) && \
@@ -80,7 +77,7 @@ xf86OSInitVidMem(VidMemInfoPtr pVidMem)
 /***************************************************************************/
 
 #if defined(__powerpc__)
-volatile unsigned char *ioBase = NULL;
+void *ioBase = NULL;
 
 #ifndef __NR_pciconfig_iobase
 #define __NR_pciconfig_iobase	200
@@ -94,7 +91,7 @@ hwEnableIO(void)
 
     fd = open("/dev/mem", O_RDWR);
     if (ioBase == NULL) {
-        ioBase = (volatile unsigned char *) mmap(0, 0x20000,
+        ioBase = mmap(0, 0x20000,
                                                  PROT_READ | PROT_WRITE,
                                                  MAP_SHARED, fd, ioBase_phys);
     }
@@ -116,16 +113,48 @@ hwDisableIO(void)
 static Bool
 hwEnableIO(void)
 {
-    if (ioperm(0, 1024, 1) || iopl(3)) {
-        ErrorF("xf86EnableIOPorts: failed to set IOPL for I/O (%s)\n",
+    /* xf86-video-vesa and others (at least mach64) need access to all I/O ports */
+    if (iopl(3)) {
+        ErrorF("xf86EnableIO: failed to set I/O privilege level to 3 (%s)\n",
+           strerror(errno));
+        /* Since Linux 2.6.8, 65,536 I/O ports can be specified */
+        if (ioperm(0, 65536, 1)) {
+            ErrorF("xf86EnableIO: failed to enable I/O ports 0000-ffff (%s)\n",
                strerror(errno));
-        return FALSE;
+            if (ioperm(0, 1024, 1)) {
+                ErrorF("xf86EnableIO: failed to enable I/O ports 0000-03ff (%s)\n",
+                   strerror(errno));
+                return FALSE;
+            }
+        }
     }
+
 #if !defined(__alpha__)
-    /* XXX: this is actually not trapping anything because of iopl(3)
-     * above */
-    ioperm(0x40, 4, 0);         /* trap access to the timer chip */
-    ioperm(0x60, 4, 0);         /* trap access to the keyboard controller */
+    short i;
+    size_t n=0;
+    int begin, end;
+    char *buf=NULL, target[5];
+    FILE *fp;
+
+    target[4] = '\0';
+
+    /* trap access to the keyboard controller(s) and timer chip(s) */
+    fp = fopen("/proc/ioports", "r");
+    while (getline(&buf, &n, fp) != -1) {
+        if ((strstr(buf, "keyboard") != NULL) || (strstr(buf, "timer") != NULL)) {
+            for (i=0; i<4; i++)
+                target[i] = buf[i+2];
+            begin = atoi(target);
+
+            for (i=0; i<4; i++)
+                target[i] = buf[i+7];
+            end = atoi(target);
+
+            ioperm(begin, end-begin+1, 0);
+        }
+    }
+    free(buf);
+    fclose(fp);
 #endif
 
     return TRUE;

@@ -52,10 +52,9 @@ SOFTWARE.
  * bresenham zero-width lines, except walks an X edge
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <stdio.h>
 #ifdef _XOPEN_SOURCE
 #include <math.h>
@@ -65,21 +64,14 @@ SOFTWARE.
 #undef _XOPEN_SOURCE
 #endif
 #include <X11/X.h>
+
+#include "mi/mi_priv.h"
+#include "os/osdep.h"
+
 #include "windowstr.h"
 #include "gcstruct.h"
 #include "regionstr.h"
 #include "miwideline.h"
-#include "mi.h"
-
-#if 0
-#ifdef HAVE_DIX_CONFIG_H
-#include <dix-config.h>
-#endif
-
-#include "misc.h"
-#include "pixmapstr.h"
-#include "gcstruct.h"
-#endif
 
 typedef struct {
     int count;                  /* number of spans                  */
@@ -96,7 +88,7 @@ typedef struct {
 
 /* Rops which must use span groups */
 #define miSpansCarefulRop(rop)	(((rop) & 0xc) == 0x8 || ((rop) & 0x3) == 0x2)
-#define miSpansEasyRop(rop)	(!miSpansCarefulRop(rop))
+#define miSpansEasyRop(rop)	(!miSpansCarefulRop((rop)))
 
 /*
 
@@ -117,8 +109,8 @@ miInitSpanGroup(SpanGroup * spanGroup)
     spanGroup->ymax = MINSHORT;
 }                               /* InitSpanGroup */
 
-#define YMIN(spans) (spans->points[0].y)
-#define YMAX(spans)  (spans->points[spans->count-1].y)
+#define YMIN(spans) ((spans)->points[0].y)
+#define YMAX(spans)  ((spans)->points[(spans)->count-1].y)
 
 static void
 miSubtractSpans(SpanGroup * spanGroup, Spans * sub)
@@ -191,7 +183,7 @@ miSubtractSpans(SpanGroup * spanGroup, Spans * sub)
 #define EXTRA 8
                                 newPt = reallocarray(spans->points,
                                                      spans->count + EXTRA,
-                                                     sizeof(DDXPointRec));
+                                                     sizeof(xPoint));
                                 if (!newPt)
                                     break;
                                 spansPt = newPt + (spansPt - spans->points);
@@ -237,8 +229,8 @@ miAppendSpans(SpanGroup * spanGroup, SpanGroup * otherGroup, Spans * spans)
     if (spansCount > 0) {
         if (spanGroup->size == spanGroup->count) {
             spanGroup->size = (spanGroup->size + 8) * 2;
-            spanGroup->group =
-                reallocarray(spanGroup->group, sizeof(Spans), spanGroup->size);
+            spanGroup->group = XNFreallocarray(spanGroup->group,
+                                               sizeof(Spans), spanGroup->size);
         }
 
         spanGroup->group[spanGroup->count] = *spans;
@@ -266,7 +258,7 @@ miFreeSpanGroup(SpanGroup * spanGroup)
 }
 
 static void
-QuickSortSpansX(DDXPointRec points[], int widths[], int numSpans)
+QuickSortSpansX(xPoint points[], int widths[], int numSpans)
 {
     int x;
     int i, j, m;
@@ -277,11 +269,11 @@ QuickSortSpansX(DDXPointRec points[], int widths[], int numSpans)
 
 #define ExchangeSpans(a, b)				    \
 {							    \
-    DDXPointRec 	tpt;				    \
+    xPoint		tpt;				    \
     int    		tw;				    \
 							    \
-    tpt = points[a]; points[a] = points[b]; points[b] = tpt;    \
-    tw = widths[a]; widths[a] = widths[b]; widths[b] = tw;  \
+    tpt = points[(a)]; points[(a)] = points[(b)]; points[(b)] = tpt;    \
+    tw = widths[(a)]; widths[(a)] = widths[(b)]; widths[(b)] = tw;  \
 }
 
     do {
@@ -295,7 +287,7 @@ QuickSortSpansX(DDXPointRec points[], int widths[], int numSpans)
                 x = points[i].x;
                 if (xprev > x) {
                     /* points[i] is out of order.  Move into proper location. */
-                    DDXPointRec tpt;
+                    xPoint tpt;
                     int tw, k;
 
                     for (j = 0; x >= points[j].x; j++) {
@@ -355,10 +347,10 @@ QuickSortSpansX(DDXPointRec points[], int widths[], int numSpans)
 }                               /* QuickSortSpans */
 
 static int
-UniquifySpansX(Spans * spans, DDXPointRec * newPoints, int *newWidths)
+UniquifySpansX(Spans * spans, xPoint* newPoints, int *newWidths)
 {
     int newx1, newx2, oldpt, i, y;
-    DDXPointRec *oldPoints;
+    xPoint *oldPoints;
     int *oldWidths;
     int *startNewWidths;
 
@@ -453,8 +445,8 @@ miFillUniqueSpanGroup(DrawablePtr pDraw, GCPtr pGC, SpanGroup * spanGroup)
         ylength = spanGroup->ymax - ymin + 1;
 
         /* Allocate Spans for y buckets */
-        yspans = xallocarray(ylength, sizeof(Spans));
-        ysizes = xallocarray(ylength, sizeof(int));
+        yspans = calloc(ylength, sizeof(Spans));
+        ysizes = calloc(ylength, sizeof(int));
 
         if (!yspans || !ysizes) {
             free(yspans);
@@ -490,7 +482,7 @@ miFillUniqueSpanGroup(DrawablePtr pDraw, GCPtr pGC, SpanGroup * spanGroup)
                         ysizes[index] = (ysizes[index] + 8) * 2;
                         newpoints = reallocarray(newspans->points,
                                                  ysizes[index],
-                                                 sizeof(DDXPointRec));
+                                                 sizeof(xPoint));
                         newwidths = reallocarray(newspans->widths,
                                                  ysizes[index], sizeof(int));
                         if (!newpoints || !newwidths) {
@@ -521,8 +513,8 @@ miFillUniqueSpanGroup(DrawablePtr pDraw, GCPtr pGC, SpanGroup * spanGroup)
         }                       /* for i thorough Spans */
 
         /* Now sort by x and uniquify each bucket into the final array */
-        points = xallocarray(count, sizeof(DDXPointRec));
-        widths = xallocarray(count, sizeof(int));
+        points = calloc(count, sizeof(xPoint));
+        widths = calloc(count, sizeof(int));
         if (!points || !widths) {
             for (i = 0; i < ylength; i++) {
                 free(yspans[i].points);
@@ -569,10 +561,10 @@ miFillUniqueSpanGroup(DrawablePtr pDraw, GCPtr pGC, SpanGroup * spanGroup)
 static Bool
 InitSpans(Spans * spans, size_t nspans)
 {
-    spans->points = xallocarray(nspans, sizeof(*spans->points));
+    spans->points = calloc(nspans, sizeof(*spans->points));
     if (!spans->points)
         return FALSE;
-    spans->widths = xallocarray(nspans, sizeof(*spans->widths));
+    spans->widths = calloc(nspans, sizeof(*spans->widths));
     if (!spans->widths) {
         free(spans->points);
         return FALSE;
@@ -626,7 +618,7 @@ fillSpans(DrawablePtr pDrawable, GCPtr pGC, unsigned long pixel, Spans * spans,
         oldPixel.val = pGC->fgPixel;
         if (pixel != oldPixel.val) {
             tmpPixel.val = (XID) pixel;
-            ChangeGC(NullClient, pGC, GCForeground, &tmpPixel);
+            ChangeGC(NULL, pGC, GCForeground, &tmpPixel);
             ValidateGC(pDrawable, pGC);
         }
         (*pGC->ops->FillSpans) (pDrawable, pGC, spans->count, spans->points,
@@ -634,7 +626,7 @@ fillSpans(DrawablePtr pDrawable, GCPtr pGC, unsigned long pixel, Spans * spans,
         free(spans->widths);
         free(spans->points);
         if (pixel != oldPixel.val) {
-            ChangeGC(NullClient, pGC, GCForeground, &oldPixel);
+            ChangeGC(NULL, pGC, GCForeground, &oldPixel);
             ValidateGC(pDrawable, pGC);
         }
     }
@@ -756,12 +748,12 @@ miFillRectPolyHelper(DrawablePtr pDrawable,
         oldPixel.val = pGC->fgPixel;
         if (pixel != oldPixel.val) {
             tmpPixel.val = (XID) pixel;
-            ChangeGC(NullClient, pGC, GCForeground, &tmpPixel);
+            ChangeGC(NULL, pGC, GCForeground, &tmpPixel);
             ValidateGC(pDrawable, pGC);
         }
         (*pGC->ops->PolyFillRect) (pDrawable, pGC, 1, &rect);
         if (pixel != oldPixel.val) {
-            ChangeGC(NullClient, pGC, GCForeground, &oldPixel);
+            ChangeGC(NULL, pGC, GCForeground, &oldPixel);
             ValidateGC(pDrawable, pGC);
         }
     }
@@ -837,7 +829,7 @@ miPolyBuildEdge(double x0, double y0, double k, /* x0 * dy - y0 * dx */
     return y + yi;
 }
 
-#define StepAround(v, incr, max) (((v) + (incr) < 0) ? (max - 1) : ((v) + (incr) == max) ? 0 : ((v) + (incr)))
+#define StepAround(v, incr, max) (((v) + (incr) < 0) ? ((max) - 1) : ((v) + (incr) == (max)) ? 0 : ((v) + (incr)))
 
 static int
 miPolyBuildPoly(PolyVertexPtr vertices,
@@ -945,7 +937,7 @@ miLineOnePoint(DrawablePtr pDrawable,
                GCPtr pGC,
                unsigned long pixel, SpanDataPtr spanData, int x, int y)
 {
-    DDXPointRec pt;
+    xPoint pt;
     int wid;
     unsigned long oldPixel;
 
@@ -1164,25 +1156,25 @@ miLineArcI(DrawablePtr pDraw,
 }
 
 #define CLIPSTEPEDGE(edgey,edge,edgeleft) \
-    if (ybase == edgey) \
+    if (ybase == (edgey)) \
     { \
-	if (edgeleft) \
+	if ((edgeleft)) \
 	{ \
-	    if (edge->x > xcl) \
-		xcl = edge->x; \
+	    if ((edge)->x > xcl) \
+		xcl = (edge)->x; \
 	} \
 	else \
 	{ \
-	    if (edge->x < xcr) \
-		xcr = edge->x; \
+	    if ((edge)->x < xcr) \
+		xcr = (edge)->x; \
 	} \
-	edgey++; \
-	edge->x += edge->stepx; \
-	edge->e += edge->dx; \
-	if (edge->e > 0) \
+	(edgey)++; \
+	(edge)->x += (edge)->stepx; \
+	(edge)->e += (edge)->dx; \
+	if ((edge)->e > 0) \
 	{ \
-	    edge->x += edge->signdx; \
-	    edge->e -= edge->dy; \
+	    (edge)->x += (edge)->signdx; \
+	    (edge)->e -= (edge)->dy; \
 	} \
     }
 
@@ -1202,7 +1194,7 @@ miLineArcD(DrawablePtr pDraw,
     double radius, x0, y0, el, er, yk, xlk, xrk, k;
     int xbase, ybase, y, boty, xl, xr, xcl, xcr;
     int ymin, ymax;
-    Bool edge1IsMin, edge2IsMin;
+    bool edge1IsMin, edge2IsMin;
     int ymin1, ymin2;
 
     pts = points;
@@ -1880,13 +1872,13 @@ miCleanupSpanData(DrawablePtr pDrawable, GCPtr pGC, SpanDataPtr spanData)
         pixel.val = pGC->bgPixel;
         oldPixel.val = pGC->fgPixel;
         if (pixel.val != oldPixel.val) {
-            ChangeGC(NullClient, pGC, GCForeground, &pixel);
+            ChangeGC(NULL, pGC, GCForeground, &pixel);
             ValidateGC(pDrawable, pGC);
         }
         miFillUniqueSpanGroup(pDrawable, pGC, &spanData->bgGroup);
         miFreeSpanGroup(&spanData->bgGroup);
         if (pixel.val != oldPixel.val) {
-            ChangeGC(NullClient, pGC, GCForeground, &oldPixel);
+            ChangeGC(NULL, pGC, GCForeground, &oldPixel);
             ValidateGC(pDrawable, pGC);
         }
     }
@@ -1902,12 +1894,12 @@ miWideLine(DrawablePtr pDrawable, GCPtr pGC,
     SpanDataRec spanDataRec;
     SpanDataPtr spanData;
     long pixel;
-    Bool projectLeft, projectRight;
-    LineFaceRec leftFace, rightFace, prevRightFace;
+    bool projectLeft, projectRight;
+    LineFaceRec leftFace = { 0 }, rightFace = { 0 }, prevRightFace;
     LineFaceRec firstFace;
     int first;
-    Bool somethingDrawn = FALSE;
-    Bool selfJoin;
+    bool somethingDrawn = FALSE;
+    bool selfJoin;
 
     spanData = miSetupSpanData(pGC, &spanDataRec, npt);
     pixel = pGC->fgPixel;
@@ -2046,7 +2038,7 @@ miWideDashSegment(DrawablePtr pDrawable,
     double rdx, rdy;
     double dashDx, dashDy;
     double saveK = 0.0;
-    Bool first = TRUE;
+    bool first = TRUE;
     double lcenterx, lcentery, rcenterx = 0.0, rcentery = 0.0;
     unsigned long fgPixel, bgPixel;
 
@@ -2340,7 +2332,7 @@ miWideDash(DrawablePtr pDrawable, GCPtr pGC,
 {
     int x1, y1, x2, y2;
     unsigned long pixel;
-    Bool projectLeft, projectRight;
+    bool projectLeft, projectRight;
     LineFaceRec leftFace, rightFace, prevRightFace;
     LineFaceRec firstFace;
     int first;
@@ -2348,10 +2340,10 @@ miWideDash(DrawablePtr pDrawable, GCPtr pGC,
     int prevDashIndex;
     SpanDataRec spanDataRec;
     SpanDataPtr spanData;
-    Bool somethingDrawn = FALSE;
-    Bool selfJoin;
-    Bool endIsFg = FALSE, startIsFg = FALSE;
-    Bool firstIsFg = FALSE, prevIsFg = FALSE;
+    bool somethingDrawn = FALSE;
+    bool selfJoin;
+    bool endIsFg = FALSE, startIsFg = FALSE;
+    bool firstIsFg = FALSE, prevIsFg = FALSE;
 
 #if 0
     /* XXX backward compatibility */

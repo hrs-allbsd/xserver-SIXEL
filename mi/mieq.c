@@ -32,30 +32,35 @@ in this Software without prior written authorization from The Open Group.
  *
  */
 
-#if HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
-#include   <X11/X.h>
-#include   <X11/Xmd.h>
-#include   <X11/Xproto.h>
-#include   "misc.h"
+#include <X11/X.h>
+#include <X11/Xmd.h>
+#include <X11/Xproto.h>
+#include <X11/extensions/XI.h>
+#include <X11/extensions/XIproto.h>
+#include <X11/extensions/geproto.h>
+
+#include "dix/cursor_priv.h"
+#include "dix/dix_priv.h"
+#include "dix/input_priv.h"
+#include "dix/inpututils_priv.h"
+#include "dix/screensaver_priv.h"
+#include "include/misc.h"
+#include "mi/mi_priv.h"
+#include "mi/mipointer_priv.h"
+#include "os/bug_priv.h"
+#include "os/screensaver.h"
+#include "Xext/dpms/dpms_priv.h"
+
 #include   "windowstr.h"
 #include   "pixmapstr.h"
 #include   "inputstr.h"
-#include   "inpututils.h"
-#include   "mi.h"
 #include   "mipointer.h"
 #include   "scrnintstr.h"
-#include   <X11/extensions/XI.h>
-#include   <X11/extensions/XIproto.h>
-#include   <X11/extensions/geproto.h>
-#include   "extinit.h"
-#include   "exglobals.h"
 #include   "eventstr.h"
 
 #ifdef DPMSExtension
-#include "dpmsproc.h"
 #include <X11/extensions/dpmsconst.h>
 #endif
 
@@ -66,8 +71,8 @@ in this Software without prior written authorization from The Open Group.
 #define QUEUE_DROP_BACKTRACE_FREQUENCY     100
 #define QUEUE_DROP_BACKTRACE_MAX            10
 
-#define EnqueueScreen(dev) dev->spriteInfo->sprite->pEnqueueScreen
-#define DequeueScreen(dev) dev->spriteInfo->sprite->pDequeueScreen
+#define EnqueueScreen(dev) (dev)->spriteInfo->sprite->pEnqueueScreen
+#define DequeueScreen(dev) (dev)->spriteInfo->sprite->pDequeueScreen
 
 typedef struct _Event {
     InternalEvent *events;
@@ -86,6 +91,8 @@ typedef struct _EventQueue {
 } EventQueueRec, *EventQueuePtr;
 
 static EventQueueRec miEventQueue;
+
+static CallbackListPtr miCallbacksWhenDrained = NULL;
 
 static size_t
 mieqNumEnqueued(EventQueuePtr eventQueue)
@@ -126,11 +133,13 @@ mieqGrowQueue(EventQueuePtr eventQueue, size_t new_nevents)
 
     /* First copy the existing events */
     first_hunk = eventQueue->nevents - eventQueue->head;
-    memcpy(new_events,
-           &eventQueue->events[eventQueue->head],
-           first_hunk * sizeof(EventRec));
-    memcpy(&new_events[first_hunk],
-           eventQueue->events, eventQueue->head * sizeof(EventRec));
+    if (eventQueue->events) {
+        memcpy(new_events,
+               &eventQueue->events[eventQueue->head],
+               first_hunk * sizeof(EventRec));
+        memcpy(&new_events[first_hunk],
+               eventQueue->events, eventQueue->head * sizeof(EventRec));
+    }
 
     /* Initialize the new portion */
     for (i = eventQueue->nevents; i < new_nevents; i++) {
@@ -220,22 +229,22 @@ mieqEnqueue(DeviceIntPtr pDev, InternalEvent *e)
              */
             miEventQueue.dropped++;
             if (miEventQueue.dropped == 1) {
-                ErrorFSigSafe("[mi] EQ overflowing.  Additional events will be "
-                              "discarded until existing events are processed.\n");
+                ErrorF("[mi] EQ overflowing.  Additional events will be "
+                       "discarded until existing events are processed.\n");
                 xorg_backtrace();
-                ErrorFSigSafe("[mi] These backtraces from mieqEnqueue may point to "
-                              "a culprit higher up the stack.\n");
-                ErrorFSigSafe("[mi] mieq is *NOT* the cause.  It is a victim.\n");
+                ErrorF("[mi] These backtraces from mieqEnqueue may point to "
+                       "a culprit higher up the stack.\n");
+                ErrorF("[mi] mieq is *NOT* the cause.  It is a victim.\n");
             }
             else if (miEventQueue.dropped % QUEUE_DROP_BACKTRACE_FREQUENCY == 0 &&
                      miEventQueue.dropped / QUEUE_DROP_BACKTRACE_FREQUENCY <=
                      QUEUE_DROP_BACKTRACE_MAX) {
-                ErrorFSigSafe("[mi] EQ overflow continuing.  %zu events have been "
-                              "dropped.\n", miEventQueue.dropped);
+                ErrorF("[mi] EQ overflow continuing. %lu events have been "
+                       "dropped.\n", (unsigned long)miEventQueue.dropped);
                 if (miEventQueue.dropped / QUEUE_DROP_BACKTRACE_FREQUENCY ==
                     QUEUE_DROP_BACKTRACE_MAX) {
-                    ErrorFSigSafe("[mi] No further overflow reports will be "
-                                  "reported until the clog is cleared.\n");
+                    ErrorF("[mi] No further overflow reports will be "
+                           "reported until the clog is cleared.\n");
                 }
                 xorg_backtrace();
             }
@@ -289,9 +298,12 @@ mieqSwitchScreen(DeviceIntPtr pDev, ScreenPtr pScreen, Bool set_dequeue_screen)
 void
 mieqSetHandler(int event, mieqHandler handler)
 {
-    if (handler && miEventQueue.handlers[event])
+    if (handler && miEventQueue.handlers[event] != handler)
         ErrorF("[mi] mieq: warning: overriding existing handler %p with %p for "
-               "event %d\n", miEventQueue.handlers[event], handler, event);
+               "event %d\n",
+               (void*) miEventQueue.handlers[event],
+               (void*) handler,
+               event);
 
     miEventQueue.handlers[event] = handler;
 }
@@ -338,6 +350,14 @@ ChangeDeviceID(DeviceIntPtr dev, InternalEvent *event)
     case ET_BarrierLeave:
         event->barrier_event.deviceid = dev->id;
         break;
+    case ET_GesturePinchBegin:
+    case ET_GesturePinchUpdate:
+    case ET_GesturePinchEnd:
+    case ET_GestureSwipeBegin:
+    case ET_GestureSwipeUpdate:
+    case ET_GestureSwipeEnd:
+        event->gesture_event.deviceid = dev->id;
+        break;
     default:
         ErrorF("[mi] Unknown event type (%d), cannot change id.\n",
                event->any.type);
@@ -370,7 +390,7 @@ FixUpEventForMaster(DeviceIntPtr mdev, DeviceIntPtr sdev,
  * @param copy The event after being copied
  * @return The master device or NULL if the device is a floating slave.
  */
-DeviceIntPtr
+static DeviceIntPtr
 CopyGetMasterEvent(DeviceIntPtr sdev,
                    InternalEvent *original, InternalEvent *copy)
 {
@@ -382,7 +402,7 @@ CopyGetMasterEvent(DeviceIntPtr sdev,
     verify_internal_event(original);
 
     /* ET_XQuartz has sdev == NULL */
-    if (!sdev || IsMaster(sdev) || IsFloating(sdev))
+    if (!sdev || InputDevIsMaster(sdev) || InputDevIsFloating(sdev))
         return NULL;
 
 #ifdef XFreeXDGA
@@ -483,7 +503,7 @@ mieqProcessDeviceEvent(DeviceIntPtr dev, InternalEvent *event, ScreenPtr screen)
         handler(screenNum, event, dev);
         /* Check for the SD's master in case the device got detached
          * during event processing */
-        if (master && !IsFloating(dev))
+        if (master && !InputDevIsFloating(dev))
             handler(screenNum, &mevent, master);
     }
     else {
@@ -492,7 +512,7 @@ mieqProcessDeviceEvent(DeviceIntPtr dev, InternalEvent *event, ScreenPtr screen)
 
         /* Check for the SD's master in case the device got detached
          * during event processing */
-        if (master && !IsFloating(dev))
+        if (master && !InputDevIsFloating(dev))
             master->public.processInputProc(&mevent, master);
     }
 }
@@ -544,7 +564,13 @@ mieqProcessInputEvents(void)
         else if (DPMSPowerLevel != DPMSModeOn)
             SetScreenSaverTimer();
 
-        if (DPMSPowerLevel != DPMSModeOn)
+        /* Only allow input activity to wake the display when an automatic
+         * screen-saver or DPMS timeout is configured. If all timeouts are
+         * disabled, the current DPMS state is assumed to be externally managed
+         * and must not be overridden by input activity. */
+        if (DPMSPowerLevel != DPMSModeOn &&
+            (ScreenSaverTime > 0 || DPMSStandbyTime > 0 ||
+             DPMSSuspendTime > 0 || DPMSOffTime > 0))
             DPMSSet(serverClient, DPMSModeOn);
 #endif
 
@@ -563,5 +589,21 @@ mieqProcessInputEvents(void)
 
     inProcessInputEvents = FALSE;
 
+    CallCallbacks(&miCallbacksWhenDrained, NULL);
+
+    input_unlock();
+}
+
+void mieqAddCallbackOnDrained(CallbackProcPtr callback, void *param)
+{
+    input_lock();
+    AddCallback(&miCallbacksWhenDrained, callback, param);
+    input_unlock();
+}
+
+void mieqRemoveCallbackOnDrained(CallbackProcPtr callback, void *param)
+{
+    input_lock();
+    DeleteCallback(&miCallbacksWhenDrained, callback, param);
     input_unlock();
 }

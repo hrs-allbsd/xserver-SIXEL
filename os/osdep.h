@@ -43,98 +43,39 @@ ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
 SOFTWARE.
 
 ******************************************************************/
-
-#ifdef HAVE_DIX_CONFIG_H
-#include <dix-config.h>
-#endif
-
 #ifndef _OSDEP_H_
 #define _OSDEP_H_ 1
 
-#if defined(XDMCP) || defined(HASXDMAUTH)
-#include <X11/Xdmcp.h>
-#endif
+#include <dix-config.h>
 
+#include <X11/Xdefs.h>
+
+#include <errno.h>
 #include <limits.h>
+#include <signal.h>
 #include <stddef.h>
+#ifdef HAVE_GETRANDOM
+#include <sys/random.h>
+#endif
 #include <X11/Xos.h>
+#include <X11/Xmd.h>
+#include <X11/Xdefs.h>
 
-/* If EAGAIN and EWOULDBLOCK are distinct errno values, then we check errno
- * for both EAGAIN and EWOULDBLOCK, because some supposedly POSIX
- * systems are broken and return EWOULDBLOCK when they should return EAGAIN
+/*
+ * return the least significant bit in x which is set
+ *
+ * This works on 1's complement and 2's complement machines.
+ * If you care about the extra instruction on 2's complement
+ * machines, change to ((x) & (-(x)))
  */
-#ifndef WIN32
-# if (EAGAIN != EWOULDBLOCK)
-#  define ETEST(err) (err == EAGAIN || err == EWOULDBLOCK)
-# else
-#  define ETEST(err) (err == EAGAIN)
-# endif
-#else   /* WIN32 The socket errorcodes differ from the normal errors */
-#define ETEST(err) (err == EAGAIN || err == WSAEWOULDBLOCK)
+#define lowbit(x) ((x) & (~(x) + 1))
+
+#ifndef __has_builtin
+# define __has_builtin(x) 0     /* Compatibility with older compilers */
 #endif
 
-#if defined(XDMCP) || defined(HASXDMAUTH)
-typedef Bool (*ValidatorFunc) (ARRAY8Ptr Auth, ARRAY8Ptr Data, int packet_type);
-typedef Bool (*GeneratorFunc) (ARRAY8Ptr Auth, ARRAY8Ptr Data, int packet_type);
-typedef Bool (*AddAuthorFunc) (unsigned name_length, const char *name,
-                               unsigned data_length, char *data);
-#endif
-
-typedef struct _connectionInput *ConnectionInputPtr;
-typedef struct _connectionOutput *ConnectionOutputPtr;
-
-struct _osComm;
-
-#define AuthInitArgs void
-typedef void (*AuthInitFunc) (AuthInitArgs);
-
-#define AuthAddCArgs unsigned short data_length, const char *data, XID id
-typedef int (*AuthAddCFunc) (AuthAddCArgs);
-
-#define AuthCheckArgs unsigned short data_length, const char *data, ClientPtr client, const char **reason
-typedef XID (*AuthCheckFunc) (AuthCheckArgs);
-
-#define AuthFromIDArgs XID id, unsigned short *data_lenp, char **datap
-typedef int (*AuthFromIDFunc) (AuthFromIDArgs);
-
-#define AuthGenCArgs unsigned data_length, const char *data, XID id, unsigned *data_length_return, char **data_return
-typedef XID (*AuthGenCFunc) (AuthGenCArgs);
-
-#define AuthRemCArgs unsigned short data_length, const char *data
-typedef int (*AuthRemCFunc) (AuthRemCArgs);
-
-#define AuthRstCArgs void
-typedef int (*AuthRstCFunc) (AuthRstCArgs);
-
-typedef void (*OsCloseFunc) (ClientPtr);
-
-typedef int (*OsFlushFunc) (ClientPtr who, struct _osComm * oc, char *extraBuf,
-                            int extraCount);
-
-typedef struct _osComm {
-    int fd;
-    ConnectionInputPtr input;
-    ConnectionOutputPtr output;
-    XID auth_id;                /* authorization id */
-    CARD32 conn_time;           /* timestamp if not established, else 0  */
-    struct _XtransConnInfo *trans_conn; /* transport connection object */
-    int flags;
-} OsCommRec, *OsCommPtr;
-
-#define OS_COMM_GRAB_IMPERVIOUS 1
-#define OS_COMM_IGNORED         2
-
-extern int FlushClient(ClientPtr /*who */ ,
-                       OsCommPtr /*oc */ ,
-                       const void * /*extraBuf */ ,
-                       int      /*extraCount */
-    );
-
-extern void FreeOsBuffers(OsCommPtr     /*oc */
-    );
-
-void
-CloseDownFileDescriptor(OsCommPtr oc);
+#define MILLI_PER_MIN (1000 * 60)
+#define MILLI_PER_SECOND (1000)
 
 #include "dix.h"
 #include "ospoll.h"
@@ -146,66 +87,160 @@ listen_to_client(ClientPtr client);
 
 extern Bool NewOutputPending;
 
-extern WorkQueuePtr workQueue;
+/* for platforms lacking arc4random_buf() libc function */
+#ifndef HAVE_ARC4RANDOM_BUF
+static inline void arc4random_buf(void *buf, size_t nbytes)
+{
+#ifdef HAVE_GETRANDOM
+    ssize_t pos = 0;
+    while (pos < nbytes) {
+        ssize_t ret = getrandom((unsigned char*)buf + pos, nbytes - pos, 0);
+        if (ret <= 0) {
+            if (ret < 0 && errno == EINTR)
+                continue;
+            FatalError("Cannot read random data via getrandom(): %s\n",
+                       strerror(errno));
+        }
+        pos += ret;
+    }
+#else
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0)
+        FatalError("Cannot open /dev/urandom for random data generation\n");
+    ssize_t pos = 0;
+    while (pos < nbytes) {
+        ssize_t ret = read(fd, (unsigned char*)buf + pos, nbytes - pos);
+        if (ret <= 0) {
+            if (ret < 0 && errno == EINTR)
+                continue;
+            close(fd);
+            FatalError("Cannot read random data from /dev/urandom\n");
+        }
+        pos += ret;
+    }
+    close(fd);
+#endif
+}
+#endif /* HAVE_ARC4RANDOM_BUF */
 
-/* in access.c */
-extern Bool ComputeLocalClient(ClientPtr client);
+/* OsTimer functions */
+void TimerInit(void);
 
-/* in auth.c */
-extern void GenerateRandomData(int len, char *buf);
+/* must be exported for backwards compatibility with legacy nvidia390,
+ * not for use in maintained drivers
+ */
+_X_EXPORT Bool TimerForce(OsTimerPtr);
 
-/* in mitauth.c */
-extern XID MitCheckCookie(AuthCheckArgs);
-extern XID MitGenerateCookie(AuthGenCArgs);
-extern int MitAddCookie(AuthAddCArgs);
-extern int MitFromID(AuthFromIDArgs);
-extern int MitRemoveCookie(AuthRemCArgs);
-extern int MitResetCookie(AuthRstCArgs);
+#if defined(WIN32) && ! defined(__CYGWIN__)
+#include <X11/Xwinsock.h>
 
-/* in xdmauth.c */
-#ifdef HASXDMAUTH
-extern XID XdmCheckCookie(AuthCheckArgs);
-extern int XdmAddCookie(AuthAddCArgs);
-extern int XdmFromID(AuthFromIDArgs);
-extern int XdmRemoveCookie(AuthRemCArgs);
-extern int XdmResetCookie(AuthRstCArgs);
+typedef _sigset_t sigset_t;
+
+#undef CreateWindow
+
+const char *Win32TempDir(void);
+
+static inline void Fclose(void *f) { fclose(f); }
+static inline void *Fopen(const char *a, const char *b) { return fopen(a,b); }
+
+#else /* WIN32 */
+
+void *Popen(const char *, const char *);
+void *Fopen(const char *, const char *);
+int Fclose(void *f);
+int Pclose(void *f);
+
+#endif /* WIN32 */
+
+/* clone fd so it gets out of our select mask */
+int os_move_fd(int fd);
+
+/* set signal mask - either on current thread or whole process,
+   depending on whether multithreading is used */
+int xthread_sigmask(int how, const sigset_t *set, sigset_t *oldest);
+
+typedef void (*OsSigHandlerPtr) (int sig);
+
+/* install signal handler */
+OsSigHandlerPtr OsSignal(int sig, OsSigHandlerPtr handler);
+
+void OsInit(void);
+
+_X_EXPORT /* needed by the int10 module, but should not be used by OOT drivers */
+void OsBlockSignals(void);
+
+_X_EXPORT /* needed by the int10 module, but should not be used by OOT drivers */
+void OsReleaseSignals(void);
+
+void OsResetSignals(void);
+void OsAbort(void) _X_NORETURN;
+void AbortServer(void) _X_NORETURN;
+
+void MakeClientGrabPervious(ClientPtr client);
+void MakeClientGrabImpervious(ClientPtr client);
+
+int OnlyListenToOneClient(ClientPtr client);
+
+void ListenToAllClients(void);
+
+/* allow DDX to force using another clock */
+void ForceClockId(clockid_t forced_clockid);
+
+Bool WaitForSomething(Bool clients_are_ready);
+void CloseDownConnection(ClientPtr client);
+
+extern int LimitClients;
+extern Bool PartialNetwork;
+
+extern Bool CoreDump;
+extern Bool NoListenAll;
+
+/*
+ * This function reallocarray(3)s passed buffer, terminating the server if
+ * there is not enough memory or the arguments overflow when multiplied.
+ */
+void *XNFreallocarray(void *ptr, size_t nmemb, size_t size);
+
+#if __has_builtin(__builtin_popcountl)
+# define Ones __builtin_popcountl
+#else
+/*
+ * Count the number of bits set to 1 in a 32-bit word.
+ * Algorithm from MIT AI Lab Memo 239: "HAKMEM", ITEM 169.
+ * https://dspace.mit.edu/handle/1721.1/6086
+ */
+static inline int
+Ones(unsigned long mask)
+{
+    unsigned long y;
+
+    y = (mask >> 1) & 033333333333;
+    y = mask - y - ((y >> 1) & 033333333333);
+    return (((y + (y >> 3)) & 030707070707) % 077);
+}
 #endif
 
-/* in rpcauth.c */
-#ifdef SECURE_RPC
-extern void SecureRPCInit(AuthInitArgs);
-extern XID SecureRPCCheck(AuthCheckArgs);
-extern int SecureRPCAdd(AuthAddCArgs);
-extern int SecureRPCFromID(AuthFromIDArgs);
-extern int SecureRPCRemove(AuthRemCArgs);
-extern int SecureRPCReset(AuthRstCArgs);
-#endif
+/* static assert for protocol structure sizes */
+#define __SIZE_ASSERT(what, howmuch) \
+  typedef char what##_size_wrong_[( !!(sizeof(what) == howmuch) )*2-1 ]
 
-#ifdef XDMCP
-/* in xdmcp.c */
-extern void XdmcpUseMsg(void);
-extern int XdmcpOptions(int argc, char **argv, int i);
-extern void XdmcpRegisterConnection(int type, const char *address, int addrlen);
-extern void XdmcpRegisterAuthorizations(void);
-extern void XdmcpRegisterAuthorization(const char *name, int namelen);
-extern void XdmcpInit(void);
-extern void XdmcpReset(void);
-extern void XdmcpOpenDisplay(int sock);
-extern void XdmcpCloseDisplay(int sock);
-extern void XdmcpRegisterAuthentication(const char *name,
-                                        int namelen,
-                                        const char *data,
-                                        int datalen,
-                                        ValidatorFunc Validator,
-                                        GeneratorFunc Generator,
-                                        AddAuthorFunc AddAuth);
+/*
+ * like strlen(), but checking for NULL and return 0 in this case
+ */
+static inline size_t x_safe_strlen(const char *str) {
+    return (str ? strlen(str) : 0);
+}
 
-struct sockaddr_in;
-extern void XdmcpRegisterBroadcastAddress(const struct sockaddr_in *addr);
-#endif
+enum ExitCode {
+    EXIT_NO_ERROR = 0,
+    EXIT_ERR_ABORT = 1,
+    EXIT_ERR_CONFIGURE = 2,
+    EXIT_ERR_DRIVERS = 3,
+};
 
-#ifdef HASXDMAUTH
-extern void XdmAuthenticationInit(const char *cookie, int cookie_length);
-#endif
+extern sig_atomic_t inSignalContext;
+
+/* run timers that are expired at timestamp `now` */
+void DoTimers(CARD32 now);
 
 #endif                          /* _OSDEP_H_ */

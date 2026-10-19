@@ -27,21 +27,16 @@
  * holders shall not be used in advertising or otherwise to promote the sale,
  * use or other dealings in this Software without prior written authorization.
  */
-
-#ifdef HAVE_DIX_CONFIG_H
-#include <dix-config.h>
-#endif
-
-#include <stdint.h>
 #ifndef _ROOTLESSCOMMON_H
 #define _ROOTLESSCOMMON_H
 
-#include "misc.h"
+#include <stdint.h>
+
+#include "include/misc.h"
+
 #include "rootless.h"
 #include "fb.h"
-
 #include "scrnintstr.h"
-
 #include "picturestr.h"
 
 // Debug output, or not.
@@ -80,11 +75,7 @@ typedef struct _RootlessScreenRec {
     RootlessFrameProcsPtr imp;
 
     // Wrapped screen functions
-    CreateScreenResourcesProcPtr CreateScreenResources;
-    CloseScreenProcPtr CloseScreen;
-
     CreateWindowProcPtr CreateWindow;
-    DestroyWindowProcPtr DestroyWindow;
     RealizeWindowProcPtr RealizeWindow;
     UnrealizeWindowProcPtr UnrealizeWindow;
     MoveWindowProcPtr MoveWindow;
@@ -92,7 +83,6 @@ typedef struct _RootlessScreenRec {
     RestackWindowProcPtr RestackWindow;
     ReparentWindowProcPtr ReparentWindow;
     ChangeBorderWidthProcPtr ChangeBorderWidth;
-    PositionWindowProcPtr PositionWindow;
     ChangeWindowAttributesProcPtr ChangeWindowAttributes;
     PaintWindowProcPtr PaintWindow;
 
@@ -108,6 +98,9 @@ typedef struct _RootlessScreenRec {
 
     CompositeProcPtr Composite;
     GlyphsProcPtr Glyphs;
+    TrapezoidsProcPtr Trapezoids;
+    TrianglesProcPtr Triangles;
+    CompositeRectsProcPtr CompositeRects;
 
     InstallColormapProcPtr InstallColormap;
     UninstallColormapProcPtr UninstallColormap;
@@ -130,7 +123,7 @@ typedef struct _RootlessScreenRec {
 // screen->CreateGC changes after a call to cfbCreateGC.
 
 #define SCREEN_UNWRAP(screen, fn) \
-    screen->fn = SCREENREC(screen)->fn;
+    (screen)->fn = SCREENREC((screen))->fn;
 
 #define SCREEN_WRAP(screen, fn) \
     SCREENREC(screen)->fn = screen->fn; \
@@ -142,13 +135,13 @@ typedef struct _RootlessScreenRec {
     dixLookupPrivate(&(pScreen)->devPrivates, rootlessScreenPrivateKey))
 
 #define SETSCREENREC(pScreen, v) \
-    dixSetPrivate(&(pScreen)->devPrivates, rootlessScreenPrivateKey, v)
+    dixSetPrivate(&(pScreen)->devPrivates, rootlessScreenPrivateKey, (v))
 
 #define WINREC(pWin) ((RootlessWindowRec *) \
     dixLookupPrivate(&(pWin)->devPrivates, rootlessWindowPrivateKey))
 
 #define SETWINREC(pWin, v) \
-    dixSetPrivate(&(pWin)->devPrivates, rootlessWindowPrivateKey, v)
+    dixSetPrivate(&(pWin)->devPrivates, rootlessWindowPrivateKey, (v))
 
 // Call a rootless implementation function.
 // Many rootless implementation functions are allowed to be NULL.
@@ -162,27 +155,27 @@ typedef struct _RootlessScreenRec {
 // Copied from shadowfb
 
 #define TRIM_BOX(box, pGC) { \
-    BoxPtr extents = &pGC->pCompositeClip->extents;\
-    if(box.x1 < extents->x1) box.x1 = extents->x1; \
-    if(box.x2 > extents->x2) box.x2 = extents->x2; \
-    if(box.y1 < extents->y1) box.y1 = extents->y1; \
-    if(box.y2 > extents->y2) box.y2 = extents->y2; \
+    BoxPtr extents = &(pGC)->pCompositeClip->extents;\
+    if((box).x1 < extents->x1) (box).x1 = extents->x1; \
+    if((box).x2 > extents->x2) (box).x2 = extents->x2; \
+    if((box).y1 < extents->y1) (box).y1 = extents->y1; \
+    if((box).y2 > extents->y2) (box).y2 = extents->y2; \
 }
 
 #define TRANSLATE_BOX(box, pDraw) { \
-    box.x1 += pDraw->x; \
-    box.x2 += pDraw->x; \
-    box.y1 += pDraw->y; \
-    box.y2 += pDraw->y; \
+    (box).x1 += (pDraw)->x; \
+    (box).x2 += (pDraw)->x; \
+    (box).y1 += (pDraw)->y; \
+    (box).y2 += (pDraw)->y; \
 }
 
 #define TRIM_AND_TRANSLATE_BOX(box, pDraw, pGC) { \
-    TRANSLATE_BOX(box, pDraw); \
-    TRIM_BOX(box, pGC); \
+    TRANSLATE_BOX((box), (pDraw)); \
+    TRIM_BOX((box), (pGC)); \
 }
 
 #define BOX_NOT_EMPTY(box) \
-    (((box.x2 - box.x1) > 0) && ((box.y2 - box.y1) > 0))
+    ((((box).x2 - (box).x1) > 0) && (((box).y2 - (box).y1) > 0))
 
 // HUGE_ROOT and NORMAL_ROOT
 // We don't want to clip windows to the edge of the screen.
@@ -195,7 +188,7 @@ extern RegionRec rootlessHugeRoot;
 
 #define HUGE_ROOT(pWin)                         \
     do {                                        \
-        WindowPtr _w = pWin;                     \
+        WindowPtr _w = (pWin);                     \
         while (_w->parent)                       \
             _w = _w->parent;                      \
         saveRoot = _w->winSize;                  \
@@ -204,7 +197,7 @@ extern RegionRec rootlessHugeRoot;
 
 #define NORMAL_ROOT(pWin)                       \
     do {                                        \
-        WindowPtr _w = pWin;                     \
+        WindowPtr _w = (pWin);                     \
         while (_w->parent)                       \
             _w = _w->parent;                      \
         _w->winSize = saveRoot;                  \
@@ -226,20 +219,10 @@ extern RegionRec rootlessHugeRoot;
  *  Can't access the bits before the first word of the drawable's data in
  *  rootless mode, so make sure our base address is always 32-bit aligned.
  */
-#define SetPixmapBaseToScreen(pix, _x, _y) {                                \
-    PixmapPtr   _pPix = (PixmapPtr) (pix);                                  \
-    _pPix->devPrivate.ptr = (char *) (_pPix->devPrivate.ptr) -              \
-                            ((int)(_x) * _pPix->drawable.bitsPerPixel/8 +   \
-                             (int)(_y) * _pPix->devKind);                   \
-    if (_pPix->drawable.bitsPerPixel != FB_UNIT) {                          \
-        size_t _diff = ((size_t) _pPix->devPrivate.ptr) &               \
-                         (FB_UNIT / CHAR_BIT - 1);                          \
-        _pPix->devPrivate.ptr = (char *) (_pPix->devPrivate.ptr) -          \
-                                _diff;                                      \
-        _pPix->drawable.x = _diff /                                         \
-                            (_pPix->drawable.bitsPerPixel / CHAR_BIT);      \
-    }                                                                       \
-}
+#define SetPixmapBaseToScreen(pix, _x, _y) do { \
+    (pix)->screen_x = (_x); \
+    (pix)->screen_y = (_y); \
+} while(0)
 
 // Returns TRUE if this window is visible inside a frame
 // (e.g. it is visible and has a top-level or root parent)
@@ -269,7 +252,7 @@ void RootlessFlushScreenColormaps(ScreenPtr pScreen);
 // Move a window to its proper location on the screen.
 void RootlessRepositionWindow(WindowPtr pWin);
 
-// Move the window to it's correct place in the physical stacking order.
+// Move the window to its correct place in the physical stacking order.
 void RootlessReorderWindow(WindowPtr pWin);
 
 void RootlessScreenExpose(ScreenPtr pScreen);
@@ -282,4 +265,5 @@ void RootlessDisableRoot(ScreenPtr pScreen);
 
 void RootlessSetPixmapOfAncestors(WindowPtr pWin);
 
+unsigned long RootlessWID(WindowPtr pWindow);
 #endif                          /* _ROOTLESSCOMMON_H */

@@ -29,6 +29,11 @@
 
 /* exported functions are/were used by the X Server */
 
+#ifndef XSERVER_XFREE86_CONFIGPROCS_H
+#define XSERVER_XFREE86_CONFIGPROCS_H
+
+#include <X11/Xfuncproto.h>
+
 /* Device.c */
 XF86ConfDevicePtr xf86parseDeviceSection(void);
 void xf86printDeviceSection(FILE * cf, XF86ConfDevicePtr ptr);
@@ -36,12 +41,12 @@ void xf86freeDeviceList(XF86ConfDevicePtr ptr);
 int xf86validateDevice(XF86ConfigPtr p);
 
 /* Files.c */
-XF86ConfFilesPtr xf86parseFilesSection(void);
+XF86ConfFilesPtr xf86parseFilesSection(XF86ConfFilesPtr ptr);
 void xf86printFileSection(FILE * cf, XF86ConfFilesPtr ptr);
 void xf86freeFiles(XF86ConfFilesPtr p);
 
 /* Flags.c */
-XF86ConfFlagsPtr xf86parseFlagsSection(void);
+XF86ConfFlagsPtr xf86parseFlagsSection(XF86ConfFlagsPtr ptr);
 void xf86printServerFlagsSection(FILE * f, XF86ConfFlagsPtr flags);
 void xf86freeFlags(XF86ConfFlagsPtr flags);
 
@@ -66,7 +71,7 @@ void xf86freeLayoutList(XF86ConfLayoutPtr ptr);
 int xf86validateLayout(XF86ConfigPtr p);
 
 /* Module.c */
-XF86ConfModulePtr xf86parseModuleSection(void);
+XF86ConfModulePtr xf86parseModuleSection(XF86ConfModulePtr ptr);
 void xf86printModuleSection(FILE * cf, XF86ConfModulePtr ptr);
 extern _X_EXPORT XF86LoadPtr xf86addNewLoadDirective(XF86LoadPtr head,
                                                      const char *name, int type,
@@ -118,15 +123,6 @@ xf86setSection(const char *section);
 int
 xf86getStringToken(const xf86ConfigSymTabRec * tab);
 
-/* write.c */
-/* DRI.c */
-XF86ConfDRIPtr
-xf86parseDRISection(void);
-void
-xf86printDRISection(FILE * cf, XF86ConfDRIPtr ptr);
-void
-xf86freeDRI(XF86ConfDRIPtr ptr);
-
 /* Extensions.c */
 XF86ConfExtensionsPtr
 xf86parseExtensionsSection(void);
@@ -135,14 +131,12 @@ xf86printExtensionsSection(FILE * cf, XF86ConfExtensionsPtr ptr);
 void
 xf86freeExtensions(XF86ConfExtensionsPtr ptr);
 
-#ifdef HAVE_XORG_CONFIG_H
-#include <xorg-config.h>
-#endif
+/* pattern.c */
+xf86MatchGroup* xf86createMatchGroup(const char *arg,
+                                     xf86MatchMode pref_mode,
+                                     Bool negated);
+void xf86printMatchPattern(FILE * cf,
+                           const xf86MatchPattern *pattern,
+                           Bool not_first);
 
-#ifndef HAVE_XORG_CONFIG_H
-/* Externally provided functions */
-void
-ErrorF(const char *f, ...);
-void
-VErrorF(const char *f, va_list args);
-#endif
+#endif /* XSERVER_XFREE86_CONFIGPROCS_H */

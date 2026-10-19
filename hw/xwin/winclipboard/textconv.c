@@ -27,19 +27,7 @@
  *
  * Authors:	Harold L Hunt II
  */
-
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
-
-/*
- * Including any server header might define the macro _XSERVER64 on 64 bit machines.
- * That macro must _NOT_ be defined for Xlib client code, otherwise bad things happen.
- * So let's undef that macro if necessary.
- */
-#ifdef _XSERVER64
-#undef _XSERVER64
-#endif
 
 #include <stdlib.h>
 #include "internal.h"
@@ -109,7 +97,7 @@ winClipboardUNIXtoDOS(char **ppszData, int iLength)
         return;
 
     /* Allocate a new string */
-    pszDestBegin = pszDest = malloc(iLength + iNewlineCount + 1);
+    pszDestBegin = pszDest = calloc(1, iLength + iNewlineCount + 1);
 
     /* Set source pointer to beginning of data string */
     pszSrc = *ppszData;

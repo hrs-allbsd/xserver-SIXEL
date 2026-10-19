@@ -29,9 +29,7 @@
 
 #include "sanitizedCarbon.h"
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -74,6 +72,11 @@ create_thread(void *func, void *arg)
     pthread_attr_init(&attr);
     pthread_attr_setscope(&attr, PTHREAD_SCOPE_SYSTEM);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+#ifdef QOS_CLASS_USER_INTERACTIVE
+    if (&pthread_attr_set_qos_class_np) {
+        pthread_attr_set_qos_class_np(&attr, QOS_CLASS_USER_INTERACTIVE, 0);
+    }
+#endif
     pthread_create(&tid, &attr, func, arg);
     pthread_attr_destroy(&attr);
 
@@ -83,7 +86,7 @@ create_thread(void *func, void *arg)
 void
 QuartzInitServer(int argc, char **argv, char **envp)
 {
-    struct arg *args = (struct arg *)malloc(sizeof(struct arg));
+    struct arg *args = calloc(1, sizeof(struct arg));
     if (!args)
         FatalError("Could not allocate memory.\n");
 
@@ -99,7 +102,7 @@ QuartzInitServer(int argc, char **argv, char **envp)
     sigset_t set;
     sigemptyset(&set);
     sigaddset(&set, SIGALRM);
-#ifdef BUSFAULT
+#ifdef HAVE_SIGACTION
     sigaddset(&set, SIGBUS);
 #endif
     pthread_sigmask(SIG_BLOCK, &set, NULL);

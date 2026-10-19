@@ -20,10 +20,7 @@
  * PERFORMANCE OF THIS SOFTWARE.
  *
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
 #include <X11/X.h>
 
@@ -34,13 +31,13 @@
 
 #include "xf86.h"
 #include "xf86Priv.h"
+#include "xf86_os_support.h"
 #include "xf86_OSlib.h"
 
 #include <stdio.h>
 #include <errno.h>
 #include <sys/time.h>
 #include <sys/file.h>
-#include <assert.h>
 #include <mach.h>
 #include <hurd.h>
 
@@ -54,6 +51,12 @@ void
 xf86UseMsg()
 {
     return;
+}
+
+Bool
+xf86VTKeepTtyIsSet(void)
+{
+     return FALSE;
 }
 
 void

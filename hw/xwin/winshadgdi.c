@@ -27,11 +27,15 @@
  *
  * Authors:	Harold L Hunt II
  */
-
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
+
+#include <stdbool.h>
+
+#include <assert.h>
+
 #include "win.h"
+
+#include "dix/colormap_priv.h"
 
 /*
  * Local function prototypes
@@ -58,6 +62,9 @@ static Bool
 
 static Bool
  winBltExposedRegionsShadowGDI(ScreenPtr pScreen);
+
+static Bool
+ winBltExposedWindowRegionShadowGDI(ScreenPtr pScreen, WindowPtr pWin);
 
 static Bool
  winActivateAppShadowGDI(ScreenPtr pScreen);
@@ -91,7 +98,7 @@ winQueryScreenDIBFormat(ScreenPtr pScreen, BITMAPINFOHEADER * pbmih)
     winScreenPriv(pScreen);
     HBITMAP hbmp;
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
     LPDWORD pdw = NULL;
 #endif
 
@@ -103,7 +110,7 @@ winQueryScreenDIBFormat(ScreenPtr pScreen, BITMAPINFOHEADER * pbmih)
     }
 
     /* Initialize our bitmap info header */
-    ZeroMemory(pbmih, sizeof(BITMAPINFOHEADER) + 256 * sizeof(RGBQUAD));
+    memset(pbmih, sizeof(BITMAPINFOHEADER) + 256 * sizeof(RGBQUAD), 1);
     pbmih->biSize = sizeof(BITMAPINFOHEADER);
 
     /* Get the biBitCount */
@@ -114,7 +121,7 @@ winQueryScreenDIBFormat(ScreenPtr pScreen, BITMAPINFOHEADER * pbmih)
         return FALSE;
     }
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
     /* Get a pointer to bitfields */
     pdw = (DWORD *) ((CARD8 *) pbmih + sizeof(BITMAPINFOHEADER));
 
@@ -146,15 +153,14 @@ static
 winQueryRGBBitsAndMasks(ScreenPtr pScreen)
 {
     winScreenPriv(pScreen);
-    BITMAPINFOHEADER *pbmih = NULL;
-    Bool fReturn = TRUE;
+    bool fReturn = TRUE;
     LPDWORD pdw = NULL;
     DWORD dwRedBits, dwGreenBits, dwBlueBits;
 
     /* Color masks for 8 bpp are standardized */
     if (GetDeviceCaps(pScreenPriv->hdcScreen, RASTERCAPS) & RC_PALETTE) {
         /*
-         * RGB BPP for 8 bit palletes is always 8
+         * RGB BPP for 8 bit palettes is always 8
          * and the color masks are always 0.
          */
         pScreenPriv->dwBitsPerRGB = 8;
@@ -182,9 +188,9 @@ winQueryRGBBitsAndMasks(ScreenPtr pScreen)
     }
 
     /* Allocate a bitmap header and color table */
-    pbmih = malloc(sizeof(BITMAPINFOHEADER) + 256 * sizeof(RGBQUAD));
+    BITMAPINFOHEADER *pbmih = calloc(1, sizeof(BITMAPINFOHEADER) + 256 * sizeof(RGBQUAD));
     if (pbmih == NULL) {
-        ErrorF("winQueryRGBBitsAndMasks - malloc failed\n");
+        ErrorF("winQueryRGBBitsAndMasks - calloc failed\n");
         return FALSE;
     }
 
@@ -193,13 +199,13 @@ winQueryRGBBitsAndMasks(ScreenPtr pScreen)
         /* Get a pointer to bitfields */
         pdw = (DWORD *) ((CARD8 *) pbmih + sizeof(BITMAPINFOHEADER));
 
-#if CYGDEBUG
-        winDebug("%s - Masks: %08x %08x %08x\n", __FUNCTION__,
+#if ENABLE_DEBUG
+        winDebug("%s - Masks: %08x %08x %08x\n", __func__,
                  (unsigned int)pdw[0], (unsigned int)pdw[1], (unsigned int)pdw[2]);
-        winDebug("%s - Bitmap: %dx%d %d bpp %d planes\n", __FUNCTION__,
+        winDebug("%s - Bitmap: %dx%d %d bpp %d planes\n", __func__,
                  (int)pbmih->biWidth, (int)pbmih->biHeight, pbmih->biBitCount,
                  pbmih->biPlanes);
-        winDebug("%s - Compression: %u %s\n", __FUNCTION__,
+        winDebug("%s - Compression: %u %s\n", __func__,
                  (unsigned int)pbmih->biCompression,
                  (pbmih->biCompression ==
                   BI_RGB ? "(BI_RGB)" : (pbmih->biCompression ==
@@ -317,7 +323,7 @@ winAllocateFBShadowGDI(ScreenPtr pScreen)
     winScreenPriv(pScreen);
     winScreenInfo *pScreenInfo = pScreenPriv->pScreenInfo;
     DIBSECTION dibsection;
-    Bool fReturn = TRUE;
+    bool fReturn = TRUE;
 
     /* Describe shadow bitmap to be created */
     pScreenPriv->pbmih->biWidth = pScreenInfo->dwWidth;
@@ -339,7 +345,7 @@ winAllocateFBShadowGDI(ScreenPtr pScreen)
         return FALSE;
     }
     else {
-#if CYGDEBUG
+#if ENABLE_DEBUG
         winDebug("winAllocateFBShadowGDI - Shadow buffer allocated\n");
 #endif
     }
@@ -347,7 +353,7 @@ winAllocateFBShadowGDI(ScreenPtr pScreen)
     /* Get information about the bitmap that was allocated */
     GetObject(pScreenPriv->hbmpShadow, sizeof(dibsection), &dibsection);
 
-#if CYGDEBUG || YES
+#if ENABLE_DEBUG || YES
     /* Print information about bitmap allocated */
     winDebug("winAllocateFBShadowGDI - Dibsection width: %d height: %d "
              "depth: %d size image: %d\n",
@@ -358,7 +364,7 @@ winAllocateFBShadowGDI(ScreenPtr pScreen)
     /* Select the shadow bitmap into the shadow DC */
     SelectObject(pScreenPriv->hdcShadow, pScreenPriv->hbmpShadow);
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
     winDebug("winAllocateFBShadowGDI - Attempting a shadow blit\n");
 #endif
 
@@ -368,7 +374,7 @@ winAllocateFBShadowGDI(ScreenPtr pScreen)
                      pScreenInfo->dwWidth, pScreenInfo->dwHeight,
                      pScreenPriv->hdcShadow, 0, 0, SRCCOPY);
     if (fReturn) {
-#if CYGDEBUG
+#if ENABLE_DEBUG
         winDebug("winAllocateFBShadowGDI - Shadow blit success\n");
 #endif
     }
@@ -394,7 +400,7 @@ winAllocateFBShadowGDI(ScreenPtr pScreen)
                               / dibsection.dsBmih.biHeight)
                              * 8) / pScreenInfo->dwBPP;
 
-#if CYGDEBUG || YES
+#if ENABLE_DEBUG || YES
     winDebug("winAllocateFBShadowGDI - Created shadow stride: %d\n",
              (int) pScreenInfo->dwStride);
 #endif
@@ -536,9 +542,9 @@ winInitScreenShadowGDI(ScreenPtr pScreen)
     pScreenPriv->hdcShadow = CreateCompatibleDC(pScreenPriv->hdcScreen);
 
     /* Allocate bitmap info header */
-    pScreenPriv->pbmih = malloc(sizeof(BITMAPINFOHEADER) + 256 * sizeof(RGBQUAD));
+    pScreenPriv->pbmih = calloc(1, sizeof(BITMAPINFOHEADER) + 256 * sizeof(RGBQUAD));
     if (pScreenPriv->pbmih == NULL) {
-        ErrorF("winInitScreenShadowGDI - malloc () failed\n");
+        ErrorF("winInitScreenShadowGDI - calloc () failed\n");
         return FALSE;
     }
 
@@ -568,9 +574,9 @@ winCloseScreenShadowGDI(ScreenPtr pScreen)
 {
     winScreenPriv(pScreen);
     winScreenInfo *pScreenInfo = pScreenPriv->pScreenInfo;
-    Bool fReturn = TRUE;
+    bool fReturn = TRUE;
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
     winDebug("winCloseScreenShadowGDI - Freeing screen resources\n");
 #endif
 
@@ -578,10 +584,7 @@ winCloseScreenShadowGDI(ScreenPtr pScreen)
     pScreenPriv->fClosed = TRUE;
     pScreenPriv->fActive = FALSE;
 
-    /* Call the wrapped CloseScreen procedure */
-    WIN_UNWRAP(CloseScreen);
-    if (pScreen->CloseScreen)
-        fReturn = (*pScreen->CloseScreen) (pScreen);
+    fReturn = fbCloseScreen(pScreen);
 
     /* Delete the window property */
     RemoveProp(pScreenPriv->hwndScreen, WIN_SCR_PROP);
@@ -695,7 +698,7 @@ winInitVisualsShadowGDI(ScreenPtr pScreen)
         return FALSE;
     }
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
     winDebug("winInitVisualsShadowGDI - Returning\n");
 #endif
 
@@ -750,6 +753,12 @@ winBltExposedRegionsShadowGDI(ScreenPtr pScreen)
 
     /* BeginPaint gives us an hdc that clips to the invalidated region */
     hdcUpdate = BeginPaint(pScreenPriv->hwndScreen, &ps);
+    /* Avoid the BitBlt if the PAINTSTRUCT region is bogus */
+    if (ps.rcPaint.right == 0 && ps.rcPaint.bottom == 0 &&
+        ps.rcPaint.left == 0 && ps.rcPaint.top == 0) {
+        EndPaint(pScreenPriv->hwndScreen, &ps);
+        return 0;
+    }
 
     /* Realize the palette, if we have one */
     if (pScreenPriv->pcmapInstalled != NULL) {
@@ -759,11 +768,30 @@ winBltExposedRegionsShadowGDI(ScreenPtr pScreen)
         RealizePalette(hdcUpdate);
     }
 
-    /* Our BitBlt will be clipped to the invalidated region */
-    BitBlt(hdcUpdate,
-           0, 0,
-           pScreenInfo->dwWidth, pScreenInfo->dwHeight,
-           pScreenPriv->hdcShadow, 0, 0, SRCCOPY);
+    /* Try to copy from the shadow buffer to the invalidated region */
+    if (!BitBlt(hdcUpdate,
+                ps.rcPaint.left, ps.rcPaint.top,
+                ps.rcPaint.right - ps.rcPaint.left,
+                ps.rcPaint.bottom - ps.rcPaint.top,
+                pScreenPriv->hdcShadow,
+                ps.rcPaint.left,
+                ps.rcPaint.top,
+                SRCCOPY)) {
+        LPVOID lpMsgBuf;
+
+        /* Display an error message */
+        FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER |
+                      FORMAT_MESSAGE_FROM_SYSTEM |
+                      FORMAT_MESSAGE_IGNORE_INSERTS,
+                      NULL,
+                      GetLastError(),
+                      MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                      (LPTSTR) &lpMsgBuf, 0, NULL);
+
+        ErrorF("winBltExposedRegionsShadowGDI - BitBlt failed: %s\n",
+               (LPSTR) lpMsgBuf);
+        LocalFree(lpMsgBuf);
+    }
 
     /* EndPaint frees the DC */
     EndPaint(pScreenPriv->hwndScreen, &ps);
@@ -777,7 +805,127 @@ winBltExposedRegionsShadowGDI(ScreenPtr pScreen)
 }
 
 /*
- * Do any engine-specific appliation-activation processing
+ * Blt exposed region to the given HWND
+ */
+
+static Bool
+winBltExposedWindowRegionShadowGDI(ScreenPtr pScreen, WindowPtr pWin)
+{
+    winScreenPriv(pScreen);
+    winPrivWinPtr pWinPriv = winGetWindowPriv(pWin);
+
+    HWND hWnd = pWinPriv->hWnd;
+    HDC hdcUpdate;
+    PAINTSTRUCT ps;
+
+    hdcUpdate = BeginPaint(hWnd, &ps);
+    /* Avoid the BitBlt if the PAINTSTRUCT region is bogus */
+    if (ps.rcPaint.right == 0 && ps.rcPaint.bottom == 0 &&
+        ps.rcPaint.left == 0 && ps.rcPaint.top == 0) {
+        EndPaint(hWnd, &ps);
+        return 0;
+    }
+
+    if (pWin->redirectDraw != RedirectDrawNone) {
+        HBITMAP hBitmap;
+        HDC hdcPixmap;
+        PixmapPtr pPixmap = (*pScreen->GetWindowPixmap) (pWin);
+        winPrivPixmapPtr pPixmapPriv = winGetPixmapPriv(pPixmap);
+
+        /* window pixmap format is the same as the screen pixmap */
+        assert(pPixmap->drawable.bitsPerPixel > 8);
+
+        /* Get the window bitmap from the pixmap */
+        hBitmap = pPixmapPriv->hBitmap;
+
+        /* XXX: There may be a need for a slow-path here: If hBitmap is NULL
+           (because we couldn't back the pixmap with a Windows DIB), we should
+           fall-back to creating a Windows DIB from the pixmap, then deleting it
+           after the BitBlt (as this this code did before the fast-path was
+           added). */
+        if (!hBitmap) {
+            ErrorF("winBltExposedWindowRegionShadowGDI - slow path unimplemented\n");
+        }
+
+        /* Select the window bitmap into a screen-compatible DC */
+        hdcPixmap = CreateCompatibleDC(pScreenPriv->hdcScreen);
+        SelectObject(hdcPixmap, hBitmap);
+
+        /* Blt from the window bitmap to the invalidated region */
+        if (!BitBlt(hdcUpdate,
+                    ps.rcPaint.left, ps.rcPaint.top,
+                    ps.rcPaint.right - ps.rcPaint.left,
+                    ps.rcPaint.bottom - ps.rcPaint.top,
+                    hdcPixmap,
+                    ps.rcPaint.left + pWin->borderWidth,
+                    ps.rcPaint.top + pWin->borderWidth,
+                    SRCCOPY))
+            ErrorF("winBltExposedWindowRegionShadowGDI - BitBlt failed: 0x%08x\n",
+                   (unsigned int)GetLastError());
+
+        /* Release DC */
+        DeleteDC(hdcPixmap);
+    }
+    else
+    {
+    /* Try to copy from the shadow buffer to the invalidated region */
+    if (!BitBlt(hdcUpdate,
+                ps.rcPaint.left, ps.rcPaint.top,
+                ps.rcPaint.right - ps.rcPaint.left,
+                ps.rcPaint.bottom - ps.rcPaint.top,
+                pScreenPriv->hdcShadow,
+                ps.rcPaint.left + pWin->drawable.x,
+                ps.rcPaint.top + pWin->drawable.y,
+                SRCCOPY)) {
+        LPVOID lpMsgBuf;
+
+        /* Display an error message */
+        FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER |
+                      FORMAT_MESSAGE_FROM_SYSTEM |
+                      FORMAT_MESSAGE_IGNORE_INSERTS,
+                      NULL,
+                      GetLastError(),
+                      MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                      (LPTSTR) &lpMsgBuf, 0, NULL);
+
+        ErrorF("winBltExposedWindowRegionShadowGDI - BitBlt failed: %s\n",
+               (LPSTR) lpMsgBuf);
+        LocalFree(lpMsgBuf);
+    }
+    }
+
+    /* If part of the invalidated region is outside the window (which can happen
+       if the native window is being re-sized), fill that area with black */
+    if (ps.rcPaint.right > ps.rcPaint.left + pWin->drawable.width) {
+        BitBlt(hdcUpdate,
+               ps.rcPaint.left + pWin->drawable.width,
+               ps.rcPaint.top,
+               ps.rcPaint.right - (ps.rcPaint.left + pWin->drawable.width),
+               ps.rcPaint.bottom - ps.rcPaint.top,
+               NULL,
+               0, 0,
+               BLACKNESS);
+    }
+
+    if (ps.rcPaint.bottom > ps.rcPaint.top + pWin->drawable.height) {
+        BitBlt(hdcUpdate,
+               ps.rcPaint.left,
+               ps.rcPaint.top + pWin->drawable.height,
+               ps.rcPaint.right - ps.rcPaint.left,
+               ps.rcPaint.bottom - (ps.rcPaint.top + pWin->drawable.height),
+               NULL,
+               0, 0,
+               BLACKNESS);
+    }
+
+    /* EndPaint frees the DC */
+    EndPaint(hWnd, &ps);
+
+    return TRUE;
+}
+
+/*
+ * Do any engine-specific application-activation processing
  */
 
 static Bool
@@ -852,13 +1000,13 @@ winRealizeInstalledPaletteShadowGDI(ScreenPtr pScreen)
     winScreenPriv(pScreen);
     winPrivCmapPtr pCmapPriv = NULL;
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
     winDebug("winRealizeInstalledPaletteShadowGDI\n");
 #endif
 
     /* Don't do anything if there is not a colormap */
     if (pScreenPriv->pcmapInstalled == NULL) {
-#if CYGDEBUG
+#if ENABLE_DEBUG
         winDebug("winRealizeInstalledPaletteShadowGDI - No colormap "
                  "installed\n");
 #endif
@@ -1012,17 +1160,13 @@ winCreateColormapShadowGDI(ColormapPtr pColormap)
     dwEntriesMax = pVisual->ColormapEntries;
 
     /* Allocate a Windows logical color palette with max entries */
-    lpPaletteNew = malloc(sizeof(LOGPALETTE)
+    lpPaletteNew = calloc(1, sizeof(LOGPALETTE)
                           + (dwEntriesMax - 1) * sizeof(PALETTEENTRY));
     if (lpPaletteNew == NULL) {
         ErrorF("winCreateColormapShadowGDI - Couldn't allocate palette "
                "with %d entries\n", (int) dwEntriesMax);
         return FALSE;
     }
-
-    /* Zero out the colormap */
-    ZeroMemory(lpPaletteNew, sizeof(LOGPALETTE)
-               + (dwEntriesMax - 1) * sizeof(PALETTEENTRY));
 
     /* Set the logical palette structure */
     lpPaletteNew->palVersion = 0x0300;
@@ -1063,8 +1207,8 @@ winDestroyColormapShadowGDI(ColormapPtr pColormap)
      * will not have had winUninstallColormap called on it.  Thus,
      * we need to handle the default colormap in a special way.
      */
-    if (pColormap->flags & IsDefault) {
-#if CYGDEBUG
+    if (pColormap->flags & CM_IsDefault) {
+#if ENABLE_DEBUG
         winDebug("winDestroyColormapShadowGDI - Destroying default "
                  "colormap\n");
 #endif
@@ -1095,7 +1239,7 @@ winDestroyColormapShadowGDI(ColormapPtr pColormap)
 }
 
 /*
- * Set engine specific funtions
+ * Set engine specific functions
  */
 
 Bool
@@ -1117,8 +1261,8 @@ winSetEngineFunctionsShadowGDI(ScreenPtr pScreen)
             winCreateBoundingWindowFullScreen;
     else
         pScreenPriv->pwinCreateBoundingWindow = winCreateBoundingWindowWindowed;
-    pScreenPriv->pwinFinishScreenInit = winFinishScreenInitFB;
     pScreenPriv->pwinBltExposedRegions = winBltExposedRegionsShadowGDI;
+    pScreenPriv->pwinBltExposedWindowRegion = winBltExposedWindowRegionShadowGDI;
     pScreenPriv->pwinActivateApp = winActivateAppShadowGDI;
     pScreenPriv->pwinRedrawScreen = winRedrawScreenShadowGDI;
     pScreenPriv->pwinRealizeInstalledPalette =

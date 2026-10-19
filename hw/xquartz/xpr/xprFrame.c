@@ -27,9 +27,14 @@
  * use or other dealings in this Software without prior written authorization.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
+
+#include <stdbool.h>
+#include <assert.h>
+
+#include "dix/dix_priv.h"
+#include "dix/property_priv.h"
+#include "dix/screenint_priv.h"
 
 #include "xpr.h"
 #include "rootlessCommon.h"
@@ -42,31 +47,35 @@
 #include <X11/Xatom.h>
 #include "windowstr.h"
 #include "quartz.h"
+#include "osxcompat.h"
 
+#ifdef HAS_LIBDISPATCH
 #include <dispatch/dispatch.h>
-
-#ifdef DEBUG_XP_LOCK_WINDOW
-#include <execinfo.h>
+#else
+#include <pthread.h>
 #endif
 
 #define DEFINE_ATOM_HELPER(func, atom_name)                      \
-    static Atom func(void) {                                       \
-        static int generation;                                      \
-        static Atom atom;                                           \
-        if (generation != serverGeneration) {                       \
-            generation = serverGeneration;                          \
-            atom = MakeAtom(atom_name, strlen(atom_name), TRUE);  \
-        }                                                           \
-        return atom;                                                \
+    static Atom (func)(void) {                                   \
+        return dixAddAtom((atom_name));                          \
     }
 
 DEFINE_ATOM_HELPER(xa_native_window_id, "_NATIVE_WINDOW_ID")
+
+typedef struct _WindowHashInsertCtx {
+    xp_window_id wid;
+    RootlessWindowPtr frame;
+} WindowHashInsertCtx;
 
 /* Maps xp_window_id -> RootlessWindowRec */
 static x_hash_table * window_hash;
 
 /* Need to guard window_hash since xprIsX11Window can be called from any thread. */
+#ifdef HAS_LIBDISPATCH
 static dispatch_queue_t window_hash_serial_q;
+#else
+static pthread_rwlock_t window_hash_rwlock;
+#endif
 
 /* Prototypes for static functions */
 static Bool
@@ -144,6 +153,16 @@ xprColormapCallback(void *data, int first_color, int n_colors,
                                     colors) ? XP_Success : XP_BadMatch);
 }
 
+#ifdef HAS_LIBDISPATCH
+static void
+windowHashInsert(void *arg)
+{
+    WindowHashInsertCtx *ctx = arg;
+    x_hash_table_insert(window_hash, x_cvt_uint_to_vptr(ctx->wid), ctx->frame);
+    free(ctx);
+}
+#endif
+
 /*
  * Create and display a new frame.
  */
@@ -195,20 +214,68 @@ xprCreateFrame(RootlessWindowPtr pFrame, ScreenPtr pScreen,
         wc.window_level = rooted_window_levels[pFrame->level];
     mask |= XP_WINDOW_LEVEL;
 
-    err = xp_create_window(mask, &wc, (xp_window_id *)&pFrame->wid);
+    /* xp_create_window() writes a 32-bit xp_window_id.  Writing it straight
+     * into the 64-bit (void *) pFrame->wid via a truncating cast pointer
+     * leaves the other half of the word uninitialized, and on a big-endian
+     * LP64 target (ppc64) even lands the id in the wrong half.  The value is
+     * later stored into / looked up from window_hash, which compares keys by
+     * exact pointer identity, so a dirty high word makes lookups miss and
+     * trips the assert() in x_cvt_vptr_to_uint().  Go through a real
+     * xp_window_id and zero-extend it so pFrame->wid is well-defined on every
+     * ABI and endianness. */
+    xp_window_id wid = 0;
+    err = xp_create_window(mask, &wc, &wid);
 
     if (err != Success) {
         return FALSE;
     }
 
-    dispatch_async(window_hash_serial_q, ^ {
-                       x_hash_table_insert(window_hash, pFrame->wid, pFrame);
-                   });
+    pFrame->wid = x_cvt_uint_to_vptr(wid);
+
+#ifdef HAS_LIBDISPATCH
+    WindowHashInsertCtx *ctx = malloc(sizeof(WindowHashInsertCtx));
+    if (!ctx) return FALSE;
+
+    ctx->wid = wid;
+    ctx->frame = pFrame;
+
+    dispatch_async_f(window_hash_serial_q, ctx, windowHashInsert);
+#else
+    pthread_rwlock_wrlock(&window_hash_rwlock);
+    x_hash_table_insert(window_hash, x_cvt_uint_to_vptr(wid), pFrame);
+    pthread_rwlock_unlock(&window_hash_rwlock);
+#endif
 
     xprSetNativeProperty(pFrame);
 
     return TRUE;
 }
+
+/* For heap allocation */
+typedef struct _WindowHashRemoveCtx {
+    RootlessFrameID wid;
+} WindowHashRemoveCtx;
+
+typedef struct _WindowLookupCtx {
+    RootlessFrameID wid;
+    RootlessWindowRec **winrec;
+} WindowLookupCtx;
+
+/* the members are gonna be the same, so no reason to duplicate code */
+typedef WindowLookupCtx WindowGetCtx;
+
+#ifdef HAS_LIBDISPATCH
+static void windowHashRemove(void *arg) {
+    WindowHashRemoveCtx *ctx = arg;
+    x_hash_table_remove(window_hash, ctx->wid);
+    free(ctx);
+}
+
+static void windowLookup(void *arg) {
+    WindowLookupCtx *ctx = (WindowLookupCtx *)arg;
+    *(ctx->winrec) = x_hash_table_lookup(window_hash, ctx->wid, NULL);
+}
+#endif
 
 /*
  * Destroy a frame.
@@ -216,13 +283,20 @@ xprCreateFrame(RootlessWindowPtr pFrame, ScreenPtr pScreen,
 static void
 xprDestroyFrame(RootlessFrameID wid)
 {
-    xp_error err;
+#ifdef HAS_LIBDISPATCH
+    WindowHashRemoveCtx *ctx = malloc(sizeof(WindowHashRemoveCtx));
+    if (!ctx) FatalError("Could not allocate memory for the hash removal context.");
 
-    dispatch_async(window_hash_serial_q, ^ {
-                       x_hash_table_remove(window_hash, wid);
-                   });
+    ctx->wid = wid;
 
-    err = xp_destroy_window(x_cvt_vptr_to_uint(wid));
+    dispatch_async_f(window_hash_serial_q, ctx, windowHashRemove);
+#else
+    pthread_rwlock_wrlock(&window_hash_rwlock);
+    x_hash_table_remove(window_hash, wid);
+    pthread_rwlock_unlock(&window_hash_rwlock);
+#endif
+
+    xp_error err = xp_destroy_window(x_cvt_vptr_to_uint(wid));
     if (err != Success)
         FatalError("Could not destroy window %d (%d).",
                    (int)x_cvt_vptr_to_uint(
@@ -273,7 +347,6 @@ xprRestackFrame(RootlessFrameID wid, RootlessFrameID nextWid)
 {
     xp_window_changes wc;
     unsigned int mask = XP_STACKING;
-    __block
     RootlessWindowRec * winRec;
 
     /* Stack frame below nextWid it if it exists, or raise
@@ -288,9 +361,18 @@ xprRestackFrame(RootlessFrameID wid, RootlessFrameID nextWid)
         wc.sibling = x_cvt_vptr_to_uint(nextWid);
     }
 
-    dispatch_sync(window_hash_serial_q, ^ {
-                      winRec = x_hash_table_lookup(window_hash, wid, NULL);
-                  });
+#ifdef HAS_LIBDISPATCH
+    WindowLookupCtx ctx = {
+        .wid = wid,
+        .winrec = &winRec
+    };
+
+    dispatch_sync_f(window_hash_serial_q, &ctx, windowLookup);
+#else
+    pthread_rwlock_rdlock(&window_hash_rwlock);
+    winRec = x_hash_table_lookup(window_hash, wid, NULL);
+    pthread_rwlock_unlock(&window_hash_rwlock);
+#endif
 
     if (winRec) {
         if (XQuartzIsRootless)
@@ -353,15 +435,8 @@ xprStartDrawing(RootlessFrameID wid, char **pixelData, int *bytesPerRow)
     xp_error err;
 
 #ifdef DEBUG_XP_LOCK_WINDOW
-    void* callstack[128];
-    int i, frames = backtrace(callstack, 128);
-    char** strs = backtrace_symbols(callstack, frames);
-
     ErrorF("=== LOCK %d ===\n", (int)x_cvt_vptr_to_uint(wid));
-    for (i = 0; i < frames; ++i) {
-        ErrorF("    %s\n", strs[i]);
-    }
-    free(strs);
+    xorg_backtrace();
 #endif
 
     err = xp_lock_window(x_cvt_vptr_to_uint(
@@ -370,6 +445,10 @@ xprStartDrawing(RootlessFrameID wid, char **pixelData, int *bytesPerRow)
         FatalError("Could not lock window %d for drawing (%d).",
                    (int)x_cvt_vptr_to_uint(
                        wid), (int)err);
+
+#ifdef DEBUG_XP_LOCK_WINDOW
+    ErrorF("  bits: %p\n", *data);
+#endif
 
     *pixelData = data[0];
     *bytesPerRow = rowbytes[0];
@@ -384,15 +463,8 @@ xprStopDrawing(RootlessFrameID wid, Bool flush)
     xp_error err;
 
 #ifdef DEBUG_XP_LOCK_WINDOW
-    void* callstack[128];
-    int i, frames = backtrace(callstack, 128);
-    char** strs = backtrace_symbols(callstack, frames);
-
     ErrorF("=== UNLOCK %d ===\n", (int)x_cvt_vptr_to_uint(wid));
-    for (i = 0; i < frames; ++i) {
-        ErrorF("    %s\n", strs[i]);
-    }
-    free(strs);
+    xorg_backtrace();
 #endif
 
     err = xp_unlock_window(x_cvt_vptr_to_uint(wid), flush);
@@ -491,12 +563,23 @@ xprInit(ScreenPtr pScreen)
     rootless_CopyWindow_threshold = xp_scroll_area_threshold;
 
     assert((window_hash = x_hash_table_new(NULL, NULL, NULL, NULL)));
+#ifdef HAS_LIBDISPATCH
     assert((window_hash_serial_q =
                 dispatch_queue_create(BUNDLE_ID_PREFIX ".X11.xpr_window_hash",
                                       NULL)));
+#else
+    assert(0 == pthread_rwlock_init(&window_hash_rwlock, NULL));
+#endif
 
     return TRUE;
 }
+
+#ifdef HAS_LIBDISPATCH
+static void windowGet(void *arg) {
+    WindowGetCtx *ctx = arg;
+    *(ctx->winrec) = x_hash_table_lookup(window_hash, ctx->wid, NULL);
+}
+#endif
 
 /*
  * Given the id of a physical window, try to find the top-level (or root)
@@ -505,12 +588,19 @@ xprInit(ScreenPtr pScreen)
 WindowPtr
 xprGetXWindow(xp_window_id wid)
 {
-    RootlessWindowRec *winRec __block;
-    dispatch_sync(window_hash_serial_q, ^ {
-                      winRec =
-                          x_hash_table_lookup(window_hash,
-                                              x_cvt_uint_to_vptr(wid), NULL);
-                  });
+    RootlessWindowRec *winRec;
+#ifdef HAS_LIBDISPATCH
+    WindowGetCtx ctx = {
+        .wid = x_cvt_uint_to_vptr(wid),
+        .winrec = &winRec
+    };
+
+    dispatch_sync_f(window_hash_serial_q, &ctx, windowGet);
+#else
+    pthread_rwlock_rdlock(&window_hash_rwlock);
+    winRec = x_hash_table_lookup(window_hash, x_cvt_uint_to_vptr(wid), NULL);
+    pthread_rwlock_unlock(&window_hash_rwlock);
+#endif
 
     return winRec != NULL ? winRec->win : NULL;
 }
@@ -522,7 +612,7 @@ xprGetXWindow(xp_window_id wid)
 Bool
 xprIsX11Window(int windowNumber)
 {
-    Bool ret;
+    bool ret;
     xp_window_id wid;
 
     if (xp_lookup_native_window(windowNumber, &wid))
@@ -542,12 +632,11 @@ xprIsX11Window(int windowNumber)
 void
 xprHideWindows(Bool hide)
 {
-    int screen;
-    WindowPtr pRoot, pWin;
+    WindowPtr pWin;
 
-    for (screen = 0; screen < screenInfo.numScreens; screen++) {
+    DIX_FOR_EACH_SCREEN({
         RootlessFrameID prevWid = NULL;
-        pRoot = screenInfo.screens[screen]->root;
+        WindowPtr pRoot = walkScreen->root;
 
         for (pWin = pRoot->firstChild; pWin; pWin = pWin->nextSib) {
             RootlessWindowRec *winRec = WINREC(pWin);
@@ -568,11 +657,11 @@ xprHideWindows(Bool hide)
                     box.y2 = winRec->height;
 
                     xprDamageRects(winRec->wid, 1, &box, 0, 0);
-                    RootlessQueueRedisplay(screenInfo.screens[screen]);
+                    RootlessQueueRedisplay(walkScreen);
                 }
             }
         }
-    }
+    });
 }
 
 // XXX: identical to x_cvt_vptr_to_uint ?

@@ -19,6 +19,9 @@
  * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
  * OF THIS SOFTWARE.
  */
+#include <dix-config.h>
+
+#include <stdbool.h>
 
 #include "glamor_priv.h"
 #include "glamor_program.h"
@@ -27,7 +30,7 @@
 
 static const glamor_facet glamor_facet_poly_segment = {
     .name = "poly_segment",
-    .vs_vars = "attribute vec2 primitive;\n",
+    .vs_vars = "in vec2 primitive;\n",
     .vs_exec = ("       vec2 pos = vec2(0.0,0.0);\n"
                 GLAMOR_POS(gl_Position, primitive.xy)),
 };
@@ -46,7 +49,7 @@ glamor_poly_segment_solid_gl(DrawablePtr drawable, GCPtr gc,
     char *vbo_offset;
     int box_index;
     int add_last;
-    Bool ret = FALSE;
+    bool ret = FALSE;
 
     pixmap_priv = glamor_get_pixmap_private(pixmap);
     if (!GLAMOR_PIXMAP_PRIV_HAS_FBO(pixmap_priv))
@@ -58,7 +61,7 @@ glamor_poly_segment_solid_gl(DrawablePtr drawable, GCPtr gc,
 
     glamor_make_current(glamor_priv);
 
-    prog = glamor_use_program_fill(pixmap, gc,
+    prog = glamor_use_program_fill(drawable, gc,
                                    &glamor_priv->poly_segment_program,
                                    &glamor_facet_poly_segment);
 
@@ -73,7 +76,7 @@ glamor_poly_segment_solid_gl(DrawablePtr drawable, GCPtr gc,
 
     glEnableVertexAttribArray(GLAMOR_VERTEX_POS);
     glVertexAttribPointer(GLAMOR_VERTEX_POS, 2, GL_SHORT, GL_FALSE,
-                          sizeof(DDXPointRec), vbo_offset);
+                          sizeof(xPoint), vbo_offset);
 
     if (add_last) {
         int i, j;

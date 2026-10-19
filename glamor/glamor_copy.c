@@ -19,6 +19,12 @@
  * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
  * OF THIS SOFTWARE.
  */
+#include <dix-config.h>
+
+#include <stdbool.h>
+
+#include "os/bug_priv.h"
+#include "os/mathx_priv.h"
 
 #include "glamor_priv.h"
 #include "glamor_transfer.h"
@@ -26,19 +32,19 @@
 #include "glamor_transform.h"
 
 struct copy_args {
-    PixmapPtr           src_pixmap;
+    DrawablePtr         src_drawable;
     glamor_pixmap_fbo   *src;
     uint32_t            bitplane;
     int                 dx, dy;
 };
 
 static Bool
-use_copyarea(PixmapPtr dst, GCPtr gc, glamor_program *prog, void *arg)
+use_copyarea(DrawablePtr drawable, GCPtr gc, glamor_program *prog, void *arg)
 {
     struct copy_args *args = arg;
     glamor_pixmap_fbo *src = args->src;
 
-    glamor_bind_texture(glamor_get_screen_private(dst->drawable.pScreen),
+    glamor_bind_texture(glamor_get_screen_private(drawable->pScreen),
                         GL_TEXTURE0, src, TRUE);
 
     glUniform2f(prog->fill_offset_uniform, args->dx, args->dy);
@@ -49,10 +55,10 @@ use_copyarea(PixmapPtr dst, GCPtr gc, glamor_program *prog, void *arg)
 
 static const glamor_facet glamor_facet_copyarea = {
     "copy_area",
-    .vs_vars = "attribute vec2 primitive;\n",
+    .vs_vars = "in vec2 primitive;\n",
     .vs_exec = (GLAMOR_POS(gl_Position, primitive.xy)
                 "       fill_pos = (fill_offset + primitive.xy) * fill_size_inv;\n"),
-    .fs_exec = "       gl_FragColor = texture2D(sampler, fill_pos);\n",
+    .fs_exec = "       frag_color = texture(sampler, fill_pos);\n",
     .locations = glamor_program_location_fillsamp | glamor_program_location_fillpos,
     .use = use_copyarea,
 };
@@ -62,22 +68,22 @@ static const glamor_facet glamor_facet_copyarea = {
  */
 
 static Bool
-use_copyplane(PixmapPtr dst, GCPtr gc, glamor_program *prog, void *arg)
+use_copyplane(DrawablePtr drawable, GCPtr gc, glamor_program *prog, void *arg)
 {
     struct copy_args *args = arg;
     glamor_pixmap_fbo *src = args->src;
 
-    glamor_bind_texture(glamor_get_screen_private(dst->drawable.pScreen),
+    glamor_bind_texture(glamor_get_screen_private(drawable->pScreen),
                         GL_TEXTURE0, src, TRUE);
 
     glUniform2f(prog->fill_offset_uniform, args->dx, args->dy);
     glUniform2f(prog->fill_size_inv_uniform, 1.0f/src->width, 1.0f/src->height);
 
-    glamor_set_color(dst, gc->fgPixel, prog->fg_uniform);
-    glamor_set_color(dst, gc->bgPixel, prog->bg_uniform);
+    glamor_set_color(drawable, gc->fgPixel, prog->fg_uniform);
+    glamor_set_color(drawable, gc->bgPixel, prog->bg_uniform);
 
     /* XXX handle 2 10 10 10 and 1555 formats; presumably the pixmap private knows this? */
-    switch (args->src_pixmap->drawable.depth) {
+    switch (glamor_drawable_effective_depth(args->src_drawable)) {
     case 30:
         glUniform4ui(prog->bitplane_uniform,
                      (args->bitplane >> 20) & 0x3ff,
@@ -141,14 +147,14 @@ use_copyplane(PixmapPtr dst, GCPtr gc, glamor_program *prog, void *arg)
 static const glamor_facet glamor_facet_copyplane = {
     "copy_plane",
     .version = 130,
-    .vs_vars = "attribute vec2 primitive;\n",
+    .vs_vars = "in vec2 primitive;\n",
     .vs_exec = (GLAMOR_POS(gl_Position, (primitive.xy))
                 "       fill_pos = (fill_offset + primitive.xy) * fill_size_inv;\n"),
-    .fs_exec = ("       uvec4 bits = uvec4(round(texture2D(sampler, fill_pos) * bitmul));\n"
+    .fs_exec = ("       uvec4 bits = uvec4(round(texture(sampler, fill_pos) * bitmul));\n"
                 "       if ((bits & bitplane) != uvec4(0,0,0,0))\n"
-                "               gl_FragColor = fg;\n"
+                "               frag_color = fg;\n"
                 "       else\n"
-                "               gl_FragColor = bg;\n"),
+                "               frag_color = bg;\n"),
     .locations = glamor_program_location_fillsamp|glamor_program_location_fillpos|glamor_program_location_fg|glamor_program_location_bg|glamor_program_location_bitplane,
     .use = use_copyplane,
 };
@@ -235,7 +241,7 @@ glamor_copy_cpu_fbo(DrawablePtr src,
 
         PixmapPtr tmp_pix = fbCreatePixmap(screen, dst_pixmap->drawable.width,
                                            dst_pixmap->drawable.height,
-                                           dst->depth, 0);
+                                           glamor_drawable_effective_depth(dst), 0);
 
         if (!tmp_pix) {
             glamor_finish_access(src);
@@ -255,7 +261,7 @@ glamor_copy_cpu_fbo(DrawablePtr src,
             fbCopy1toN(src, &tmp_pix->drawable, gc, box, nbox, dx, dy,
                        reverse, upsidedown, bitplane, closure);
 
-        glamor_upload_boxes(dst_pixmap, box, nbox, tmp_xoff, tmp_yoff,
+        glamor_upload_boxes(dst, box, nbox, tmp_xoff, tmp_yoff,
                             dst_xoff, dst_yoff, (uint8_t *) tmp_bits,
                             tmp_stride * sizeof(FbBits));
         fbDestroyPixmap(tmp_pix);
@@ -266,7 +272,7 @@ glamor_copy_cpu_fbo(DrawablePtr src,
         int src_xoff, src_yoff;
 
         fbGetDrawable(src, src_bits, src_stride, src_bpp, src_xoff, src_yoff);
-        glamor_upload_boxes(dst_pixmap, box, nbox, src_xoff + dx, src_yoff + dy,
+        glamor_upload_boxes(dst, box, nbox, src_xoff + dx, src_yoff + dy,
                             dst_xoff, dst_yoff,
                             (uint8_t *) src_bits, src_stride * sizeof (FbBits));
     }
@@ -319,7 +325,7 @@ glamor_copy_fbo_cpu(DrawablePtr src,
 
     fbGetDrawable(dst, dst_bits, dst_stride, dst_bpp, dst_xoff, dst_yoff);
 
-    glamor_download_boxes(src_pixmap, box, nbox, src_xoff + dx, src_yoff + dy,
+    glamor_download_boxes(src, box, nbox, src_xoff + dx, src_yoff + dy,
                           dst_xoff, dst_yoff,
                           (uint8_t *) dst_bits, dst_stride * sizeof (FbBits));
     glamor_finish_access(dst);
@@ -370,7 +376,7 @@ glamor_copy_fbo_fbo_draw(DrawablePtr src,
     glamor_program *prog;
     const glamor_facet *copy_facet;
     int n;
-    Bool ret = FALSE;
+    bool ret = FALSE;
     BoxRec bounds = glamor_no_rendering_bounds();
 
     glamor_make_current(glamor_priv);
@@ -378,7 +384,7 @@ glamor_copy_fbo_fbo_draw(DrawablePtr src,
     if (gc && !glamor_set_planemask(gc->depth, gc->planemask))
         goto bail_ctx;
 
-    if (!glamor_set_alu(screen, gc ? gc->alu : GXcopy))
+    if (!glamor_set_alu(dst, gc ? gc->alu : GXcopy))
         goto bail_ctx;
 
     if (bitplane && !glamor_priv->can_copyplane)
@@ -401,7 +407,7 @@ glamor_copy_fbo_fbo_draw(DrawablePtr src,
             goto bail_ctx;
     }
 
-    args.src_pixmap = src_pixmap;
+    args.src_drawable = src;
     args.bitplane = bitplane;
 
     /* Set up the vertex buffers for the points */
@@ -446,6 +452,8 @@ glamor_copy_fbo_fbo_draw(DrawablePtr src,
 
     glEnable(GL_SCISSOR_TEST);
 
+    BUG_RETURN_VAL(!src_priv, FALSE);
+
     glamor_pixmap_loop(src_priv, src_box_index) {
         BoxPtr src_box = glamor_pixmap_box_at(src_priv, src_box_index);
 
@@ -453,15 +461,17 @@ glamor_copy_fbo_fbo_draw(DrawablePtr src,
         args.dy = dy + src_off_y - src_box->y1;
         args.src = glamor_pixmap_fbo_at(src_priv, src_box_index);
 
-        if (!glamor_use_program(dst_pixmap, gc, prog, &args))
+        if (!glamor_use_program(dst, gc, prog, &args))
             goto bail_ctx;
+
+        BUG_RETURN_VAL(!dst_priv, FALSE);
 
         glamor_pixmap_loop(dst_priv, dst_box_index) {
             BoxRec scissor = {
-                .x1 = max(-args.dx, bounds.x1),
-                .y1 = max(-args.dy, bounds.y1),
-                .x2 = min(-args.dx + src_box->x2 - src_box->x1, bounds.x2),
-                .y2 = min(-args.dy + src_box->y2 - src_box->y1, bounds.y2),
+                .x1 = MAX(-args.dx, bounds.x1),
+                .y1 = MAX(-args.dy, bounds.y1),
+                .x2 = MIN(-args.dx + src_box->x2 - src_box->x1, bounds.x2),
+                .y2 = MIN(-args.dy + src_box->y2 - src_box->y1, bounds.y2),
             };
             if (scissor.x1 >= scissor.x2 || scissor.y1 >= scissor.y2)
                 continue;
@@ -529,17 +539,17 @@ glamor_copy_fbo_fbo_temp(DrawablePtr src,
     if (gc && !glamor_set_planemask(gc->depth, gc->planemask))
         goto bail_ctx;
 
-    if (!glamor_set_alu(screen, gc ? gc->alu : GXcopy))
+    if (!glamor_set_alu(dst, gc ? gc->alu : GXcopy))
         goto bail_ctx;
 
     /* Find the size of the area to copy
      */
     bounds = box[0];
     for (n = 1; n < nbox; n++) {
-        bounds.x1 = min(bounds.x1, box[n].x1);
-        bounds.x2 = max(bounds.x2, box[n].x2);
-        bounds.y1 = min(bounds.y1, box[n].y1);
-        bounds.y2 = max(bounds.y2, box[n].y2);
+        bounds.x1 = MIN(bounds.x1, box[n].x1);
+        bounds.x2 = MAX(bounds.x2, box[n].x2);
+        bounds.y1 = MIN(bounds.y1, box[n].y1);
+        bounds.y2 = MAX(bounds.y2, box[n].y2);
     }
 
     /* Allocate a suitable temporary pixmap
@@ -547,7 +557,7 @@ glamor_copy_fbo_fbo_temp(DrawablePtr src,
     tmp_pixmap = glamor_create_pixmap(screen,
                                       bounds.x2 - bounds.x1,
                                       bounds.y2 - bounds.y1,
-                                      src->depth, 0);
+                                      glamor_drawable_effective_depth(src), 0);
     if (!tmp_pixmap)
         goto bail;
 
@@ -652,11 +662,11 @@ glamor_copy_needs_temp(DrawablePtr src,
 
         bounds = box[0];
         for (n = 1; n < nbox; n++) {
-            bounds.x1 = min(bounds.x1, box[n].x1);
-            bounds.y1 = min(bounds.y1, box[n].y1);
+            bounds.x1 = MIN(bounds.x1, box[n].x1);
+            bounds.y1 = MIN(bounds.y1, box[n].y1);
 
-            bounds.x2 = max(bounds.x2, box[n].x2);
-            bounds.y2 = max(bounds.y2, box[n].y2);
+            bounds.x2 = MAX(bounds.x2, box[n].x2);
+            bounds.y2 = MAX(bounds.y2, box[n].y2);
         }
 
         /* Check to see if the pixmap-relative boxes overlap in both X and Y,
@@ -700,6 +710,9 @@ glamor_copy_gl(DrawablePtr src,
     PixmapPtr dst_pixmap = glamor_get_drawable_pixmap(dst);
     glamor_pixmap_private *src_priv = glamor_get_pixmap_private(src_pixmap);
     glamor_pixmap_private *dst_priv = glamor_get_pixmap_private(dst_pixmap);
+
+    BUG_RETURN_VAL(!dst_priv, FALSE);
+    BUG_RETURN_VAL(!src_priv, FALSE);
 
     if (GLAMOR_PIXMAP_PRIV_HAS_FBO(dst_priv)) {
         if (GLAMOR_PIXMAP_PRIV_HAS_FBO(src_priv)) {
@@ -757,7 +770,7 @@ glamor_copy_plane(DrawablePtr src, DrawablePtr dst, GCPtr gc,
                   int srcx, int srcy, int width, int height, int dstx, int dsty,
                   unsigned long bitplane)
 {
-    if ((bitplane & FbFullMask(src->depth)) == 0)
+    if ((bitplane & FbFullMask(glamor_drawable_effective_depth(src))) == 0)
         return miHandleExposures(src, dst, gc,
                                  srcx, srcy, width, height, dstx, dsty);
     return miDoCopy(src, dst, gc,
@@ -766,7 +779,7 @@ glamor_copy_plane(DrawablePtr src, DrawablePtr dst, GCPtr gc,
 }
 
 void
-glamor_copy_window(WindowPtr window, DDXPointRec old_origin, RegionPtr src_region)
+glamor_copy_window(WindowPtr window, xPoint old_origin, RegionPtr src_region)
 {
     PixmapPtr pixmap = glamor_get_drawable_pixmap(&window->drawable);
     DrawablePtr drawable = &pixmap->drawable;
@@ -781,10 +794,8 @@ glamor_copy_window(WindowPtr window, DDXPointRec old_origin, RegionPtr src_regio
 
     RegionIntersect(&dst_region, &window->borderClip, src_region);
 
-#ifdef COMPOSITE
     if (pixmap->screen_x || pixmap->screen_y)
         RegionTranslate(&dst_region, -pixmap->screen_x, -pixmap->screen_y);
-#endif
 
     miCopyRegion(drawable, drawable,
                  0, &dst_region, dx, dy, glamor_copy, 0, 0);

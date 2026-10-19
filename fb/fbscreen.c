@@ -20,11 +20,12 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
-#include "fb.h"
+#include "fb/fb_priv.h"
+#include "os/osdep.h"
+
+#undef CreateWindow
 
 Bool
 fbCloseScreen(ScreenPtr pScreen)
@@ -99,9 +100,11 @@ fbSetupScreen(ScreenPtr pScreen, void *pbits, /* pointer to screen bitmap */
 {                               /* bits per pixel for screen */
     if (!fbAllocatePrivates(pScreen))
         return FALSE;
-    pScreen->defColormap = FakeClientID(0);
-    /* let CreateDefColormap do whatever it wants for pixels */
-    pScreen->blackPixel = pScreen->whitePixel = (Pixel) 0;
+    pScreen->defColormap = dixAllocServerXID();
+    if (bpp > 1) {
+	/* let CreateDefColormap do whatever it wants for pixels */
+	pScreen->blackPixel = pScreen->whitePixel = (Pixel) 0;
+    }
     pScreen->QueryBestSize = fbQueryBestSize;
     /* SaveScreen */
     pScreen->GetImage = fbGetImage;
@@ -118,7 +121,11 @@ fbSetupScreen(ScreenPtr pScreen, void *pbits, /* pointer to screen bitmap */
     pScreen->RealizeFont = fbRealizeFont;
     pScreen->UnrealizeFont = fbUnrealizeFont;
     pScreen->CreateGC = fbCreateGC;
-    pScreen->CreateColormap = fbInitializeColormap;
+    if (bpp == 1) {
+	pScreen->CreateColormap = mfbCreateColormap;
+    } else {
+	pScreen->CreateColormap = fbInitializeColormap;
+    }
     pScreen->DestroyColormap = (void (*)(ColormapPtr)) NoopDDA;
     pScreen->InstallColormap = fbInstallColormap;
     pScreen->UninstallColormap = fbUninstallColormap;

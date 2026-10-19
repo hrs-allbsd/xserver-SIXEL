@@ -32,6 +32,8 @@
 #if !defined(_WINWINDOW_H_)
 #define _WINWINDOW_H_
 
+#include <stdbool.h>
+
 #ifndef NO
 #define NO			0
 #endif
@@ -57,12 +59,6 @@
 #endif
 #define WIN_WID_PROP		"cyg_wid_prop_rl"
 #define WIN_NEEDMANAGE_PROP	"cyg_override_redirect_prop_rl"
-#ifndef CYGMULTIWINDOW_DEBUG
-#define CYGMULTIWINDOW_DEBUG    NO
-#endif
-#ifndef CYGWINDOWING_DEBUG
-#define CYGWINDOWING_DEBUG	NO
-#endif
 
 #define XMING_SIGNATURE		0x12345678L
 
@@ -77,7 +73,7 @@ typedef struct {
     HRGN hRgn;
     HWND hWnd;
     winPrivScreenPtr pScreenPriv;
-    Bool fXKilled;
+    bool fXKilled;
     HDWP hDwp;
 #ifdef XWIN_GLX_WINDOWS
     Bool fWglUsed;
@@ -107,8 +103,8 @@ typedef struct _winWMMessageRec {
 #define		WM_WM_NAME_EVENT	(WM_USER + 9)
 #define		WM_WM_ICON_EVENT	(WM_USER + 10)
 #define		WM_WM_CHANGE_STATE	(WM_USER + 11)
-#define		WM_WM_MAP2		(WM_USER + 12)
-#define		WM_WM_MAP3		(WM_USER + 13)
+#define		WM_WM_MAP_UNMANAGED	(WM_USER + 12)
+#define		WM_WM_MAP_MANAGED	(WM_USER + 13)
 #define		WM_WM_HINTS_EVENT	(WM_USER + 14)
 
 #define		MwmHintsDecorations	(1L << 1)
@@ -138,13 +134,13 @@ typedef struct MwmHints {
 void
  winSendMessageToWM(void *pWMInfo, winWMMessagePtr msg);
 
-Bool
-
-winInitWM(void **ppWMInfo,
-          pthread_t * ptWMProc,
-          pthread_t * ptXMsgProc,
-          pthread_mutex_t * ppmServerStarted,
-          int dwScreen, HWND hwndScreen);
+bool winInitWM(void **ppWMInfo,
+               pthread_t *ptWMProc,
+               pthread_t *ptXMsgProc,
+               pthread_mutex_t *ppmServerStarted,
+               int dwScreen,
+               HWND hwndScreen,
+               bool compositeWM);
 
 void
  winDeinitMultiWindowWM(void);
@@ -158,7 +154,6 @@ void
 void
  winSetAppUserModelID(HWND hWnd, const char *AppID);
 
-void
- winShowWindowOnTaskbar(HWND hWnd, Bool show);
+void winShowWindowOnTaskbar(HWND hWnd, bool show);
 
 #endif

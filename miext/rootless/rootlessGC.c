@@ -29,23 +29,23 @@
  * use or other dealings in this Software without prior written authorization.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <stddef.h>             /* For NULL */
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+
+#include "os/mathx_priv.h"
+
 #include "mi.h"
 #include "scrnintstr.h"
 #include "gcstruct.h"
 #include "pixmapstr.h"
 #include "windowstr.h"
 #include "dixfontstr.h"
-#include "mivalidate.h"
 #include "fb.h"
-
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
 
 #include "rootlessCommon.h"
 
@@ -198,8 +198,8 @@ static GCOps rootlessGCOps = {
             (pGC)->bgPixel = _save_bg;				\
             (pGC)->planemask = _save_pm;			\
             (pDraw)->depth = (pDraw)->bitsPerPixel;		\
-            VALIDATE_GC(pGC, GCForeground | GCBackground |	\
-                        GCPlaneMask, pDraw);			\
+            VALIDATE_GC((pGC), GCForeground | GCBackground |	\
+                        GCPlaneMask, (pDraw));			\
             (pDraw)->depth = depth;				\
         }							\
     } while (0)
@@ -213,8 +213,8 @@ static GCOps rootlessGCOps = {
             (pGC)->bgPixel |= mask;					\
             (pGC)->planemask |= mask;					\
             (pDraw)->depth = (pDraw)->bitsPerPixel;			\
-            VALIDATE_GC(pGC, GCForeground |				\
-                        GCBackground | GCPlaneMask, pDraw);		\
+            VALIDATE_GC((pGC), GCForeground |				\
+                        GCBackground | GCPlaneMask, (pDraw));		\
             (pDraw)->depth = depth;					\
             _changed = TRUE;						\
         }								\
@@ -222,9 +222,9 @@ static GCOps rootlessGCOps = {
 
 #define VALIDATE_GC(pGC, changes, pDrawable)				\
     do {								\
-        pGC->funcs->ValidateGC(pGC, changes, pDrawable);		\
-        if (((WindowPtr) pDrawable)->viewable) {			\
-            gcrec->originalOps = pGC->ops;				\
+        (pGC)->funcs->ValidateGC((pGC), (changes), (pDrawable));		\
+        if (((WindowPtr) (pDrawable))->viewable) {			\
+            gcrec->originalOps = (pGC)->ops;				\
         }								\
     } while(0)
 
@@ -273,7 +273,7 @@ RootlessCreateGC(GCPtr pGC)
 {
     RootlessGCRec *gcrec;
     RootlessScreenRec *s;
-    Bool result;
+    bool result;
 
     SCREEN_UNWRAP(pGC->pScreen, CreateGC);
     s = SCREENREC(pGC->pScreen);
@@ -403,7 +403,7 @@ RootlessCopyClip(GCPtr pgcDst, GCPtr pgcSrc)
 #define GCOP_UNWRAP(pGC) \
     RootlessGCRec *gcrec = (RootlessGCRec *) \
         dixLookupPrivate(&(pGC)->devPrivates, rootlessGCPrivateKey); \
-    const GCFuncs *saveFuncs = pGC->funcs; \
+    const GCFuncs *saveFuncs = (pGC)->funcs; \
     (pGC)->funcs = gcrec->originalFuncs; \
     (pGC)->ops = gcrec->originalOps;
 
@@ -549,7 +549,7 @@ RootlessCopyArea(DrawablePtr pSrc, DrawablePtr dst, GCPtr pGC,
     GC_SAVE(pGC);
     GCOP_UNWRAP(pGC);
 
-    RL_DEBUG_MSG("copy area start (src 0x%x, dst 0x%x)", pSrc, dst);
+    RL_DEBUG_MSG("copy area start (src %p, dst %p)", pSrc, dst);
 
     if (pSrc->type == DRAWABLE_WINDOW && IsFramedWindow((WindowPtr) pSrc)) {
         /* If both source and dest are windows, and we're doing
@@ -800,7 +800,7 @@ static void
 RootlessPolySegment(DrawablePtr dst, GCPtr pGC, int nseg, xSegment * pSeg)
 {
     GCOP_UNWRAP(pGC);
-    RL_DEBUG_MSG("poly segment start (win 0x%x)", dst);
+    RL_DEBUG_MSG("poly segment start (dst %p)", dst);
 
     RootlessStartDrawing((WindowPtr) dst);
     pGC->ops->PolySegment(dst, pGC, nseg, pSeg);
@@ -998,7 +998,7 @@ RootlessFillPolygon(DrawablePtr dst, GCPtr pGC,
 {
     GC_SAVE(pGC);
     GCOP_UNWRAP(pGC);
-    RL_DEBUG_MSG("fill poly start (win 0x%x, fillStyle 0x%x)", dst,
+    RL_DEBUG_MSG("fill poly start (dst %p, fillStyle 0x%x)", dst,
                  pGC->fillStyle);
 
     if (count <= 2) {
@@ -1072,7 +1072,7 @@ RootlessPolyFillRect(DrawablePtr dst, GCPtr pGC,
 {
     GC_SAVE(pGC);
     GCOP_UNWRAP(pGC);
-    RL_DEBUG_MSG("fill rect start (win 0x%x, fillStyle 0x%x)", dst,
+    RL_DEBUG_MSG("fill rect start (dst %p, fillStyle 0x%x)", dst,
                  pGC->fillStyle);
 
     if (nRectsInit <= 0) {
@@ -1183,8 +1183,8 @@ RootlessImageText8(DrawablePtr dst, GCPtr pGC,
         int top, bot, Min, Max;
         BoxRec box;
 
-        top = max(FONTMAXBOUNDS(pGC->font, ascent), FONTASCENT(pGC->font));
-        bot = max(FONTMAXBOUNDS(pGC->font, descent), FONTDESCENT(pGC->font));
+        top = MAX(FONTMAXBOUNDS(pGC->font, ascent), FONTASCENT(pGC->font));
+        bot = MAX(FONTMAXBOUNDS(pGC->font, descent), FONTDESCENT(pGC->font));
 
         Min = count * FONTMINBOUNDS(pGC->font, characterWidth);
         if (Min > 0)
@@ -1243,10 +1243,7 @@ RootlessPolyText8(DrawablePtr dst, GCPtr pGC,
         box.x2 = dst->x + x + FONTMAXBOUNDS(pGC->font, rightSideBearing);
 
         if (count > 1) {
-            if (width > 0)
-                box.x2 += width;
-            else
-                box.x1 += width;
+            box.x2 += width;
         }
 
         box.y1 = dst->y + y - FONTMAXBOUNDS(pGC->font, ascent);
@@ -1274,8 +1271,8 @@ RootlessImageText16(DrawablePtr dst, GCPtr pGC,
         int top, bot, Min, Max;
         BoxRec box;
 
-        top = max(FONTMAXBOUNDS(pGC->font, ascent), FONTASCENT(pGC->font));
-        bot = max(FONTMAXBOUNDS(pGC->font, descent), FONTDESCENT(pGC->font));
+        top = MAX(FONTMAXBOUNDS(pGC->font, ascent), FONTASCENT(pGC->font));
+        bot = MAX(FONTMAXBOUNDS(pGC->font, descent), FONTDESCENT(pGC->font));
 
         Min = count * FONTMINBOUNDS(pGC->font, characterWidth);
         if (Min > 0)
@@ -1334,10 +1331,7 @@ RootlessPolyText16(DrawablePtr dst, GCPtr pGC,
         box.x2 = dst->x + x + FONTMAXBOUNDS(pGC->font, rightSideBearing);
 
         if (count > 1) {
-            if (width > 0)
-                box.x2 += width;
-            else
-                box.x1 += width;
+            box.x2 += width;
         }
 
         box.y1 = dst->y + y - FONTMAXBOUNDS(pGC->font, ascent);
@@ -1368,8 +1362,8 @@ RootlessImageGlyphBlt(DrawablePtr dst, GCPtr pGC,
         unsigned int nglyph = nglyphInit;
         CharInfoPtr *ppci = ppciInit;
 
-        top = max(FONTMAXBOUNDS(pGC->font, ascent), FONTASCENT(pGC->font));
-        bot = max(FONTMAXBOUNDS(pGC->font, descent), FONTDESCENT(pGC->font));
+        top = MAX(FONTMAXBOUNDS(pGC->font, ascent), FONTASCENT(pGC->font));
+        bot = MAX(FONTMAXBOUNDS(pGC->font, descent), FONTDESCENT(pGC->font));
 
         box.x1 = ppci[0]->metrics.leftSideBearing;
         if (box.x1 > 0)

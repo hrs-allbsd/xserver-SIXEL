@@ -1,12 +1,4 @@
 /*
- * misprite.h
- *
- * software-sprite/sprite drawing interface spec
- *
- * mi versions of these routines exist.
- */
-
-/*
 
 Copyright 1989, 1998  The Open Group
 
@@ -31,18 +23,30 @@ used in advertising or otherwise to promote the sale, use or other dealings
 in this Software without prior written authorization from The Open Group.
 */
 
-extern Bool miSpriteInitialize(ScreenPtr /*pScreen */ ,
-                               miPointerScreenFuncPtr   /*screenFuncs */
-    );
+/*
+ * misprite.h
+ *
+ * software-sprite/sprite drawing interface spec
+ *
+ * mi versions of these routines exist.
+ */
+#ifndef XSERVER_MISPRITE_H
+#define XSERVER_MISPRITE_H
 
-extern Bool miDCRealizeCursor(ScreenPtr pScreen, CursorPtr pCursor);
-extern Bool miDCUnrealizeCursor(ScreenPtr pScreen, CursorPtr pCursor);
-extern Bool miDCPutUpCursor(DeviceIntPtr pDev, ScreenPtr pScreen,
-                            CursorPtr pCursor, int x, int y,
-                            unsigned long source, unsigned long mask);
-extern Bool miDCSaveUnderCursor(DeviceIntPtr pDev, ScreenPtr pScreen,
-                                int x, int y, int w, int h);
-extern Bool miDCRestoreUnderCursor(DeviceIntPtr pDev, ScreenPtr pScreen,
-                                   int x, int y, int w, int h);
-extern Bool miDCDeviceInitialize(DeviceIntPtr pDev, ScreenPtr pScreen);
-extern void miDCDeviceCleanup(DeviceIntPtr pDev, ScreenPtr pScreen);
+#include <stdio.h>
+
+bool miSpriteInitialize(ScreenPtr pScreen, miPointerScreenFuncPtr screenFuncs);
+
+bool miDCRealizeCursor(ScreenPtr pScreen, CursorPtr pCursor);
+bool miDCUnrealizeCursor(ScreenPtr pScreen, CursorPtr pCursor);
+bool miDCPutUpCursor(DeviceIntPtr pDev, ScreenPtr pScreen,
+                     CursorPtr pCursor, int x, int y,
+                     unsigned long source, unsigned long mask);
+bool miDCSaveUnderCursor(DeviceIntPtr pDev, ScreenPtr pScreen,
+                         int x, int y, int w, int h);
+bool miDCRestoreUnderCursor(DeviceIntPtr pDev, ScreenPtr pScreen,
+                            int x, int y, int w, int h);
+bool miDCDeviceInitialize(DeviceIntPtr pDev, ScreenPtr pScreen);
+void miDCDeviceCleanup(DeviceIntPtr pDev, ScreenPtr pScreen);
+
+#endif /* XSERVER_MISPRITE_H */

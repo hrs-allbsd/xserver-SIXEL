@@ -24,19 +24,11 @@
  * in this Software without prior written authorization from Metro Link.
  *
  */
-
 /*
 	X Input Serial Buffer routines for use in any XInput driver that accesses
 	a serial device.
 */
-
-/*****************************************************************************
- *	Standard Headers
- ****************************************************************************/
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
 #include <misc.h>
 #include <xf86.h>
@@ -45,31 +37,13 @@
 #include <xf86Xinput.h>
 #include "xisb.h"
 
-/*****************************************************************************
- *	Local Headers
- ****************************************************************************/
-
-/*****************************************************************************
- *	Variables without includable headers
- ****************************************************************************/
-
-/*****************************************************************************
- *	Local Variables
- ****************************************************************************/
-
-/*****************************************************************************
- *	Function Definitions
- ****************************************************************************/
-
 XISBuffer *
 XisbNew(int fd, ssize_t size)
 {
-    XISBuffer *b;
-
-    b = malloc(sizeof(XISBuffer));
+    XISBuffer *b = calloc(1, sizeof(XISBuffer));
     if (!b)
         return NULL;
-    b->buf = malloc((sizeof(unsigned char) * size));
+    b->buf = calloc(sizeof(unsigned char), size);
     if (!b->buf) {
         free(b);
         return NULL;
@@ -129,33 +103,13 @@ XisbRead(XISBuffer * b)
     return b->buf[b->current++];
 }
 
-/* the only purpose of this function is to provide output tracing */
-ssize_t
-XisbWrite(XISBuffer * b, unsigned char *msg, ssize_t len)
-{
-    if (b->trace) {
-        int i = 0;
-
-        for (i = 0; i < len; i++)
-            ErrorF("\t\twrote 0x%02x (%c)\n", msg[i], msg[i]);
-    }
-    return (xf86WriteSerial(b->fd, msg, len));
-}
-
-/* turn tracing of this buffer on (1) or off (0) */
-void
-XisbTrace(XISBuffer * b, int trace)
-{
-    b->trace = trace;
-}
-
 /*
  * specify a block_duration of -1 when you know the buffer's fd is ready to
  * read. After a read, it is automatically set to 0 so that the next read
  * will use check to select for data and prevent a block.
  * It is the caller's responsibility to set the block_duration to -1 if it
  * knows that there is data to read (because the main select loop triggered
- * the read) and want's to avoid the unnecessary overhead of the select call
+ * the read) and wants to avoid the unnecessary overhead of the select call
  *
  * a zero or positive block duration will cause the select to block for the
  * give duration in usecs.

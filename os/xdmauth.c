@@ -33,18 +33,24 @@ from The Open Group.
  * Author:  Keith Packard, MIT X Consortium
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <X11/X.h>
-#define XSERV_t
-#define TRANS_SERVER
-#define TRANS_REOPEN
-#include <X11/Xtrans/Xtrans.h>
+
+#include "os/auth.h"
+#include "os/io_priv.h"
+#include "os/Xtrans.h"
+
 #include "os.h"
 #include "osdep.h"
+
+#ifdef XDMCP
+#include "xdmcp.h"
+#endif
+
+#include "xdmauth.h"
 #include "dixstruct.h"
 
 #ifdef HASXDMAUTH
@@ -100,19 +106,17 @@ static Bool
 XdmAuthenticationAddAuth(int name_len, const char *name,
                          int data_len, char *data)
 {
-    Bool ret;
-
     XdmcpUnwrap((unsigned char *) data, (unsigned char *) &privateKey,
                 (unsigned char *) data, data_len);
     authFromXDMCP = TRUE;
-    ret = AddAuthorization(name_len, name, data_len, data);
+    bool ret = !!AddAuthorization(name_len, name, data_len, data);
     authFromXDMCP = FALSE;
     return ret;
 }
 
-#define atox(c)	('0' <= c && c <= '9' ? c - '0' : \
-		 'a' <= c && c <= 'f' ? c - 'a' + 10 : \
-		 'A' <= c && c <= 'F' ? c - 'A' + 10 : -1)
+#define atox(c)	('0' <= (c) && (c) <= '9' ? (c) - '0' : \
+		 'a' <= (c) && (c) <= 'f' ? (c) - 'a' + 10 : \
+		 'A' <= (c) && (c) <= 'F' ? (c) - 'A' + 10 : -1)
 
 static int
 HexToBinary(const char *in, char *out, int len)
@@ -253,7 +257,7 @@ XdmAuthorizationValidate(unsigned char *plain, int length,
             *reason = "Bad XDM authorization key length";
         return NULL;
     }
-    client = malloc(sizeof(XdmClientAuthRec));
+    client = calloc(1, sizeof(XdmClientAuthRec));
     if (!client)
         return NULL;
     XdmClientAuthDecode(plain, client);
@@ -277,7 +281,6 @@ XdmAuthorizationValidate(unsigned char *plain, int length,
         if (_XSERVTransGetPeerAddr(((OsCommPtr) xclient->osPrivate)->trans_conn,
                                    &family, &addr_len, &addr) == 0
             && _XSERVTransConvertAddress(&family, &addr_len, &addr) == 0) {
-#if defined(TCPCONN)
             if (family == FamilyInternet &&
                 memcmp((char *) addr, client->client, 4) != 0) {
                 free(client);
@@ -288,7 +291,6 @@ XdmAuthorizationValidate(unsigned char *plain, int length,
                 return NULL;
 
             }
-#endif
             free(addr);
         }
     }
@@ -316,10 +318,9 @@ XdmAuthorizationValidate(unsigned char *plain, int length,
     return client;
 }
 
-int
-XdmAddCookie(unsigned short data_length, const char *data, XID id)
+XID
+XdmAddCookie(unsigned short data_length, const char *data)
 {
-    XdmAuthorizationPtr new;
     unsigned char *rho_bits, *key_bits;
 
     switch (data_length) {
@@ -351,15 +352,23 @@ XdmAddCookie(unsigned short data_length, const char *data, XID id)
     /* the first octet of the key must be zero */
     if (key_bits[0] != '\0')
         return 0;
-    new = malloc(sizeof(XdmAuthorizationRec));
+
+    /* check for possible duplicate and return it */
+    for (XdmAuthorizationRec *walk = xdmAuth; walk; walk=walk->next) {
+        if ((memcmp(walk->key.data, key_bits, 8)==0) &&
+            (memcmp(walk->rho.data, rho_bits, 8)==0))
+            return walk->id;
+    }
+
+    XdmAuthorizationPtr new = calloc(1, sizeof(XdmAuthorizationRec));
     if (!new)
         return 0;
     new->next = xdmAuth;
     xdmAuth = new;
-    memmove(new->key.data, key_bits, (int) 8);
-    memmove(new->rho.data, rho_bits, (int) 8);
-    new->id = id;
-    return 1;
+    memcpy(new->key.data, key_bits, 8);
+    memcpy(new->rho.data, rho_bits, 8);
+    new->id = dixAllocServerXID();
+    return new->id;
 }
 
 XID
@@ -368,12 +377,11 @@ XdmCheckCookie(unsigned short cookie_length, const char *cookie,
 {
     XdmAuthorizationPtr auth;
     XdmClientAuthPtr client;
-    unsigned char *plain;
 
     /* Auth packets must be a multiple of 8 bytes long */
     if (cookie_length & 7)
         return (XID) -1;
-    plain = malloc(cookie_length);
+    unsigned char *plain = calloc(1, cookie_length);
     if (!plain)
         return (XID) -1;
     for (auth = xdmAuth; auth; auth = auth->next) {

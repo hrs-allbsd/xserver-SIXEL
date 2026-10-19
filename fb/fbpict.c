@@ -23,17 +23,16 @@
  * Author:  Keith Packard, SuSE, Inc.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
 #include <string.h>
 
-#include "fb.h"
+#include "fb/fbpict_priv.h"
+#include "include/mipict.h"
+#include "Xext/render/glyphstr_priv.h"
 
+#include "fb.h"
 #include "picturestr.h"
-#include "mipict.h"
-#include "fbpict.h"
 
 void
 fbComposite(CARD8 op,
@@ -90,7 +89,7 @@ fbUnrealizeGlyph(ScreenPtr pScreen,
 	pixman_glyph_cache_remove (glyphCache, pGlyph, NULL);
 }
 
-void
+static void
 fbGlyphs(CARD8 op,
 	 PicturePtr pSrc,
 	 PicturePtr pDst,
@@ -124,7 +123,7 @@ fbGlyphs(CARD8 op,
     pixman_glyph_cache_freeze (glyphCache);
 
     if (n_glyphs > N_STACK_GLYPHS) {
-	if (!(pglyphs = xallocarray(n_glyphs, sizeof(pixman_glyph_t))))
+	if (!(pglyphs = calloc(n_glyphs, sizeof(pixman_glyph_t))))
 	    goto out;
     }
 

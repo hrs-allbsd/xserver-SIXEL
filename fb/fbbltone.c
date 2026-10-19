@@ -20,9 +20,9 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
+
+#include <stdbool.h>
 
 #include "fb.h"
 
@@ -36,30 +36,30 @@
 
 #define Mask(x,w)	BitsMask((x)*(w),(w))
 
-#define SelMask(b,n,w)	((((b) >> n) & 1) * Mask(n,w))
+#define SelMask(b,n,w)	((((b) >> (n)) & 1) * Mask((n),(w)))
 
 #define C1(b,w) \
-    (SelMask(b,0,w))
+    (SelMask((b),0,(w)))
 
 #define C2(b,w) \
-    (SelMask(b,0,w) | \
-     SelMask(b,1,w))
+    (SelMask((b),0,(w)) | \
+     SelMask((b),1,(w)))
 
 #define C4(b,w) \
-    (SelMask(b,0,w) | \
-     SelMask(b,1,w) | \
-     SelMask(b,2,w) | \
-     SelMask(b,3,w))
+    (SelMask((b),0,(w)) | \
+     SelMask((b),1,(w)) | \
+     SelMask((b),2,(w)) | \
+     SelMask((b),3,(w)))
 
 #define C8(b,w) \
-    (SelMask(b,0,w) | \
-     SelMask(b,1,w) | \
-     SelMask(b,2,w) | \
-     SelMask(b,3,w) | \
-     SelMask(b,4,w) | \
-     SelMask(b,5,w) | \
-     SelMask(b,6,w) | \
-     SelMask(b,7,w))
+    (SelMask((b),0,(w)) | \
+     SelMask((b),1,(w)) | \
+     SelMask((b),2,(w)) | \
+     SelMask((b),3,(w)) | \
+     SelMask((b),4,(w)) | \
+     SelMask((b),5,(w)) | \
+     SelMask((b),6,(w)) | \
+     SelMask((b),7,(w)))
 
 static const FbBits fbStipple8Bits[256] = {
     C8(0, 4), C8(1, 4), C8(2, 4), C8(3, 4), C8(4, 4), C8(5, 4),
@@ -181,10 +181,10 @@ fbBltOne(FbStip * src, FbStride srcStride,      /* FbStip units per scanline */
     int w;
     int n, nmiddle;
     int dstS;                   /* stipple-relative dst X coordinate */
-    Bool copy;                  /* accelerate dest-invariant */
-    Bool transparent;           /* accelerate 0 nop */
+    bool copy;                  /* accelerate dest-invariant */
+    bool transparent;           /* accelerate 0 nop */
     int srcinc;                 /* source units consumed */
-    Bool endNeedsLoad = FALSE;  /* need load for endmask */
+    bool endNeedsLoad = FALSE;  /* need load for endmask */
     int startbyte, endbyte;
 
     /*
@@ -227,7 +227,7 @@ fbBltOne(FbStip * src, FbStride srcStride,      /* FbStip units per scanline */
      */
     dstS = dstX / dstBpp;
     /*
-     * Compute shift constants for effective alignement
+     * Compute shift constants for effective alignment
      */
     if (srcX >= dstS) {
         leftShift = srcX - dstS;

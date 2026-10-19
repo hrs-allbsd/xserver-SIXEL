@@ -37,6 +37,7 @@
 
 #define  Cursor X_Cursor
 #undef _SHAPE_H_
+#include <X11/Xfuncproto.h>
 #include <X11/Xlib.h>
 #include <X11/extensions/shape.h>
 #undef   Cursor
@@ -86,13 +87,13 @@ xq_asl_log(int level, const char *subsystem, const char *file,
            const char *function, int line, const char *fmt,
            ...);
 
-#define ASL_LOG(level, subsystem, msg, args ...) xq_asl_log(level, subsystem, \
+#define ASL_LOG(level, subsystem, msg, args ...) xq_asl_log((level), (subsystem), \
                                                             __FILE__, \
-                                                            __FUNCTION__, \
-                                                            __LINE__, msg, \
+                                                            __func__, \
+                                                            __LINE__, (msg), \
                                                             ## args)
 #define DebugF(msg, args ...)                    ASL_LOG(ASL_LEVEL_DEBUG, \
-                                                         "xpbproxy", msg, \
+                                                         "xpbproxy", (msg), \
                                                          ## args)
 #define TRACE()                                  DebugF("TRACE")
 

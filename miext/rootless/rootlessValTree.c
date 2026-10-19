@@ -89,25 +89,24 @@ Equipment Corporation.
   *             Bob Scheifler -- avoid miComputeClips for unmapped windows,
   *                              valdata changes
   */
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
 #include <stddef.h>             /* For NULL */
-#include    <X11/X.h>
+#include <X11/X.h>
+
+#include "dix/window_priv.h"
+#include "mi/mi_priv.h"
+
 #include    "scrnintstr.h"
 #include    "validate.h"
 #include    "windowstr.h"
-#include    "mi.h"
 #include    "regionstr.h"
-#include    "mivalidate.h"
-
 #include    "globals.h"
 
 int RootlessMiValidateTree(WindowPtr pRoot, WindowPtr pChild, VTKind kind);
 
 #define HasParentRelativeBorder(w) (!(w)->borderIsPixel && \
-				    HasBorder(w) && \
+				    HasBorder((w)) && \
 				    (w)->backgroundState == ParentRelative)
 
 /*
@@ -519,6 +518,7 @@ RootlessMiValidateTree(WindowPtr pRoot, /* Parent to validate */
     }
 
     RegionUninit(&childClip);
+    RegionUninit(&exposed);
 
     /* The root is never clipped by its children, so nothing on the root
        is ever exposed by moving or mapping its children. */

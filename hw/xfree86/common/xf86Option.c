@@ -30,21 +30,19 @@
  *
  * This file includes public option handling functions.
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
+#include <stdbool.h>
 #include <stdlib.h>
 #include <ctype.h>
 #include <X11/X.h>
 #include "os.h"
 #include "xf86.h"
-#include "xf86Opt.h"
+#include "xf86Opt_priv.h"
 #include "xf86Xinput.h"
 #include "xf86Optrec.h"
 #include "xf86Parser.h"
-#include "xf86platformBus.h" /* For OutputClass functions */
+#include "xf86platformBus_priv.h"
 #include "optionstr.h"
 
 static Bool ParseOptionValue(int scrnIndex, XF86OptionPtr options,
@@ -213,7 +211,7 @@ LookupBoolOption(XF86OptionPtr optlist, const char *name, int deflt,
     o.name = name;
     o.type = OPTV_BOOLEAN;
     if (ParseOptionValue(-1, optlist, &o, markUsed))
-        deflt = o.value.bool;
+        deflt = o.value.boolean;
     return deflt;
 }
 
@@ -272,12 +270,6 @@ xf86CheckIntOption(XF86OptionPtr optlist, const char *name, int deflt)
     return LookupIntOption(optlist, name, deflt, FALSE);
 }
 
-double
-xf86CheckRealOption(XF86OptionPtr optlist, const char *name, double deflt)
-{
-    return LookupRealOption(optlist, name, deflt, FALSE);
-}
-
 char *
 xf86CheckStrOption(XF86OptionPtr optlist, const char *name, const char *deflt)
 {
@@ -310,28 +302,9 @@ xf86ReplaceIntOption(XF86OptionPtr optlist, const char *name, const int val)
 }
 
 XF86OptionPtr
-xf86ReplaceRealOption(XF86OptionPtr optlist, const char *name, const double val)
-{
-    char tmp[32];
-
-    snprintf(tmp, sizeof(tmp), "%f", val);
-    return xf86AddNewOption(optlist, name, tmp);
-}
-
-XF86OptionPtr
 xf86ReplaceBoolOption(XF86OptionPtr optlist, const char *name, const Bool val)
 {
     return xf86AddNewOption(optlist, name, val ? "True" : "False");
-}
-
-XF86OptionPtr
-xf86ReplacePercentOption(XF86OptionPtr optlist, const char *name,
-                         const double val)
-{
-    char tmp[16];
-
-    snprintf(tmp, sizeof(tmp), "%lf%%", val);
-    return xf86AddNewOption(optlist, name, tmp);
 }
 
 XF86OptionPtr
@@ -348,12 +321,6 @@ xf86AddNewOption(XF86OptionPtr head, const char *name, const char *val)
     char *tmp_name = strdup(name);
 
     return xf86addNewOption(head, tmp_name, tmp);
-}
-
-XF86OptionPtr
-xf86NewOption(char *name, char *value)
-{
-    return xf86newOption(name, value);
 }
 
 XF86OptionPtr
@@ -438,16 +405,7 @@ xf86MarkOptionUsedByName(XF86OptionPtr options, const char *name)
         opt->opt_used = TRUE;
 }
 
-Bool
-xf86CheckIfOptionUsed(XF86OptionPtr option)
-{
-    if (option != NULL)
-        return option->opt_used;
-    else
-        return FALSE;
-}
-
-Bool
+static Bool
 xf86CheckIfOptionUsedByName(XF86OptionPtr options, const char *name)
 {
     XF86OptionPtr opt;
@@ -474,7 +432,7 @@ xf86ShowUnusedOptions(int scrnIndex, XF86OptionPtr opt)
 static Bool
 GetBoolValue(OptionInfoPtr p, const char *s)
 {
-    return xf86getBoolValue(&p->value.bool, s);
+    return xf86getBoolValue(&p->value.boolean, s);
 }
 
 static Bool
@@ -483,7 +441,7 @@ ParseOptionValue(int scrnIndex, XF86OptionPtr options, OptionInfoPtr p,
 {
     const char *s;
     char *end;
-    Bool wasUsed = FALSE;
+    bool wasUsed = FALSE;
 
     if ((s = xf86findOptionValue(options, p->name)) != NULL) {
         if (markUsed) {
@@ -678,7 +636,7 @@ ParseOptionValue(int scrnIndex, XF86OptionPtr options, OptionInfoPtr p,
             if (markUsed)
                 xf86MarkOptionUsedByName(options, newn);
             if (GetBoolValue(&opt, s)) {
-                p->value.bool = !opt.value.bool;
+                p->value.boolean = !opt.value.boolean;
                 p->found = TRUE;
             }
             else {
@@ -800,20 +758,6 @@ xf86GetOptValULong(const OptionInfoRec * table, int token, unsigned long *value)
 }
 
 Bool
-xf86GetOptValReal(const OptionInfoRec * table, int token, double *value)
-{
-    OptionInfoPtr p;
-
-    p = xf86TokenToOptinfo(table, token);
-    if (p && p->found) {
-        *value = p->value.realnum;
-        return TRUE;
-    }
-    else
-        return FALSE;
-}
-
-Bool
 xf86GetOptValFreq(const OptionInfoRec * table, int token,
                   OptFreqUnits expectedUnits, double *value)
 {
@@ -869,7 +813,7 @@ xf86GetOptValBool(const OptionInfoRec * table, int token, Bool *value)
 
     p = xf86TokenToOptinfo(table, token);
     if (p && p->found) {
-        *value = p->value.bool;
+        *value = p->value.boolean;
         return TRUE;
     }
     else
@@ -883,7 +827,7 @@ xf86ReturnOptValBool(const OptionInfoRec * table, int token, Bool def)
 
     p = xf86TokenToOptinfo(table, token);
     if (p && p->found) {
-        return p->value.bool;
+        return p->value.boolean;
     }
     else
         return def;
@@ -898,13 +842,15 @@ xf86NameCmp(const char *s1, const char *s2)
 char *
 xf86NormalizeName(const char *s)
 {
-    char *ret, *q;
+    char *q;
     const char *p;
 
     if (s == NULL)
         return NULL;
 
-    ret = malloc(strlen(s) + 1);
+    char *ret = calloc(1, strlen(s) + 1);
+    if (!ret)
+        return NULL;
     for (p = s, q = ret; *p != 0; p++) {
         switch (*p) {
         case '_':
@@ -912,8 +858,8 @@ xf86NormalizeName(const char *s)
         case '\t':
             continue;
         default:
-            if (isupper(*p))
-                *q++ = tolower(*p);
+            if (isupper((unsigned char)*p))
+                *q++ = tolower((unsigned char)*p);
             else
                 *q++ = *p;
         }

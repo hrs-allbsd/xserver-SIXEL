@@ -26,7 +26,8 @@
 
 #include <X11/Xwindows.h>
 #include <GL/wglext.h>
-#include <glx/extension_string.h>
+
+#include "Xext/glx/extension_string.h"
 
 /* ---------------------------------------------------------------------- */
 /*
@@ -69,10 +70,9 @@ struct __GLXWinScreen {
     Bool has_WGL_ARB_pbuffer;
     Bool has_WGL_ARB_render_texture;
     Bool has_WGL_ARB_make_current_read;
+    Bool has_WGL_ARB_framebuffer_sRGB;
 
     /* wrapped screen functions */
-    RealizeWindowProcPtr RealizeWindow;
-    UnrealizeWindowProcPtr UnrealizeWindow;
     CopyWindowProcPtr CopyWindow;
 };
 

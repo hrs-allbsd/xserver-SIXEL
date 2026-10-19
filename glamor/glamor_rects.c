@@ -19,6 +19,12 @@
  * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
  * OF THIS SOFTWARE.
  */
+#include <dix-config.h>
+
+#include <stdbool.h>
+
+#include "os/bug_priv.h"
+#include "os/mathx_priv.h"
 
 #include "glamor_priv.h"
 #include "glamor_program.h"
@@ -28,8 +34,8 @@ static const glamor_facet glamor_facet_polyfillrect_130 = {
     .name = "poly_fill_rect",
     .version = 130,
     .source_name = "size",
-    .vs_vars = "attribute vec2 primitive;\n"
-               "attribute vec2 size;\n",
+    .vs_vars = "in vec2 primitive;\n"
+               "in vec2 size;\n",
     .vs_exec = ("       vec2 pos = size * vec2(gl_VertexID&1, (gl_VertexID&2)>>1);\n"
                 GLAMOR_POS(gl_Position, (primitive.xy + pos))),
 };
@@ -54,7 +60,7 @@ glamor_poly_fill_rect_gl(DrawablePtr drawable,
     GLshort *v;
     char *vbo_offset;
     int box_index;
-    Bool ret = FALSE;
+    bool ret = FALSE;
     BoxRec bounds = glamor_no_rendering_bounds();
 
     pixmap_priv = glamor_get_pixmap_private(pixmap);
@@ -69,8 +75,8 @@ glamor_poly_fill_rect_gl(DrawablePtr drawable,
             glamor_bounds_union_rect(&bounds, &prect[i]);
     }
 
-    if (glamor_priv->glsl_version >= 130) {
-        prog = glamor_use_program_fill(pixmap, gc,
+    if (glamor_glsl_has_ints(glamor_priv)) {
+        prog = glamor_use_program_fill(drawable, gc,
                                        &glamor_priv->poly_fill_rect_program,
                                        &glamor_facet_polyfillrect_130);
 
@@ -97,7 +103,7 @@ glamor_poly_fill_rect_gl(DrawablePtr drawable,
     } else {
         int n;
 
-        prog = glamor_use_program_fill(pixmap, gc,
+        prog = glamor_use_program_fill(drawable, gc,
                                        &glamor_priv->poly_fill_rect_program,
                                        &glamor_facet_polyfillrect_120);
 
@@ -126,6 +132,8 @@ glamor_poly_fill_rect_gl(DrawablePtr drawable,
 
     glEnable(GL_SCISSOR_TEST);
 
+    BUG_RETURN_VAL(!pixmap_priv, FALSE);
+
     glamor_pixmap_loop(pixmap_priv, box_index) {
         int nbox = RegionNumRects(gc->pCompositeClip);
         BoxPtr box = RegionRects(gc->pCompositeClip);
@@ -136,10 +144,10 @@ glamor_poly_fill_rect_gl(DrawablePtr drawable,
 
         while (nbox--) {
             BoxRec scissor = {
-                .x1 = max(box->x1, bounds.x1 + drawable->x),
-                .y1 = max(box->y1, bounds.y1 + drawable->y),
-                .x2 = min(box->x2, bounds.x2 + drawable->x),
-                .y2 = min(box->y2, bounds.y2 + drawable->y),
+                .x1 = MAX(box->x1, bounds.x1 + drawable->x),
+                .y1 = MAX(box->y1, bounds.y1 + drawable->y),
+                .x2 = MIN(box->x2, bounds.x2 + drawable->x),
+                .y2 = MIN(box->y2, bounds.y2 + drawable->y),
             };
 
             box++;
@@ -151,7 +159,7 @@ glamor_poly_fill_rect_gl(DrawablePtr drawable,
                       scissor.y1 + off_y,
                       scissor.x2 - scissor.x1,
                       scissor.y2 - scissor.y1);
-            if (glamor_priv->glsl_version >= 130)
+            if (glamor_glsl_has_ints(glamor_priv))
                 glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, nrect);
             else {
                 glamor_glDrawArrays_GL_QUADS(glamor_priv, nrect);
@@ -163,7 +171,7 @@ glamor_poly_fill_rect_gl(DrawablePtr drawable,
 
 bail:
     glDisable(GL_SCISSOR_TEST);
-    if (glamor_priv->glsl_version >= 130) {
+    if (glamor_glsl_has_ints(glamor_priv)) {
         glVertexAttribDivisor(GLAMOR_VERTEX_SOURCE, 0);
         glDisableVertexAttribArray(GLAMOR_VERTEX_SOURCE);
         glVertexAttribDivisor(GLAMOR_VERTEX_POS, 0);

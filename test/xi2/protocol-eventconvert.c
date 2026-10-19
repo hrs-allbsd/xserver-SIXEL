@@ -20,18 +20,21 @@
  *  DEALINGS IN THE SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
-#include <dix-config.h>
-#endif
+/* Test relies on assert() */
+#undef NDEBUG
 
+#include <dix-config.h>
+
+#include <assert.h>
 #include <stdint.h>
+#include <X11/extensions/XI2proto.h>
+
+#include "dix/exevents_priv.h"
+#include "dix/eventconvert.h"
+#include "dix/inpututils_priv.h"
 
 #include "inputstr.h"
 #include "eventstr.h"
-#include "eventconvert.h"
-#include "exevents.h"
-#include "inpututils.h"
-#include <X11/extensions/XI2proto.h>
 
 #include "protocol-common.h"
 
@@ -269,7 +272,7 @@ test_convert_XIRawEvent(void)
 static void
 test_values_XIDeviceEvent(DeviceEvent *in, xXIDeviceEvent * out, BOOL swap)
 {
-    int buttons, valuators;
+    int valuators;
     int i;
     unsigned char *ptr;
     uint32_t flagmask = 0;
@@ -343,11 +346,9 @@ test_values_XIDeviceEvent(DeviceEvent *in, xXIDeviceEvent * out, BOOL swap)
     assert(out->root_x == double_to_fp1616(in->root_x + in->root_x_frac));
     assert(out->root_y == double_to_fp1616(in->root_y + in->root_y_frac));
 
-    buttons = 0;
     for (i = 0; i < bits_to_bytes(sizeof(in->buttons)); i++) {
         if (XIMaskIsSet(in->buttons, i)) {
             assert(out->buttons_len >= bytes_to_int32(bits_to_bytes(i)));
-            buttons++;
         }
     }
 
@@ -366,8 +367,10 @@ test_values_XIDeviceEvent(DeviceEvent *in, xXIDeviceEvent * out, BOOL swap)
     values = (FP3232 *) (ptr + out->valuators_len * 4);
     for (i = 0; i < sizeof(in->valuators.mask) * 8 ||
          i < (out->valuators_len * 4) * 8; i++) {
-        if (i >= MAX_VALUATORS)
-            assert(!XIMaskIsSet(in->valuators.mask, i) && !XIMaskIsSet(ptr, i));
+        if (i >= MAX_VALUATORS) {
+            assert(!XIMaskIsSet(in->valuators.mask, i));
+            assert(!XIMaskIsSet(ptr, i));
+        }
         else if (i > sizeof(in->valuators.mask) * 8)
             assert(!XIMaskIsSet(ptr, i));
         else if (i > out->valuators_len * 4 * 8)
@@ -709,20 +712,41 @@ test_values_XIDeviceChangedEvent(DeviceChangedEvent *in,
         case XIValuatorClass:
         {
             xXIValuatorInfo *v = (xXIValuatorInfo *) any;
+            FP3232 expected;
+
+            if (swap) {
+                swaps(&v->number);
+                swapl(&v->value.integral);
+                swapl(&v->value.frac);
+            }
 
             assert(v->length == bytes_to_int32(sizeof(xXIValuatorInfo)));
+            assert(v->number < in->num_valuators);
 
+            expected = double_to_fp3232(in->valuators[v->number].value);
+            assert(v->value.integral == expected.integral);
+            assert(v->value.frac == expected.frac);
         }
             break;
         case XIScrollClass:
         {
             xXIScrollInfo *s = (xXIScrollInfo *) any;
+            FP3232 expected;
+            uint32_t expected_flags = 0;
+
+            if (swap) {
+                swaps(&s->number);
+                swaps(&s->scroll_type);
+                swapl(&s->flags);
+                swapl(&s->increment.integral);
+                swapl(&s->increment.frac);
+            }
 
             assert(s->length == bytes_to_int32(sizeof(xXIScrollInfo)));
 
             assert(s->sourceid == in->sourceid);
             assert(s->number < in->num_valuators);
-            switch (s->type) {
+            switch (s->scroll_type) {
             case XIScrollTypeVertical:
                 assert(in->valuators[s->number].scroll.type ==
                        SCROLL_TYPE_VERTICAL);
@@ -731,13 +755,24 @@ test_values_XIDeviceChangedEvent(DeviceChangedEvent *in,
                 assert(in->valuators[s->number].scroll.type ==
                        SCROLL_TYPE_HORIZONTAL);
                 break;
+            default:
+                assert(0);
             }
-            if (s->flags & XIScrollFlagPreferred)
-                assert(in->valuators[s->number].scroll.
-                       flags & SCROLL_FLAG_PREFERRED);
+
+            if (in->valuators[s->number].scroll.flags & SCROLL_FLAG_DONT_EMULATE)
+                expected_flags |= XIScrollFlagNoEmulation;
+            if (in->valuators[s->number].scroll.flags & SCROLL_FLAG_PREFERRED)
+                expected_flags |= XIScrollFlagPreferred;
+            assert(s->flags == expected_flags);
+
+            expected = double_to_fp3232(
+                in->valuators[s->number].scroll.increment);
+            assert(s->increment.integral == expected.integral);
+            assert(s->increment.frac == expected.frac);
         }
+            break;
         default:
-            printf("Invalid class type.\n\n");
+            dbg("Invalid class type.\n\n");
             assert(1);
             break;
         }
@@ -894,6 +929,23 @@ test_convert_XIDeviceChangedEvent(void)
         in.valuators[i].mode = Absolute;
         test_XIDeviceChangedEvent(&in);
     }
+
+    memset(in.valuators, 0, sizeof(in.valuators));
+    in.num_valuators = 2;
+
+    in.valuators[0].mode = Relative;
+    in.valuators[0].value = 240.5;
+    in.valuators[0].scroll.type = SCROLL_TYPE_VERTICAL;
+    in.valuators[0].scroll.increment = 2.5;
+    in.valuators[0].scroll.flags = SCROLL_FLAG_PREFERRED;
+
+    in.valuators[1].mode = Relative;
+    in.valuators[1].value = -350.25;
+    in.valuators[1].scroll.type = SCROLL_TYPE_HORIZONTAL;
+    in.valuators[1].scroll.increment = 3.25;
+    in.valuators[1].scroll.flags = SCROLL_FLAG_DONT_EMULATE;
+
+    test_XIDeviceChangedEvent(&in);
 }
 
 static void
@@ -1201,15 +1253,17 @@ test_convert_XIBarrierEvent(void)
     test_XIBarrierEvent(&in);
 }
 
-int
+const testfunc_t*
 protocol_eventconvert_test(void)
 {
-    test_convert_XIRawEvent();
-    test_convert_XIFocusEvent();
-    test_convert_XIDeviceEvent();
-    test_convert_XIDeviceChangedEvent();
-    test_convert_XITouchOwnershipEvent();
-    test_convert_XIBarrierEvent();
-
-    return 0;
+    static const testfunc_t testfuncs[] = {
+        test_convert_XIRawEvent,
+        test_convert_XIFocusEvent,
+        test_convert_XIDeviceEvent,
+        test_convert_XIDeviceChangedEvent,
+        test_convert_XITouchOwnershipEvent,
+        test_convert_XIBarrierEvent,
+        NULL,
+    };
+    return testfuncs;
 }

@@ -19,6 +19,10 @@
  * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
  * OF THIS SOFTWARE.
  */
+#include <dix-config.h>
+
+#include "os/bug_priv.h"
+#include "os/mathx_priv.h"
 
 #include "glamor_priv.h"
 #include "glamor_program.h"
@@ -27,8 +31,8 @@
 #include "glamor_prepare.h"
 
 static const char dash_vs_vars[] =
-    "attribute vec3 primitive;\n"
-    "varying float dash_offset;\n";
+    "in vec3 primitive;\n"
+    "out float dash_offset;\n";
 
 static const char dash_vs_exec[] =
     "       dash_offset = primitive.z / dash_length;\n"
@@ -36,20 +40,20 @@ static const char dash_vs_exec[] =
     GLAMOR_POS(gl_Position, primitive.xy);
 
 static const char dash_fs_vars[] =
-    "varying float dash_offset;\n";
+    "in float dash_offset;\n";
 
 static const char on_off_fs_exec[] =
-    "       float pattern = texture2D(dash, vec2(dash_offset, 0.5)).w;\n"
+    "       float pattern = texture(dash, vec2(dash_offset, 0.5)).w;\n"
     "       if (pattern == 0.0)\n"
     "               discard;\n";
 
 /* XXX deal with stippled double dashed lines once we have stippling support */
 static const char double_fs_exec[] =
-    "       float pattern = texture2D(dash, vec2(dash_offset, 0.5)).w;\n"
+    "       float pattern = texture(dash, vec2(dash_offset, 0.5)).w;\n"
     "       if (pattern == 0.0)\n"
-    "               gl_FragColor = bg;\n"
+    "               frag_color = bg;\n"
     "       else\n"
-    "               gl_FragColor = fg;\n";
+    "               frag_color = fg;\n";
 
 
 static const glamor_facet glamor_facet_on_off_dash_lines = {
@@ -107,8 +111,7 @@ glamor_get_dash_pixmap(GCPtr gc)
         ChangeGCVal     changes;
 
         changes.val = pixel;
-        (void) ChangeGC(NullClient, scratch_gc,
-                        GCForeground, &changes);
+        (void) ChangeGC(NULL, scratch_gc, GCForeground, &changes);
         ValidateGC(&pixmap->drawable, scratch_gc);
         rect.x = offset;
         rect.y = 0;
@@ -149,14 +152,14 @@ glamor_dash_setup(DrawablePtr drawable, GCPtr gc)
     dash_pixmap = glamor_get_dash_pixmap(gc);
     dash_priv = glamor_get_pixmap_private(dash_pixmap);
 
-    if (!GLAMOR_PIXMAP_PRIV_HAS_FBO(dash_priv))
+    if (!dash_priv || !GLAMOR_PIXMAP_PRIV_HAS_FBO(dash_priv))
         goto bail;
 
     glamor_make_current(glamor_priv);
 
     switch (gc->lineStyle) {
     case LineOnOffDash:
-        prog = glamor_use_program_fill(pixmap, gc,
+        prog = glamor_use_program_fill(drawable, gc,
                                        &glamor_priv->on_off_dash_line_progs,
                                        &glamor_facet_on_off_dash_lines);
         if (!prog)
@@ -175,11 +178,11 @@ glamor_dash_setup(DrawablePtr drawable, GCPtr gc)
                 goto bail;
         }
 
-        if (!glamor_use_program(pixmap, gc, prog, NULL))
+        if (!glamor_use_program(drawable, gc, prog, NULL))
             goto bail;
 
-        glamor_set_color(pixmap, gc->fgPixel, prog->fg_uniform);
-        glamor_set_color(pixmap, gc->bgPixel, prog->bg_uniform);
+        glamor_set_color(drawable, gc->fgPixel, prog->fg_uniform);
+        glamor_set_color(drawable, gc->bgPixel, prog->bg_uniform);
         break;
 
     default:
@@ -210,6 +213,8 @@ glamor_dash_loop(DrawablePtr drawable, GCPtr gc, glamor_program *prog,
 
     glEnable(GL_SCISSOR_TEST);
 
+    BUG_RETURN(!pixmap_priv);
+
     glamor_pixmap_loop(pixmap_priv, box_index) {
         int nbox = RegionNumRects(gc->pCompositeClip);
         BoxPtr box = RegionRects(gc->pCompositeClip);
@@ -234,7 +239,7 @@ glamor_dash_loop(DrawablePtr drawable, GCPtr gc, glamor_program *prog,
 static int
 glamor_line_length(short x1, short y1, short x2, short y2)
 {
-    return max(abs(x2 - x1), abs(y2 - y1));
+    return MAX(abs(x2 - x1), abs(y2 - y1));
 }
 
 Bool

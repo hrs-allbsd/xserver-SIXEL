@@ -43,13 +43,13 @@ ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
 SOFTWARE.
 
 ******************************************************************/
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <X11/X.h>
 
-#include "misc.h"
+#include "include/misc.h"
+
 #include "scrnintstr.h"
 #include "gcstruct.h"
 #include "windowstr.h"
@@ -60,7 +60,7 @@ SOFTWARE.
 /* Draw lineSolid, fillStyle-independent zero width lines.
  *
  * Must keep X and Y coordinates in "ints" at least until after they're
- * translated and clipped to accomodate CoordModePrevious lines with very
+ * translated and clipped to accommodate CoordModePrevious lines with very
  * large coordinates.
  *
  * Draws the same pixels regardless of sign(dx) or sign(dy).
@@ -73,14 +73,14 @@ SOFTWARE.
  * Assumes that the point structure is {type x, y;} where type is
  * a signed type.
  */
-#define MAX_COORDINATE ((1 << (((sizeof(DDXPointRec) >> 1) << 3) - 1)) - 1)
+#define MAX_COORDINATE ((1 << (((sizeof(xPoint) >> 1) << 3) - 1)) - 1)
 
 #define MI_OUTPUT_POINT(xx, yy)\
 {\
-    if ( !new_span && yy == current_y)\
+    if ( !new_span && (yy) == current_y)\
     {\
-        if (xx < spans->x)\
-	    spans->x = xx;\
+        if ((xx) < spans->x)\
+	    spans->x = (xx);\
 	++*widths;\
     }\
     else\
@@ -88,10 +88,10 @@ SOFTWARE.
         ++Nspans;\
 	++spans;\
 	++widths;\
-	spans->x = xx;\
-	spans->y = yy;\
+	spans->x = (xx);\
+	spans->y = (yy);\
 	*widths = 1;\
-	current_y = yy;\
+	current_y = (yy);\
         new_span = FALSE;\
     }\
 }
@@ -111,7 +111,7 @@ miZeroLine(DrawablePtr pDraw, GCPtr pGC, int mode,      /* Origin or Previous */
     int oc1, oc2;
     int result;
     int pt1_clipped, pt2_clipped = 0;
-    Bool new_span;
+    bool new_span;
     int signdx, signdy;
     int clipdx, clipdy;
     int width, height;
@@ -136,7 +136,7 @@ miZeroLine(DrawablePtr pDraw, GCPtr pGC, int mode,      /* Origin or Previous */
 
     /* it doesn't matter whether we're in drawable or screen coordinates,
      * FillSpans simply cannot take starting coordinates outside of the
-     * range of a DDXPointRec component.
+     * range of a xPoint component.
      */
     if (xright > MAX_COORDINATE)
         xright = MAX_COORDINATE;
@@ -150,8 +150,8 @@ miZeroLine(DrawablePtr pDraw, GCPtr pGC, int mode,      /* Origin or Previous */
     width = xright - xleft + 1;
     height = ybottom - ytop + 1;
     list_len = (height >= width) ? height : width;
-    pspanInit = xallocarray(list_len, sizeof(DDXPointRec));
-    pwidthInit = xallocarray(list_len, sizeof(int));
+    pspanInit = calloc(list_len, sizeof(xPoint));
+    pwidthInit = calloc(list_len, sizeof(int));
     if (!pspanInit || !pwidthInit) {
         free(pspanInit);
         free(pwidthInit);
@@ -348,7 +348,7 @@ miZeroLine(DrawablePtr pDraw, GCPtr pGC, int mode,      /* Origin or Previous */
 
 void
 miZeroDashLine(DrawablePtr dst, GCPtr pgc, int mode, int nptInit,       /* number of points in polyline */
-               DDXPointRec * pptInit    /* points in the polyline */
+               xPoint* pptInit    /* points in the polyline */
     )
 {
     /* XXX kludge until real zero-width dash code is written */

@@ -21,12 +21,14 @@
  *  DEALINGS IN THE SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
+/* Test relies on assert() */
+#undef NDEBUG
+
 #include <dix-config.h>
-#endif
 
 #include <xkb-config.h>
 
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -36,17 +38,15 @@
 #include <X11/Xproto.h>
 #include <X11/keysym.h>
 #include <X11/Xatom.h>
-#include "misc.h"
+#include <X11/extensions/XKMformat.h>
+
+#include "include/misc.h"
+#include "Xext/xkeyboard/xkbsrv_priv.h"
+#include "Xext/xkeyboard/xkbgeom_priv.h"
+
 #include "inputstr.h"
 #include "opaque.h"
 #include "property.h"
-#define	XKBSRV_NEED_FILE_FUNCS
-#include <xkbsrv.h>
-#include "../xkb/xkbgeom.h"
-#include <X11/extensions/XKMformat.h>
-#include "xkbfile.h"
-#include "../xkb/xkb.h"
-#include <assert.h>
 
 #include "tests-common.h"
 
@@ -73,6 +73,8 @@ xkb_get_rules_test(void)
     assert(strcmp(rmlvo.layout, XKB_DFLT_LAYOUT) == 0);
     assert(strcmp(rmlvo.variant, XKB_DFLT_VARIANT) == 0);
     assert(strcmp(rmlvo.options, XKB_DFLT_OPTIONS) == 0);
+
+    XkbFreeRMLVOSet(&rmlvo, FALSE);
 }
 
 /**
@@ -112,6 +114,7 @@ xkb_set_rules_test(void)
     assert(strcmp(rmlvo.options, rmlvo_new.options) == 0);
 
     XkbFreeRMLVOSet(&rmlvo, FALSE);
+    XkbFreeRMLVOSet(&rmlvo_new, FALSE);
 }
 
 /**
@@ -137,6 +140,7 @@ xkb_set_get_rules_test(void)
 
     /* pass 1 */
     XkbSetRulesDflts(&rmlvo);
+    XkbFreeRMLVOSet(&rmlvo, FALSE);
     XkbGetRulesDflts(&rmlvo);
 
     /* Make a backup copy */
@@ -151,26 +155,43 @@ xkb_set_get_rules_test(void)
 
     /* This test is iffy, because strictly we may be comparing against already
      * freed memory */
+    assert(rmlvo.rules);
+    assert(rmlvo.model);
+    assert(rmlvo.layout);
+    assert(rmlvo.variant);
+    assert(rmlvo.options);
+    assert(rmlvo_backup.rules);
+    assert(rmlvo_backup.model);
+    assert(rmlvo_backup.layout);
+    assert(rmlvo_backup.variant);
+    assert(rmlvo_backup.options);
+
     assert(strcmp(rmlvo.rules, rmlvo_backup.rules) == 0);
     assert(strcmp(rmlvo.model, rmlvo_backup.model) == 0);
     assert(strcmp(rmlvo.layout, rmlvo_backup.layout) == 0);
     assert(strcmp(rmlvo.variant, rmlvo_backup.variant) == 0);
     assert(strcmp(rmlvo.options, rmlvo_backup.options) == 0);
 
+    XkbFreeRMLVOSet(&rmlvo, FALSE);
     XkbGetRulesDflts(&rmlvo);
     assert(strcmp(rmlvo.rules, rmlvo_backup.rules) == 0);
     assert(strcmp(rmlvo.model, rmlvo_backup.model) == 0);
     assert(strcmp(rmlvo.layout, rmlvo_backup.layout) == 0);
     assert(strcmp(rmlvo.variant, rmlvo_backup.variant) == 0);
     assert(strcmp(rmlvo.options, rmlvo_backup.options) == 0);
+
+    XkbFreeRMLVOSet(&rmlvo, FALSE);
+    XkbFreeRMLVOSet(&rmlvo_backup, FALSE);
 }
 
-int
+const testfunc_t*
 xkb_test(void)
 {
-    xkb_set_get_rules_test();
-    xkb_get_rules_test();
-    xkb_set_rules_test();
-
-    return 0;
+    static const testfunc_t testfuncs[] = {
+        xkb_set_get_rules_test,
+        xkb_get_rules_test,
+        xkb_set_rules_test,
+        NULL,
+    };
+    return testfuncs;
 }

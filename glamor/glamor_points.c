@@ -25,14 +25,20 @@
  *    Zhigang Gong <zhigang.gong@linux.intel.com>
  *
  */
+#include <dix-config.h>
+
+
+#include <stdbool.h>
+#include "os/bug_priv.h"
 
 #include "glamor_priv.h"
 #include "glamor_transform.h"
 
 static const glamor_facet glamor_facet_point = {
     .name = "poly_point",
-    .vs_vars = "attribute vec2 primitive;\n",
-    .vs_exec = GLAMOR_POS(gl_Position, primitive),
+    .vs_vars = "in vec2 primitive;\n",
+    .vs_exec = (GLAMOR_DEFAULT_POINT_SIZE
+                GLAMOR_POS(gl_Position, primitive)),
 };
 
 static Bool
@@ -47,7 +53,7 @@ glamor_poly_point_gl(DrawablePtr drawable, GCPtr gc, int mode, int npt, DDXPoint
     GLshort *vbo_ppt;
     char *vbo_offset;
     int box_index;
-    Bool ret = FALSE;
+    bool ret = FALSE;
 
     pixmap_priv = glamor_get_pixmap_private(pixmap);
     if (!GLAMOR_PIXMAP_PRIV_HAS_FBO(pixmap_priv))
@@ -66,7 +72,7 @@ glamor_poly_point_gl(DrawablePtr drawable, GCPtr gc, int mode, int npt, DDXPoint
             goto bail;
     }
 
-    if (!glamor_use_program(pixmap, gc, prog, NULL))
+    if (!glamor_use_program(drawable, gc, prog, NULL))
         goto bail;
 
     vbo_ppt = glamor_get_vbo_space(screen, npt * (2 * sizeof (INT16)), &vbo_offset);
@@ -86,6 +92,8 @@ glamor_poly_point_gl(DrawablePtr drawable, GCPtr gc, int mode, int npt, DDXPoint
     glamor_put_vbo_space(screen);
 
     glEnable(GL_SCISSOR_TEST);
+
+    BUG_RETURN_VAL(!pixmap_priv, FALSE);
 
     glamor_pixmap_loop(pixmap_priv, box_index) {
         int nbox = RegionNumRects(gc->pCompositeClip);

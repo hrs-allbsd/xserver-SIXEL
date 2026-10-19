@@ -23,20 +23,13 @@ srcs_fb = [
 	'fbseg.c',
 	'fbsetsp.c',
 	'fbsolid.c',
+	'fbtile.c',
 	'fbtrap.c',
 	'fbutil.c',
 	'fbwindow.c',
 ]
 
-hdrs_fb = [
-	'fb.h',
-	'fboverlay.h',
-	'fbpict.h',
-	'fbrop.h',
-	'wfbrename.h'
-]
-
-libxserver_fb = static_library('libxserver_fb',
+libxserver_fb = static_library('xserver_fb',
 	srcs_fb,
 	include_directories: inc,
 	dependencies: common_dep,
@@ -45,7 +38,7 @@ libxserver_fb = static_library('libxserver_fb',
 
 wfb_args = '-DFB_ACCESS_WRAPPER'
 
-libxserver_wfb = static_library('libxserver_wfb',
+libxserver_wfb = static_library('xserver_wfb',
 	srcs_fb,
 	c_args: wfb_args,
 	include_directories: inc,
@@ -53,5 +46,3 @@ libxserver_wfb = static_library('libxserver_wfb',
 	pic: true,
 	build_by_default: false,
 )
-
-install_data(hdrs_fb, install_dir: xorgsdkdir)

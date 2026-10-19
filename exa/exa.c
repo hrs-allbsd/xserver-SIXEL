@@ -28,20 +28,23 @@
  * memory management.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
+#include <assert.h>
 #include <stdlib.h>
+
+#include "dix/screen_hooks_priv.h"
+#include "os/mathx_priv.h"
 
 #include "exa_priv.h"
 #include "exa.h"
 
 DevPrivateKeyRec exaScreenPrivateKeyRec;
 
-#ifdef MITSHM
+#ifdef CONFIG_MITSHM
 static ShmFuncs exaShmFuncs = { NULL, NULL };
-#endif
+#endif /* CONFIG_MITSHM */
 
 /**
  * exaGetPixmapOffset() returns the offset (in bytes) within the framebuffer of
@@ -83,21 +86,6 @@ exaGetPixmapPitch(PixmapPtr pPix)
 }
 
 /**
- * exaGetPixmapSize() returns the size in bytes of the given pixmap in video
- * memory. Only valid when the pixmap is currently in framebuffer.
- */
-unsigned long
-exaGetPixmapSize(PixmapPtr pPix)
-{
-    ExaPixmapPrivPtr pExaPixmap;
-
-    pExaPixmap = ExaGetPixmapPriv(pPix);
-    if (pExaPixmap != NULL)
-        return pExaPixmap->fb_size;
-    return 0;
-}
-
-/**
  * exaGetDrawablePixmap() returns a backing pixmap for a given drawable.
  *
  * @param pDrawable the drawable being requested.
@@ -125,13 +113,11 @@ exaGetDrawablePixmap(DrawablePtr pDrawable)
 void
 exaGetDrawableDeltas(DrawablePtr pDrawable, PixmapPtr pPixmap, int *xp, int *yp)
 {
-#ifdef COMPOSITE
     if (pDrawable->type == DRAWABLE_WINDOW) {
         *xp = -pPixmap->screen_x;
         *yp = -pPixmap->screen_y;
         return;
     }
-#endif
 
     *xp = 0;
     *yp = 0;
@@ -144,13 +130,14 @@ exaGetDrawableDeltas(DrawablePtr pDrawable, PixmapPtr pPixmap, int *xp, int *yp)
 void
 exaPixmapDirty(PixmapPtr pPix, int x1, int y1, int x2, int y2)
 {
-    BoxRec box;
     RegionRec region;
 
-    box.x1 = max(x1, 0);
-    box.y1 = max(y1, 0);
-    box.x2 = min(x2, pPix->drawable.width);
-    box.y2 = min(y2, pPix->drawable.height);
+    BoxRec box = {
+        .x1 = MAX(x1, 0),
+        .y1 = MAX(y1, 0),
+        .x2 = MIN(x2, pPix->drawable.width),
+        .y2 = MIN(y2, pPix->drawable.height),
+    };
 
     if (box.x1 >= box.x2 || box.y1 >= box.y2)
         return;
@@ -286,7 +273,7 @@ ExaDoPrepareAccess(PixmapPtr pPixmap, int index)
 
     ExaScreenPriv(pScreen);
     ExaPixmapPriv(pPixmap);
-    Bool has_gpu_copy, ret;
+    bool has_gpu_copy, ret;
     int i;
 
     if (!(pExaScr->info->flags & EXA_OFFSCREEN_PIXMAPS))
@@ -402,7 +389,7 @@ exaFinishAccess(DrawablePtr pDrawable, int index)
         return;
 
     if (pExaPixmap == NULL)
-        EXA_FatalErrorDebugWithRet(("EXA bug: exaFinishAccesss was called on a non-exa pixmap.\n"),);
+        EXA_FatalErrorDebugWithRet(("EXA bug: exaFinishAccess was called on a non-exa pixmap.\n"),);
 
     /* Handle repeated / nested calls. */
     for (i = 0; i < EXA_NUM_PREPARE_INDICES; i++) {
@@ -415,7 +402,7 @@ exaFinishAccess(DrawablePtr pDrawable, int index)
 
     /* Catch unbalanced Prepare/FinishAccess calls. */
     if (i == EXA_NUM_PREPARE_INDICES)
-        EXA_FatalErrorDebugWithRet(("EXA bug: FinishAccess called without PrepareAccess for pixmap 0x%p.\n", pPixmap),);
+        EXA_FatalErrorDebugWithRet(("EXA bug: FinishAccess called without PrepareAccess for pixmap %p.\n", (void *)pPixmap),);
 
     pExaScr->access[i].pixmap = NULL;
 
@@ -497,7 +484,7 @@ static void
 exaValidateGC(GCPtr pGC, unsigned long changes, DrawablePtr pDrawable)
 {
     /* fbValidateGC will do direct access to pixmaps if the tiling has changed.
-     * Do a few smart things so fbValidateGC can do it's work.
+     * Do a few smart things so fbValidateGC can do its work.
      */
 
     ScreenPtr pScreen = pDrawable->pScreen;
@@ -599,7 +586,7 @@ exaCreateGC(GCPtr pGC)
 
     ExaScreenPriv(pScreen);
     ExaGCPriv(pGC);
-    Bool ret;
+    bool ret;
 
     swap(pExaScr, pScreen, CreateGC);
     if ((ret = (*pScreen->CreateGC) (pGC))) {
@@ -614,7 +601,7 @@ exaCreateGC(GCPtr pGC)
 static Bool
 exaChangeWindowAttributes(WindowPtr pWin, unsigned long mask)
 {
-    Bool ret;
+    bool ret;
     ScreenPtr pScreen = pWin->drawable.pScreen;
 
     ExaScreenPriv(pScreen);
@@ -656,32 +643,18 @@ exaBitmapToRegion(PixmapPtr pPix)
     return ret;
 }
 
-static Bool
-exaCreateScreenResources(ScreenPtr pScreen)
+static void exaCreateScreenResources(CallbackListPtr *pcbl, ScreenPtr pScreen, Bool *ret)
 {
     ExaScreenPriv(pScreen);
-    PixmapPtr pScreenPixmap;
-    Bool b;
-
-    swap(pExaScr, pScreen, CreateScreenResources);
-    b = pScreen->CreateScreenResources(pScreen);
-    swap(pExaScr, pScreen, CreateScreenResources);
-
-    if (!b)
-        return FALSE;
-
-    pScreenPixmap = pScreen->GetScreenPixmap(pScreen);
+    PixmapPtr pScreenPixmap = pScreen->GetScreenPixmap(pScreen);
 
     if (pScreenPixmap) {
         ExaPixmapPriv(pScreenPixmap);
-
         exaSetAccelBlock(pExaScr, pExaPixmap,
                          pScreenPixmap->drawable.width,
                          pScreenPixmap->drawable.height,
                          pScreenPixmap->drawable.bitsPerPixel);
     }
-
-    return TRUE;
 }
 
 static void
@@ -708,7 +681,7 @@ ExaBlockHandler(ScreenPtr pScreen, void *pTimeout)
         CARD32 now = GetTimeInMillis();
 
         pExaScr->nextDefragment = now +
-            max(100, (INT32) (pExaScr->lastDefragment + 1000 - now));
+            MAX(100, (INT32) (pExaScr->lastDefragment + 1000 - now));
         AdjustWaitForDelay(pTimeout, pExaScr->nextDefragment - now);
     }
 }
@@ -736,13 +709,20 @@ ExaWakeupHandler(ScreenPtr pScreen, int result)
  * exaCloseScreen() unwraps its wrapped screen functions and tears down EXA's
  * screen private, before calling down to the next CloseSccreen.
  */
-static Bool
-exaCloseScreen(ScreenPtr pScreen)
+static void exaCloseScreen(CallbackListPtr *pcbl, ScreenPtr pScreen, void *unused)
 {
     ExaScreenPriv(pScreen);
     PictureScreenPtr ps = GetPictureScreenIfSet(pScreen);
 
-    if (ps->Glyphs == exaGlyphs)
+    dixScreenUnhookClose(pScreen, exaCloseScreen);
+    dixScreenUnhookPostCreateResources(pScreen, exaCreateScreenResources);
+
+    /* doesn't matter which one actually was registered */
+    dixScreenUnhookPixmapDestroy(pScreen, exaPixmapDestroy_classic);
+    dixScreenUnhookPixmapDestroy(pScreen, exaPixmapDestroy_driver);
+    dixScreenUnhookPixmapDestroy(pScreen, exaPixmapDestroy_mixed);
+
+    if (ps && ps->Glyphs == exaGlyphs)
         exaGlyphsFini(pScreen);
 
     if (pScreen->BlockHandler == ExaBlockHandler)
@@ -750,33 +730,30 @@ exaCloseScreen(ScreenPtr pScreen)
     if (pScreen->WakeupHandler == ExaWakeupHandler)
         unwrap(pExaScr, pScreen, WakeupHandler);
     unwrap(pExaScr, pScreen, CreateGC);
-    unwrap(pExaScr, pScreen, CloseScreen);
     unwrap(pExaScr, pScreen, GetImage);
     unwrap(pExaScr, pScreen, GetSpans);
     if (pExaScr->SavedCreatePixmap)
         unwrap(pExaScr, pScreen, CreatePixmap);
-    if (pExaScr->SavedDestroyPixmap)
-        unwrap(pExaScr, pScreen, DestroyPixmap);
     if (pExaScr->SavedModifyPixmapHeader)
         unwrap(pExaScr, pScreen, ModifyPixmapHeader);
     unwrap(pExaScr, pScreen, CopyWindow);
     unwrap(pExaScr, pScreen, ChangeWindowAttributes);
     unwrap(pExaScr, pScreen, BitmapToRegion);
-    unwrap(pExaScr, pScreen, CreateScreenResources);
     if (pExaScr->SavedSharePixmapBacking)
         unwrap(pExaScr, pScreen, SharePixmapBacking);
     if (pExaScr->SavedSetSharedPixmapBacking)
         unwrap(pExaScr, pScreen, SetSharedPixmapBacking);
-    unwrap(pExaScr, ps, Composite);
-    if (pExaScr->SavedGlyphs)
-        unwrap(pExaScr, ps, Glyphs);
-    unwrap(pExaScr, ps, Trapezoids);
-    unwrap(pExaScr, ps, Triangles);
-    unwrap(pExaScr, ps, AddTraps);
+
+    if (ps) {
+        unwrap(pExaScr, ps, Composite);
+        if (pExaScr->SavedGlyphs)
+            unwrap(pExaScr, ps, Glyphs);
+        unwrap(pExaScr, ps, Trapezoids);
+        unwrap(pExaScr, ps, Triangles);
+        unwrap(pExaScr, ps, AddTraps);
+    }
 
     free(pExaScr);
-
-    return (*pScreen->CloseScreen) (pScreen);
 }
 
 /**
@@ -883,7 +860,7 @@ exaDriverInit(ScreenPtr pScreen, ExaDriverPtr pScreenInfo)
         return FALSE;
     }
 
-    pExaScr = calloc(sizeof(ExaScreenPrivRec), 1);
+    pExaScr = calloc(1, sizeof(ExaScreenPrivRec));
     if (!pExaScr) {
         LogMessage(X_WARNING, "EXA(%d): Failed to allocate screen private\n",
                    pScreen->myNum);
@@ -916,13 +893,13 @@ exaDriverInit(ScreenPtr pScreen, ExaDriverPtr pScreenInfo)
         !(pExaScr->info->flags & EXA_HANDLES_PIXMAPS))
         wrap(pExaScr, pScreen, WakeupHandler, ExaWakeupHandler);
     wrap(pExaScr, pScreen, CreateGC, exaCreateGC);
-    wrap(pExaScr, pScreen, CloseScreen, exaCloseScreen);
+    dixScreenHookClose(pScreen, exaCloseScreen);
+    dixScreenHookPostCreateResources(pScreen, exaCreateScreenResources);
     wrap(pExaScr, pScreen, GetImage, exaGetImage);
     wrap(pExaScr, pScreen, GetSpans, ExaCheckGetSpans);
     wrap(pExaScr, pScreen, CopyWindow, exaCopyWindow);
     wrap(pExaScr, pScreen, ChangeWindowAttributes, exaChangeWindowAttributes);
     wrap(pExaScr, pScreen, BitmapToRegion, exaBitmapToRegion);
-    wrap(pExaScr, pScreen, CreateScreenResources, exaCreateScreenResources);
 
     if (ps) {
         wrap(pExaScr, ps, Composite, exaComposite);
@@ -937,12 +914,12 @@ exaDriverInit(ScreenPtr pScreen, ExaDriverPtr pScreenInfo)
         wrap(pExaScr, ps, AddTraps, ExaCheckAddTraps);
     }
 
-#ifdef MITSHM
+#ifdef CONFIG_MITSHM
     /*
      * Don't allow shared pixmaps.
      */
     ShmRegisterFuncs(pScreen, &exaShmFuncs);
-#endif
+#endif /* CONFIG_MITSHM */
     /*
      * Hookup offscreen pixmaps
      */
@@ -957,8 +934,9 @@ exaDriverInit(ScreenPtr pScreen, ExaDriverPtr pScreenInfo)
         }
         if (pExaScr->info->flags & EXA_HANDLES_PIXMAPS) {
             if (pExaScr->info->flags & EXA_MIXED_PIXMAPS) {
+                dixScreenHookPixmapDestroy(pScreen, exaPixmapDestroy_mixed);
+
                 wrap(pExaScr, pScreen, CreatePixmap, exaCreatePixmap_mixed);
-                wrap(pExaScr, pScreen, DestroyPixmap, exaDestroyPixmap_mixed);
                 wrap(pExaScr, pScreen, ModifyPixmapHeader,
                      exaModifyPixmapHeader_mixed);
                 wrap(pExaScr, pScreen, SharePixmapBacking, exaSharePixmapBacking_mixed);
@@ -971,8 +949,9 @@ exaDriverInit(ScreenPtr pScreen, ExaDriverPtr pScreenInfo)
                 pExaScr->prepare_access_reg = exaPrepareAccessReg_mixed;
             }
             else {
+                dixScreenHookPixmapDestroy(pScreen, exaPixmapDestroy_driver);
+
                 wrap(pExaScr, pScreen, CreatePixmap, exaCreatePixmap_driver);
-                wrap(pExaScr, pScreen, DestroyPixmap, exaDestroyPixmap_driver);
                 wrap(pExaScr, pScreen, ModifyPixmapHeader,
                      exaModifyPixmapHeader_driver);
                 pExaScr->do_migration = NULL;
@@ -983,8 +962,9 @@ exaDriverInit(ScreenPtr pScreen, ExaDriverPtr pScreenInfo)
             }
         }
         else {
+            dixScreenHookPixmapDestroy(pScreen, exaPixmapDestroy_classic);
+
             wrap(pExaScr, pScreen, CreatePixmap, exaCreatePixmap_classic);
-            wrap(pExaScr, pScreen, DestroyPixmap, exaDestroyPixmap_classic);
             wrap(pExaScr, pScreen, ModifyPixmapHeader,
                  exaModifyPixmapHeader_classic);
             pExaScr->do_migration = exaDoMigration_classic;
@@ -1021,7 +1001,7 @@ exaDriverInit(ScreenPtr pScreen, ExaDriverPtr pScreenInfo)
         }
     }
 
-    if (ps->Glyphs == exaGlyphs)
+    if (ps && ps->Glyphs == exaGlyphs)
         exaGlyphsInit(pScreen);
 
     LogMessage(X_INFO, "EXA(%d): Driver registered support for the following"

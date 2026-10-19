@@ -30,10 +30,7 @@
  *   Kevin E. Martin <kem@redhat.com>
  *
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
 #include "os.h"
 #include "xf86Parser.h"
@@ -67,6 +64,8 @@ xf86parseExtensionsSection(void)
         case COMMENT:
             ptr->extensions_comment =
                 xf86addComment(ptr->extensions_comment, xf86_lex_val.str);
+            free(xf86_lex_val.str);
+            xf86_lex_val.str = NULL;
             break;
         default:
             Error(INVALID_KEYWORD_MSG, xf86tokenString());

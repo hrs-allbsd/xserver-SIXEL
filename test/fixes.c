@@ -21,15 +21,19 @@
  *  DEALINGS IN THE SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
-#include <dix-config.h>
-#endif
+/* Test relies on assert() */
+#undef NDEBUG
 
+#include <dix-config.h>
+
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <X11/X.h>
-#include <xfixesint.h>
 #include <X11/extensions/xfixeswire.h>
+
+#include "Xext/xfixes/xfixesint.h"
+#include "Xext/xinput/xibarriers.h"
 
 #include "tests-common.h"
 
@@ -344,13 +348,15 @@ fixes_pointer_barrier_clamp_test(void)
     assert(cy == barrier.y1);
 }
 
-int
+const testfunc_t*
 fixes_test(void)
 {
+    static const testfunc_t testfuncs[] = {
+        fixes_pointer_barriers_test,
+        fixes_pointer_barrier_direction_test,
+        fixes_pointer_barrier_clamp_test,
+        NULL,
+    };
 
-    fixes_pointer_barriers_test();
-    fixes_pointer_barrier_direction_test();
-    fixes_pointer_barrier_clamp_test();
-
-    return 0;
+    return testfuncs;
 }

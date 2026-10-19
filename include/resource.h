@@ -46,6 +46,10 @@ SOFTWARE.
 
 #ifndef RESOURCE_H
 #define RESOURCE_H 1
+
+#include "xlibre_ptrtypes.h"
+
+#include "callback.h"
 #include "misc.h"
 #include "dixaccess.h"
 
@@ -71,59 +75,37 @@ typedef uint32_t RESTYPE;
 
 /* types for Resource routines */
 
-#define RT_WINDOW	((RESTYPE)1|RC_DRAWABLE)
-#define RT_PIXMAP	((RESTYPE)2|RC_DRAWABLE)
-#define RT_GC		((RESTYPE)3)
+// prevent namespace clash with Windows
+#define X11_RESTYPE_NONE	((RESTYPE)0)
+#define X11_RESTYPE_WINDOW	((RESTYPE)1|RC_DRAWABLE)
+#define X11_RESTYPE_PIXMAP	((RESTYPE)2|RC_DRAWABLE)
+#define X11_RESTYPE_GC		((RESTYPE)3)
+#define X11_RESTYPE_FONT	((RESTYPE)4)
+#define X11_RESTYPE_CURSOR	((RESTYPE)5)
+#define X11_RESTYPE_COLORMAP	((RESTYPE)6)
+#define X11_RESTYPE_CMAPENTRY	((RESTYPE)7)
+#define X11_RESTYPE_OTHERCLIENT	((RESTYPE)8|RC_NEVERRETAIN)
+#define X11_RESTYPE_PASSIVEGRAB	((RESTYPE)9|RC_NEVERRETAIN)
+#define X11_RESTYPE_LASTPREDEF	((RESTYPE)9)
+
+#define RT_WINDOW	X11_RESTYPE_WINDOW
+#define RT_PIXMAP	X11_RESTYPE_PIXMAP
+#define RT_GC		X11_RESTYPE_GC
 #undef RT_FONT
 #undef RT_CURSOR
-#define RT_FONT		((RESTYPE)4)
-#define RT_CURSOR	((RESTYPE)5)
-#define RT_COLORMAP	((RESTYPE)6)
-#define RT_CMAPENTRY	((RESTYPE)7)
-#define RT_OTHERCLIENT	((RESTYPE)8|RC_NEVERRETAIN)
-#define RT_PASSIVEGRAB	((RESTYPE)9|RC_NEVERRETAIN)
-#define RT_LASTPREDEF	((RESTYPE)9)
-#define RT_NONE		((RESTYPE)0)
+#define RT_FONT		X11_RESTYPE_FONT
+#define RT_CURSOR	X11_RESTYPE_CURSOR
+#define RT_COLORMAP	X11_RESTYPE_COLORMAP
+#define RT_CMAPENTRY	X11_RESTYPE_CMAPENTRY
+#define RT_OTHERCLIENT	X11_RESTYPE_OTHERCLIENT
+#define RT_PASSIVEGRAB	X11_RESTYPE_PASSIVEGRAB
+#define RT_LASTPREDEF	X11_RESTYPE_LASTPREDEF
+#define RT_NONE		X11_RESTYPE_NONE
+
 
 extern _X_EXPORT unsigned int ResourceClientBits(void);
-/* bits and fields within a resource id */
-#define RESOURCE_AND_CLIENT_COUNT   29  /* 29 bits for XIDs */
-#define RESOURCE_CLIENT_BITS        ResourceClientBits() /* client field offset */
-#define CLIENTOFFSET	    (RESOURCE_AND_CLIENT_COUNT - RESOURCE_CLIENT_BITS)
-/* resource field */
-#define RESOURCE_ID_MASK	((1 << CLIENTOFFSET) - 1)
-/* client field */
-#define RESOURCE_CLIENT_MASK	(((1 << RESOURCE_CLIENT_BITS) - 1) << CLIENTOFFSET)
-/* extract the client mask from an XID */
-#define CLIENT_BITS(id) ((id) & RESOURCE_CLIENT_MASK)
-/* extract the client id from an XID */
-#define CLIENT_ID(id) ((int)(CLIENT_BITS(id) >> CLIENTOFFSET))
-#define SERVER_BIT		(Mask)0x40000000        /* use illegal bit */
-
-#ifdef INVALID
-#undef INVALID                  /* needed on HP/UX */
-#endif
-
-/* Invalid resource id */
-#define INVALID	(0)
 
 #define BAD_RESOURCE 0xe0000000
-
-#define rClient(obj) (clients[CLIENT_ID((obj)->resource)])
-
-/* Resource state callback */
-extern _X_EXPORT CallbackListPtr ResourceStateCallback;
-
-typedef enum { ResourceStateAdding,
-    ResourceStateFreeing
-} ResourceState;
-
-typedef struct {
-    ResourceState state;
-    XID id;
-    RESTYPE type;
-    void *value;
-} ResourceStateInfoRec;
 
 typedef int (*DeleteType) (void *value,
                            XID id);
@@ -248,29 +230,19 @@ extern _X_EXPORT int dixLookupResourceByClass(void **result,
                                               ClientPtr client,
                                               Mask access_mode);
 
-extern _X_EXPORT void GetXIDRange(int /*client */ ,
-                                  Bool /*server */ ,
-                                  XID * /*minp */ ,
-                                  XID * /*maxp */ );
-
-extern _X_EXPORT unsigned int GetXIDList(ClientPtr /*client */ ,
-                                         unsigned int /*count */ ,
-                                         XID * /*pids */ );
-
 extern _X_EXPORT RESTYPE lastResourceType;
 extern _X_EXPORT RESTYPE TypeMask;
 
-/** @brief A hashing function to be used for hashing resource IDs
-
-    @param id The resource ID to hash
-    @param numBits The number of bits in the resulting hash. Must be >=0.
-
-    @note This function is really only for handling
-    INITHASHSIZE..MAXHASHSIZE bit hashes, but will handle any number
-    of bits by either masking numBits lower bits of the ID or by
-    providing at most MAXHASHSIZE hashes.
-*/
-extern _X_EXPORT int HashResourceID(XID id,
-                                    int numBits);
+/*
+ * @brief allocate a XID (resource ID) for the server itself
+ *
+ * This is mostly for resource types that don't have their own API yet
+ * The XID is allocated within server's ID space and then can be used
+ * for registering a resource with it (@see AddResource())
+ *
+ * @obsoletes FakeClientID
+ * @return XID the newly allocated XID
+ */
+_X_EXPORT XID dixAllocServerXID(void);
 
 #endif /* RESOURCE_H */

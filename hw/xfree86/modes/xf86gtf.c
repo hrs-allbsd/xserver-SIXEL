@@ -60,9 +60,7 @@
 
 /* Ruthlessly converted to server code by Adam Jackson <ajax@redhat.com> */
 
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
 #include "xf86.h"
 #include "xf86Modes.h"
@@ -100,7 +98,7 @@
 DisplayModePtr
 xf86GTFMode(int h_pixels, int v_lines, float freq, int interlaced, int margins)
 {
-    DisplayModeRec *mode = xnfcalloc(1, sizeof(DisplayModeRec));
+    DisplayModeRec *mode = XNFcallocarray(1, sizeof(DisplayModeRec));
 
     float h_pixels_rnd;
     float v_lines_rnd;

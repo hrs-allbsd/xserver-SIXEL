@@ -1,7 +1,7 @@
 /*
  * Copyright (C) 2010 Nokia Corporation and/or its subsidiary(-ies). All
  * rights reserved.
- * Copyright (c) 1993, 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1993, 2010, Oracle and/or its affiliates.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -50,12 +50,15 @@
  *
  * Author: Rami Ylimäki <rami.ylimaki@vincit.fi>
  */
+#include <dix-config.h>
 
+#include <assert.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "client.h"
+#include "os/client_priv.h"
+
 #include "os.h"
 #include "dixstruct.h"
 
@@ -72,6 +75,14 @@
 #include <kvm.h>
 #include <limits.h>
 #endif
+
+#if defined(__APPLE__) || defined(__DragonFly__) || defined(__FreeBSD__)
+#include <sys/sysctl.h>
+#include <errno.h>
+#endif
+
+#include "os/auth.h"
+#include "os/log_priv.h"
 
 /**
  * Try to determine a PID for a client from its connection
@@ -91,7 +102,7 @@ DetermineClientPid(struct _Client * client)
     LocalClientCredRec *lcc = NULL;
     pid_t pid = -1;
 
-    if (client == NullClient)
+    if (client == NULL)
         return pid;
 
     if (client == serverClient)
@@ -105,6 +116,25 @@ DetermineClientPid(struct _Client * client)
 
     return pid;
 }
+
+#ifdef __APPLE__ /* only required on macOS */
+static void
+get_argmax_from_kern(void *arg)
+{
+    int *argmax = arg;
+    int mib[2];
+    size_t len;
+
+    mib[0] = CTL_KERN;
+    mib[1] = KERN_ARGMAX;
+
+    len = sizeof(int);
+    if (sysctl(mib, 2, argmax, &len, NULL, 0) == -1) {
+        ErrorF("Unable to dynamically determine kern.argmax, using ARG_MAX (%d)\n", ARG_MAX);
+        *argmax = ARG_MAX;
+    }
+}
+#endif
 
 /**
  * Try to determine a command line string for a client based on its
@@ -130,9 +160,11 @@ DetermineClientPid(struct _Client * client)
 void
 DetermineClientCmd(pid_t pid, const char **cmdname, const char **cmdargs)
 {
+#if !defined(__APPLE__) && !defined(__DragonFly__) && !defined(__FreeBSD__) && !defined(__OpenBSD__)
     char path[PATH_MAX + 1];
     int totsize = 0;
     int fd = 0;
+#endif
 
     if (cmdname)
         *cmdname = NULL;
@@ -142,7 +174,150 @@ DetermineClientCmd(pid_t pid, const char **cmdname, const char **cmdargs)
     if (pid == -1)
         return;
 
-#if defined(__OpenBSD__)
+#if defined(__APPLE__)
+    {
+        static int argmax;
+        if (!argmax)
+            get_argmax_from_kern(&argmax);
+
+        int mib[3];
+        size_t len = argmax;
+        int32_t argc = -1;
+
+        char * const procargs = calloc(1, len);
+        if (!procargs) {
+            ErrorF("Failed to allocate memory (%lu bytes) for KERN_PROCARGS2 result for pid %d: %s\n", len, pid, strerror(errno));
+            return;
+        }
+
+        mib[0] = CTL_KERN;
+        mib[1] = KERN_PROCARGS2;
+        mib[2] = pid;
+
+        if (sysctl(mib, 3, procargs, &len, NULL, 0) == -1) {
+            ErrorF("Failed to determine KERN_PROCARGS2 for pid %d: %s\n", pid, strerror(errno));
+            free(procargs);
+            return;
+        }
+
+        if (len < sizeof(argc) || len > argmax) {
+            ErrorF("Erroneous length returned when querying KERN_PROCARGS2 for pid %d: %zu\n", pid, len);
+            free(procargs);
+            return;
+        }
+
+        /* Ensure we have a failsafe NUL termination just in case the last entry
+         * was not actually NUL terminated.
+         */
+        procargs[len-1] = '\0';
+
+        /* Setup our iterator */
+        char *is = procargs;
+
+        /* The first element in the buffer is argc as a 32bit int. When using
+         * the older KERN_PROCARGS, this is omitted, and one needs to guess
+         * (usually by checking for an `=` character) when we start seeing
+         * envvars instead of arguments.
+         */
+        argc = *(int32_t *)is;
+        is += sizeof(argc);
+
+        /* The very next string is the executable path.  Skip over it since
+         * this function wants to return argv[0] and argv[1...n].
+         */
+        is += strlen(is) + 1;
+
+        /* Skip over extra NUL characters to get to the start of argv[0] */
+        for (; (is < &procargs[len]) && !(*is); is++);
+
+        if (! (is < &procargs[len])) {
+            ErrorF("Arguments were not returned when querying KERN_PROCARGS2 for pid %d: %zu\n", pid, len);
+            free(procargs);
+            return;
+        }
+
+        if (cmdname) {
+            *cmdname = strdup(is);
+        }
+
+        /* Jump over argv[0] and point to argv[1] */
+        is += strlen(is) + 1;
+
+        if (cmdargs && is < &procargs[len]) {
+            char *args = is;
+
+            /* Remove the NUL terminators except the last one */
+            for (int i = 1; i < argc - 1; i++) {
+                /* Advance to the NUL terminator */
+                is += strlen(is);
+
+                /* Change the NUL to a space, ensuring we don't accidentally remove the terminal NUL */
+                if (is < &procargs[len-1]) {
+                    *is = ' ';
+                }
+            }
+
+            *cmdargs = strdup(args);
+        }
+
+        free(procargs);
+    }
+#elif defined(__DragonFly__) || defined(__FreeBSD__)
+    /* on DragonFly and FreeBSD use KERN_PROC_ARGS */
+    {
+        int mib[] = {
+            CTL_KERN,
+            KERN_PROC,
+            KERN_PROC_ARGS,
+            pid,
+        };
+
+        /* Determine exact size instead of relying on kern.argmax */
+        size_t len;
+        if (sysctl(mib, ARRAY_SIZE(mib), NULL, &len, NULL, 0) != 0) {
+            ErrorF("Failed to query KERN_PROC_ARGS length for PID %d: %s\n", pid, strerror(errno));
+            return;
+        }
+
+        /* Read KERN_PROC_ARGS contents. Similar to /proc/pid/cmdline
+         * the process name and each argument are separated by NUL byte. */
+        char *const procargs = calloc(1, len);
+        if (!procargs) {
+            ErrorF("Failed to allocate memory (%zu bytes) for KERN_PROC_ARGS result for pid %d: %s\n", len, pid, strerror(errno));
+            return;
+        }
+
+        if (sysctl(mib, ARRAY_SIZE(mib), procargs, &len, NULL, 0) != 0) {
+            ErrorF("Failed to get KERN_PROC_ARGS for PID %d: %s\n", pid, strerror(errno));
+            free(procargs);
+            return;
+        }
+
+        /* Construct the process name without arguments. */
+        if (cmdname) {
+            *cmdname = strdup(procargs);
+        }
+
+        /* Construct the arguments for client process. */
+        if (cmdargs) {
+            size_t cmdsize = strlen(procargs) + 1;
+            size_t argsize = len - cmdsize;
+            char *args = NULL;
+
+            if (argsize > 0)
+                args = procargs + cmdsize;
+            if (args) {
+                /* Replace NUL with space except terminating NUL */
+                for (size_t i = 0; i < (argsize - 1); i++) {
+                    if (args[i] == '\0')
+                        args[i] = ' ';
+                }
+                *cmdargs = strdup(args);
+            }
+        }
+        free(procargs);
+    }
+#elif defined(__OpenBSD__)
     /* on OpenBSD use kvm_getargv() */
     {
         kvm_t *kd;
@@ -158,21 +333,33 @@ DetermineClientCmd(pid_t pid, const char **cmdname, const char **cmdargs)
         kp = kvm_getprocs(kd, KERN_PROC_PID, pid, sizeof(struct kinfo_proc),
                           &n);
         if (n != 1)
-            return;
+            goto done_kvm;
         argv = kvm_getargv(kd, kp, 0);
-        *cmdname = strdup(argv[0]);
-        i = 1;
-        while (argv[i] != NULL) {
-            len += strlen(argv[i]) + 1;
-            i++;
+        if (argv == NULL)
+            goto done_kvm;
+        if (cmdname) {
+            if (argv[0] == NULL)
+                goto done_kvm;
+            else
+                *cmdname = strdup(argv[0]);
         }
-        *cmdargs = calloc(1, len);
-        i = 1;
-        while (argv[i] != NULL) {
-            strlcat(*cmdargs, argv[i], len);
-            strlcat(*cmdargs, " ", len);
-            i++;
+        if (cmdargs) {
+            i = 1;
+            while (argv[i] != NULL) {
+                len += strlen(argv[i]) + 1;
+                i++;
+            }
+            *cmdargs = calloc(1, len);
+            if (*cmdargs) {
+                i = 1;
+                while (argv[i] != NULL) {
+                    strlcat(*(char **)cmdargs, argv[i], len);
+                    strlcat(*(char **)cmdargs, " ", len);
+                    i++;
+                }
+            }
         }
+ done_kvm:
         kvm_close(kd);
     }
 #else                           /* Linux using /proc/pid/cmdline */
@@ -197,7 +384,7 @@ DetermineClientCmd(pid_t pid, const char **cmdname, const char **cmdargs)
         return;
     path[totsize - 1] = '\0';
 
-    /* Contruct the process name without arguments. */
+    /* Construct the process name without arguments. */
     if (cmdname) {
         *cmdname = strdup(path);
     }
@@ -209,7 +396,7 @@ DetermineClientCmd(pid_t pid, const char **cmdname, const char **cmdargs)
         char *args = NULL;
 
         if (argsize > 0)
-            args = malloc(argsize);
+            args = calloc(1, argsize);
         if (args) {
             int i = 0;
 
@@ -275,12 +462,11 @@ DetermineClientCmd(pid_t pid, const char **cmdname, const char **cmdargs)
 void
 ReserveClientIds(struct _Client *client)
 {
-#ifdef CLIENTIDS
-    if (client == NullClient)
+    if (client == NULL)
         return;
 
     assert(!client->clientIds);
-    client->clientIds = calloc(1, sizeof(ClientIdRec));
+    client->clientIds = calloc(1, sizeof(struct _ClientId));
     if (!client->clientIds)
         return;
 
@@ -295,7 +481,6 @@ ReserveClientIds(struct _Client *client)
            (unsigned long) client->clientAsMask,
            client->clientIds->cmdname ? client->clientIds->cmdname : "NULL",
            client->clientIds->cmdargs ? client->clientIds->cmdargs : "NULL");
-#endif                          /* CLIENTIDS */
 }
 
 /**
@@ -307,8 +492,7 @@ ReserveClientIds(struct _Client *client)
 void
 ReleaseClientIds(struct _Client *client)
 {
-#ifdef CLIENTIDS
-    if (client == NullClient)
+    if (client == NULL)
         return;
 
     if (!client->clientIds)
@@ -325,7 +509,6 @@ ReleaseClientIds(struct _Client *client)
     free((void *) client->clientIds->cmdargs);  /* const char * */
     free(client->clientIds);
     client->clientIds = NULL;
-#endif                          /* CLIENTIDS */
 }
 
 /**
@@ -343,7 +526,7 @@ ReleaseClientIds(struct _Client *client)
 pid_t
 GetClientPid(struct _Client *client)
 {
-    if (client == NullClient)
+    if (client == NULL)
         return -1;
 
     if (!client->clientIds)
@@ -369,7 +552,7 @@ GetClientPid(struct _Client *client)
 const char *
 GetClientCmdName(struct _Client *client)
 {
-    if (client == NullClient)
+    if (client == NULL)
         return NULL;
 
     if (!client->clientIds)
@@ -395,7 +578,7 @@ GetClientCmdName(struct _Client *client)
 const char *
 GetClientCmdArgs(struct _Client *client)
 {
-    if (client == NullClient)
+    if (client == NULL)
         return NULL;
 
     if (!client->clientIds)

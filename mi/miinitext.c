@@ -71,49 +71,38 @@ SOFTWARE.
  * authorization from the copyright holder(s) and author(s).
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
+
+#include <stdbool.h>
 
 #ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
 #include "xf86Extensions.h"
 #endif
 
-#ifdef HAVE_DMX_CONFIG_H
-#include <dmx-config.h>
-#undef XV
-#undef DBE
-#undef SCREENSAVER
-#undef RANDR
-#undef DAMAGE
-#undef COMPOSITE
+/* some DDXes must explicitly prohibit some extensions */
+#ifdef DISABLE_EXT_MITSHM
 #undef MITSHM
+#undef CONFIG_MITSHM
 #endif
 
-#ifdef HAVE_XNEST_CONFIG_H
-#include <xnest-config.h>
-#undef COMPOSITE
-#undef DPMSExtension
-#endif
+#include "include/misc.h"
+#include "miext/extinit_priv.h"
 
-#include "misc.h"
 #include "extension.h"
-#include "extinit.h"
-#ifdef INXQUARTZ
-#include "nonsdk_extinit.h"
-#endif
 #include "micmap.h"
 #include "os.h"
 #include "globals.h"
 
+#include "miinitext.h"
+
 /* List of built-in (statically linked) extensions */
 static const ExtensionModule staticExtensions[] = {
-    {GEExtensionInit, "Generic Event Extension", &noGEExtension},
-    {ShapeExtensionInit, "SHAPE", NULL},
-#ifdef MITSHM
+    {GEExtensionInit, "Generic Event Extension", NULL},
+    {ShapeExtensionInit, "SHAPE", &noShapeExtension},
+#ifdef CONFIG_MITSHM
     {ShmExtensionInit, "MIT-SHM", &noMITShmExtension},
-#endif
+#endif /* CONFIG_MITSHM */
     {XInputExtensionInit, "XInputExtension", NULL},
 #ifdef XTEST
     {XTestExtensionInit, "XTEST", &noTestExtensions},
@@ -125,30 +114,22 @@ static const ExtensionModule staticExtensions[] = {
 #ifdef XCSECURITY
     {SecurityExtensionInit, "SECURITY", &noSecurityExtension},
 #endif
-#ifdef PANORAMIX
+#ifdef CONFIG_NAMESPACE
+    {NamespaceExtensionInit, "NAMESPACE", &noNamespaceExtension},
+#endif
+#ifdef XINERAMA
     {PanoramiXExtensionInit, "XINERAMA", &noPanoramiXExtension},
-#endif
-#ifdef INXQUARTZ
-    /* PseudoramiXExtensionInit must be done before RRExtensionInit, or
-     * XQuartz will render windows offscreen.
-     */
-    {PseudoramiXExtensionInit, "PseudoramiX", &noPseudoramiXExtension},
-#endif
+#endif /* XINERAMA */
     /* must be before Render to layer DisplayCursor correctly */
     {XFixesExtensionInit, "XFIXES", &noXFixesExtension},
-#ifdef XF86BIGFONT
-    {XFree86BigfontExtensionInit, "XFree86-Bigfont", &noXFree86BigfontExtension},
-#endif
     {RenderExtensionInit, "RENDER", &noRenderExtension},
 #ifdef RANDR
     {RRExtensionInit, "RANDR", &noRRExtension},
 #endif
-#ifdef COMPOSITE
+#ifndef DISABLE_EXT_COMPOSITE
     {CompositeExtensionInit, "COMPOSITE", &noCompositeExtension},
 #endif
-#ifdef DAMAGE
     {DamageExtensionInit, "DAMAGE", &noDamageExtension},
-#endif
 #ifdef SCREENSAVER
     {ScreenSaverExtensionInit, "MIT-SCREEN-SAVER", &noScreenSaverExtension},
 #endif
@@ -164,6 +145,9 @@ static const ExtensionModule staticExtensions[] = {
 #ifdef PRESENT
     {present_extension_init, "Present", NULL},
 #endif
+#ifdef DRI2
+    {DRI2ExtensionInit, DRI2_NAME, &noDRI2Extension},
+#endif
 #ifdef DRI3
     {dri3_extension_init, "DRI3", NULL},
 #endif
@@ -172,7 +156,9 @@ static const ExtensionModule staticExtensions[] = {
 #endif
 #ifdef XV
     {XvExtensionInit, "XVideo", &noXvExtension},
+#ifdef XvMCExtension
     {XvMCExtensionInit, "XVideo-MotionCompensation", &noXvExtension},
+#endif
 #endif
 #ifdef XSELINUX
     {SELinuxExtensionInit, "SELinux", &noSELinuxExtension},
@@ -181,6 +167,21 @@ static const ExtensionModule staticExtensions[] = {
     {GlxExtensionInit, "GLX", &noGlxExtension},
 #endif
 };
+
+void
+ListStaticExtensions(void)
+{
+    const ExtensionModule *ext;
+    int i;
+
+    ErrorF(" Only the following extensions can be run-time enabled/disabled:\n");
+    for (i = 0; i < ARRAY_SIZE(staticExtensions); i++) {
+        ext = &staticExtensions[i];
+        if (ext->disablePtr != NULL) {
+            ErrorF("\t%s\n", ext->name);
+        }
+    }
+}
 
 Bool
 EnableDisableExtension(const char *name, Bool enable)
@@ -211,7 +212,7 @@ EnableDisableExtensionError(const char *name, Bool enable)
 {
     const ExtensionModule *ext;
     int i;
-    Bool found = FALSE;
+    bool found = FALSE;
 
     for (i = 0; i < ARRAY_SIZE(staticExtensions); i++) {
         ext = &staticExtensions[i];
@@ -221,16 +222,13 @@ EnableDisableExtensionError(const char *name, Bool enable)
             break;
         }
     }
-    if (found == FALSE)
+    if (found == FALSE) {
         ErrorF("[mi] Extension \"%s\" is not recognized\n", name);
-    ErrorF("[mi] Only the following extensions can be run-time %s:\n",
-           enable ? "enabled" : "disabled");
-    for (i = 0; i < ARRAY_SIZE(staticExtensions); i++) {
-        ext = &staticExtensions[i];
-        if (ext->disablePtr != NULL) {
-            ErrorF("[mi]    %s\n", ext->name);
-        }
+        /* Disabling a non-existing extension is a no-op anyway */
+        if (enable == FALSE)
+            return;
     }
+    ListStaticExtensions();
 }
 
 static ExtensionModule *ExtensionModuleList = NULL;

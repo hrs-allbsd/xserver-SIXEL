@@ -15,18 +15,14 @@ is" without express or implied warranty.
 #ifndef XNESTFONT_H
 #define XNESTFONT_H
 
-typedef struct {
-    XFontStruct *font_struct;
-} xnestPrivFont;
+#include <X11/Xdefs.h>
+
+#include <xcb/xcb.h>
 
 extern int xnestFontPrivateIndex;
 
 #define xnestFontPriv(pFont) \
-  ((xnestPrivFont *)FontGetPrivate(pFont, xnestFontPrivateIndex))
-
-#define xnestFontStruct(pFont) (xnestFontPriv(pFont)->font_struct)
-
-#define xnestFont(pFont) (xnestFontStruct(pFont)->fid)
+  ((xnestPrivFont *)FontGetPrivate((pFont), xnestFontPrivateIndex))
 
 Bool xnestRealizeFont(ScreenPtr pScreen, FontPtr pFont);
 Bool xnestUnrealizeFont(ScreenPtr pScreen, FontPtr pFont);

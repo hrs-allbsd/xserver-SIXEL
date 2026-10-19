@@ -20,17 +20,22 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
-#include "fb.h"
+#include "fb/fb_priv.h"
 
 static DevPrivateKeyRec fbScreenPrivateKeyRec;
+
 DevPrivateKey
 fbGetScreenPrivateKey(void)
 {
     return &fbScreenPrivateKeyRec;
+}
+
+DevPrivateKey
+fbGetGCPrivateKey(GCPtr pGC)
+{
+    return &fbGetScreenPrivate((pGC)->pScreen)->gcPrivateKeyRec;
 }
 
 Bool

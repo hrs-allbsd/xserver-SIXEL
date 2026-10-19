@@ -22,10 +22,9 @@
  *
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <string.h>
 
 #include "exa_priv.h"
@@ -172,7 +171,7 @@ exaPrepareAccessReg_mixed(PixmapPtr pPixmap, int index, RegionPtr pReg)
 {
     ExaPixmapPriv(pPixmap);
     Bool has_gpu_copy = exaPixmapHasGpuCopy(pPixmap);
-    Bool success;
+    bool success;
 
     success = ExaDoPrepareAccess(pPixmap, index);
 
@@ -205,8 +204,8 @@ exaPrepareAccessReg_mixed(PixmapPtr pPixmap, int index, RegionPtr pReg)
 
         /* Do we need to allocate our system buffer? */
         if (!pExaPixmap->sys_ptr) {
-            pExaPixmap->sys_ptr = xallocarray(pExaPixmap->sys_pitch,
-                                              pPixmap->drawable.height);
+            pExaPixmap->sys_ptr = calloc(pExaPixmap->sys_pitch,
+                                         pPixmap->drawable.height);
             if (!pExaPixmap->sys_ptr)
                 FatalError("EXA: malloc failed for size %d bytes\n",
                            pExaPixmap->sys_pitch * pPixmap->drawable.height);
@@ -225,7 +224,7 @@ exaPrepareAccessReg_mixed(PixmapPtr pPixmap, int index, RegionPtr pReg)
 
         if (!pExaPixmap->pDamage &&
             (has_gpu_copy || !exaPixmapIsPinned(pPixmap))) {
-            Bool as_dst = pixmaps[0].as_dst;
+            bool as_dst = pixmaps[0].as_dst;
 
             /* Set up damage tracking */
             pExaPixmap->pDamage = DamageCreate(exaDamageReport_mixed, NULL,

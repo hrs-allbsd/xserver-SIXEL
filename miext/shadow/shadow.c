@@ -20,13 +20,13 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
 #include <stdlib.h>
+#include <X11/X.h>
 
-#include    <X11/X.h>
+#include "dix/screen_hooks_priv.h"
+
 #include    "scrnintstr.h"
 #include    "windowstr.h"
 #include    "dixfontstr.h"
@@ -41,7 +41,7 @@ static DevPrivateKeyRec shadowScrPrivateKeyRec;
 
 #define shadowGetBuf(pScr) ((shadowBufPtr) \
     dixLookupPrivate(&(pScr)->devPrivates, shadowScrPrivateKey))
-#define shadowBuf(pScr)            shadowBufPtr pBuf = shadowGetBuf(pScr)
+#define shadowBuf(pScr)            shadowBufPtr pBuf = shadowGetBuf((pScr))
 
 #define wrap(priv, real, mem) {\
     priv->mem = real->mem; \
@@ -49,7 +49,7 @@ static DevPrivateKeyRec shadowScrPrivateKeyRec;
 }
 
 #define unwrap(priv, real, mem) {\
-    real->mem = priv->mem; \
+    (real)->mem = (priv)->mem; \
 }
 
 static void
@@ -87,7 +87,7 @@ shadowGetImage(DrawablePtr pDrawable, int sx, int sy, int w, int h,
 
     shadowBuf(pScreen);
 
-    /* Many apps use GetImage to sync with the visable frame buffer */
+    /* Many apps use GetImage to sync with the visible frame buffer */
     if (pDrawable->type == DRAWABLE_WINDOW)
         shadowRedisplay(pScreen);
     unwrap(pBuf, pScreen, GetImage);
@@ -95,26 +95,22 @@ shadowGetImage(DrawablePtr pDrawable, int sx, int sy, int w, int h,
     wrap(pBuf, pScreen, GetImage);
 }
 
-static Bool
-shadowCloseScreen(ScreenPtr pScreen)
+static void shadowCloseScreen(CallbackListPtr *pcbl, ScreenPtr pScreen, void *unused)
 {
-    shadowBuf(pScreen);
+    dixScreenUnhookClose(pScreen, shadowCloseScreen);
 
+    shadowBuf(pScreen);
     unwrap(pBuf, pScreen, GetImage);
-    unwrap(pBuf, pScreen, CloseScreen);
     unwrap(pBuf, pScreen, BlockHandler);
     shadowRemove(pScreen, pBuf->pPixmap);
     DamageDestroy(pBuf->pDamage);
-    if (pBuf->pPixmap)
-        pScreen->DestroyPixmap(pBuf->pPixmap);
+    dixDestroyPixmap(pBuf->pPixmap, 0);
     free(pBuf);
-    return pScreen->CloseScreen(pScreen);
 }
 
 Bool
 shadowSetup(ScreenPtr pScreen)
 {
-    shadowBufPtr pBuf;
 
     if (!dixRegisterPrivateKey(&shadowScrPrivateKeyRec, PRIVATE_SCREEN, 0))
         return FALSE;
@@ -122,7 +118,7 @@ shadowSetup(ScreenPtr pScreen)
     if (!DamageSetup(pScreen))
         return FALSE;
 
-    pBuf = malloc(sizeof(shadowBufRec));
+    shadowBufPtr pBuf = calloc(1, sizeof(shadowBufRec));
     if (!pBuf)
         return FALSE;
     pBuf->pDamage = DamageCreate((DamageReportFunc) NULL,
@@ -133,7 +129,8 @@ shadowSetup(ScreenPtr pScreen)
         return FALSE;
     }
 
-    wrap(pBuf, pScreen, CloseScreen);
+    dixScreenHookClose(pScreen, shadowCloseScreen);
+
     wrap(pBuf, pScreen, GetImage);
     wrap(pBuf, pScreen, BlockHandler);
     pBuf->update = 0;

@@ -35,15 +35,11 @@
 #define GLAMOR_DEBUG_TEXTURE_DOWNLOAD         2
 #define GLAMOR_DEBUG_TEXTURE_DYNAMIC_UPLOAD   3
 
-extern void
-AbortServer(void)
-    _X_NORETURN;
-
 #define GLAMOR_PANIC(_format_, ...)			\
   do {							\
     LogMessageVerb(X_NONE, 0, "Glamor Fatal Error"	\
 		   " at %32s line %d: " _format_ "\n",	\
-		   __FUNCTION__, __LINE__,		\
+		   __func__, __LINE__,			\
 		   ##__VA_ARGS__ );			\
     exit(1);                                            \
   } while(0)
@@ -52,12 +48,12 @@ AbortServer(void)
   LogMessageVerb(X_NONE, 0,				\
 		 "%32s:\t" _format_ ,		\
 		 /*_prefix_,*/				\
-		 __FUNCTION__,				\
+		 __func__,				\
 		 ##__VA_ARGS__)
 
 #define glamor_debug_output(_level_, _format_,...)	\
   do {							\
-    if (glamor_debug_level >= _level_)			\
+    if (glamor_debug_level >= (_level_))			\
       __debug_output_message(_format_,			\
 			     "Glamor debug",		\
 			     ##__VA_ARGS__);		\

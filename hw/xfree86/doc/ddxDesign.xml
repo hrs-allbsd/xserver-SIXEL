@@ -511,7 +511,7 @@ mechanism for this.
 
 	<para>
     If a device is capable of disabling this decoding the resource is
-    called sharable.  For PCI devices a generic method is provided to
+    called shareable.  For PCI devices a generic method is provided to
     control resource decoding.  Other devices will have to provide a
     device specific function to control decoding.
 	</para>
@@ -633,24 +633,8 @@ Here is what <function>InitOutput()</function> does:
       <para>
     In the case of ix86 machines, this will be a general PCI probe.
     The full information obtained here will be available to the drivers.
-    This information persists for the life of the Xserver.  In the PCI
-    case, the PCI information for all video cards found is available by
-    calling <function>xf86GetPciVideoInfo()</function>.
+    This information persists for the life of the Xserver.
       </para>
-
-      <blockquote><para>
-	  <programlisting>
-    pciVideoPtr *xf86GetPciVideoInfo(void);
-	  </programlisting>
-	  <blockquote><para>
-	returns a pointer to a list of pointers to
-	<structname>pciVideoRec</structname> entries, of which there is one for
-	each detected PCI video card.  The list is terminated with a
-	<constant>NULL</constant> pointer.  If no PCI video cards were
-	detected, the return value is <constant>NULL</constant>.
-
-	    </para></blockquote>
-	</para></blockquote>
 
       <para>
     After the bus probe, the resource broker is initialised.
@@ -1065,7 +1049,7 @@ Here is what <function>InitOutput()</function> does:
       against the expected number (most drivers expect only one).  The
       entity information for each of them should be retrieved (with
       <function>xf86GetEntityInfo()</function>) and checked for the correct
-      bus type and that none of the sharable resources registered during
+      bus type and that none of the shareable resources registered during
       the Probe phase was rejected.
 	    </para>
 
@@ -1373,7 +1357,7 @@ Here is what <function>InitOutput()</function> does:
 
 	<orderedlist>
 	  <listitem><para>
-	The sharable resources registered by each entity are compared.
+	The shareable resources registered by each entity are compared.
 	If a resource is registered by more than one entity the entity
 	will be marked to indicate that it needs to share this resources
 	type (IO or MEM).
@@ -1859,28 +1843,6 @@ functions:
 
 	</para></blockquote>
 
-     <blockquote><para>
-	  <programlisting>
-    int xf86GetDepth();
-	  </programlisting>
-	  <blockquote><para>
-      Returns the <option>-depth</option> command line setting.  If not
-      set on the command line, <constant>-1</constant> is returned.
-	    </para></blockquote>
-
-	</para></blockquote>
-
-     <blockquote><para>
-	  <programlisting>
-    rgb xf86GetWeight();
-	  </programlisting>
-	  <blockquote><para>
-      Returns the <option>-weight</option> command line setting.  If not
-      set on the command line, <literal remap="tt">{0, 0, 0}</literal> is returned.
-	    </para></blockquote>
-
-	</para></blockquote>
-
       <blockquote><para>
 	  <programlisting>
     Gamma xf86GetGamma();
@@ -1894,26 +1856,6 @@ functions:
 
 	</para></blockquote>
 
-      <blockquote><para>
-	  <programlisting>
-    Bool xf86GetFlipPixels();
-	  </programlisting>
-	  <blockquote><para>
-      Returns <constant>TRUE</constant> if <option>-flippixels</option> is
-      present on the command line, and <constant>FALSE</constant> otherwise.
-	    </para></blockquote>
-
-	</para></blockquote>
-
-      <blockquote><para>
-	  <programlisting>
-    const char *xf86GetServerName();
-	  </programlisting>
-	  <blockquote><para>
-      Returns the name of the X server from the command line.
-	    </para></blockquote>
-
-	</para></blockquote>
     </sect2>
 
     <sect2>
@@ -2013,18 +1955,6 @@ functions is as follows:
 	  <blockquote><para>
       Returns <constant>TRUE</constant> if the server is at the end of a
       generation and is in the process of exiting, and
-      <constant>FALSE</constant> otherwise.
-	    </para></blockquote>
-
-	</para></blockquote>
-
-      <blockquote><para>
-	  <programlisting>
-    Bool xf86ServerIsResetting();
-	  </programlisting>
-	  <blockquote><para>
-      Returns <constant>TRUE</constant> if the server is at the end of a
-      generation and is in the process of resetting, and
       <constant>FALSE</constant> otherwise.
 	    </para></blockquote>
 
@@ -2214,7 +2144,7 @@ giving up the VT.
 
       <para>
 In <function>PreInit()</function> phase each driver should check if any
-sharable resources it has registered during <function>Probe()</function> has
+shareable resources it has registered during <function>Probe()</function> has
 been denied and take appropriate action which could simply be to fail.
 If it needs to access resources it has disabled during
 <function>EntitySetup()</function> it can do so provided it has registered
@@ -2247,7 +2177,7 @@ rules:
 
 	<orderedlist>
 	  <listitem><para>
-   The sharable resources registered by each entity are compared.  If
+   The shareable resources registered by each entity are compared.  If
    a resource is registered by more than one entity the entity will be
    marked to need to share this resources type (<constant>IO</constant> or
    <constant>MEM</constant>).
@@ -2639,18 +2569,6 @@ Several functions are provided to simplify resource registration:
       This function returns <constant>TRUE</constant> if the entity referenced
       by <parameter>entityIndex</parameter> is the primary display device (i.e.,
       the one initialised at boot time and used in text mode).
-		</para>
-
-	      </blockquote></para></blockquote>
-
-	  <blockquote><para>
-	      <programlisting>
-    Bool xf86IsScreenPrimary(ScrnInfoPtr pScrn);
-	      </programlisting>
-	      <blockquote><para>
-      This function returns <constant>TRUE</constant> if the primary entity
-      is registered with the screen referenced by
-      <parameter>pScrn</parameter>.
 		</para>
 
 	      </blockquote></para></blockquote>
@@ -3329,18 +3247,6 @@ video memory using the following functions (definitions taken from
     )
       </programlisting>
     </para>
-
-    <para>
-The function:
-      <programlisting>
-    Bool xf86FBManagerRunning(ScreenPtr pScreen);
-      </programlisting>
-
-can be used by an extension to check if the driver has initialized
-the memory manager.  The manager is not available if this returns
-<constant>FALSE</constant> and the functions above will all fail.
-    </para>
-
 
     <para>
 <function>xf86AllocateOffscreenArea()</function> can be used to request a
@@ -4725,7 +4631,7 @@ typedef struct {
 		  <varlistentry>
 		    <term><structfield>depth</structfield></term>
 		    <listitem><para>
-	The significant bits per pixel in RGB formats (analgous to the
+	The significant bits per pixel in RGB formats (analogous to the
 	depth of a pixmap format).
 		      </para></listitem></varlistentry>
 
@@ -4857,15 +4763,16 @@ XFree86 common layer.
 
       <blockquote><para>
 	  <programlisting>
-    void LoaderSetPath(const char *path);
+    void LoaderSetPath(const char *driver, const char *path);
 	  </programlisting>
 	  <blockquote><para>
-    The <function>LoaderSetPath()</function> function initialises a default
-    module search path.  This must be called if calls to other functions
-    are to be made without explicitly specifying a module search path.
-    The search path <parameter>path</parameter> must be a string of one or more
-    comma separated absolute paths.  Modules are expected to be located
-    below these paths, possibly in subdirectories of these paths.
+    The <function>LoaderSetPath()</function> function initialises a search path
+    for <parameter>driver</parameter> module, if it is non-NULL,
+    or a default module search path otherwise.  This must be called if calls
+    to other functions are to be made without explicitly specifying a module
+    search path. The search path <parameter>path</parameter> must be a string
+    of one or more comma separated absolute paths.  Modules are expected to be
+    located below these paths, possibly in subdirectories of these paths.
 	    </para>
 
 	  </blockquote></para></blockquote>
@@ -5635,17 +5542,6 @@ strongly encouraged to improve the consistency of driver behaviour.
 		    </para></listitem></varlistentry>
 		</variablelist>
 
-	    </para>
-
-	  </blockquote></para></blockquote>
-
-      <blockquote><para>
-	  <programlisting>
-    xf86MsgVerb(MessageType type, int verb, const char *format, ...);
-	  </programlisting>
-	  <blockquote><para>
-      Like <function>xf86Msg()</function>, but with the verbosity level given
-      explicitly.
 	    </para>
 
 	  </blockquote></para></blockquote>
@@ -6785,30 +6681,6 @@ programming the standard VGA registers, and for handling VGA colourmaps.
 
       <blockquote><para>
 	  <programlisting>
-    Bool vgaHWSetRegCounts(ScrnInfoPtr pScrn, int numCRTC,
-                          int numSequencer, int numGraphics, int numAttribute);
-	  </programlisting>
-	  <blockquote><para>
-      This function allows the number of CRTC, Sequencer, Graphics and
-      Attribute registers to be changed.  This makes it possible for
-      extended registers to be saved and restored with
-      <function>vgaHWSave()</function> and <function>vgaHWRestore()</function>.
-      This function should be called after a <structname>vgaHWRec</structname>
-      has been allocated with <function>vgaHWGetHWRec()</function>.  The
-      default values are defined in <filename>vgaHW.h</filename> as follows:
-
-	      <programlisting>
-#define VGA_NUM_CRTC 25
-#define VGA_NUM_SEQ   5
-#define VGA_NUM_GFX   9
-#define VGA_NUM_ATTR 21
-	      </programlisting>
-	    </para>
-
-	  </blockquote></para></blockquote>
-
-      <blockquote><para>
-	  <programlisting>
     Bool vgaHWCopyReg(vgaRegPtr dst, vgaRegPtr src);
 	  </programlisting>
 	  <blockquote><para>
@@ -6876,7 +6748,7 @@ programming the standard VGA registers, and for handling VGA colourmaps.
       non-default <structfield>MapPhys</structfield> or <structfield>MapSize</structfield>
       settings (the physical location and size of the VGA memory window)
       then those fields of the <structname>vgaHWRec</structname> must be initialised
-      before calling this function.  Otherwise, this function initialiases
+      before calling this function.  Otherwise, this function initialises
       the default values of <constant>0xA0000</constant> for
       <structfield>MapPhys</structfield> and <code>(64&nbsp;*&nbsp;1024)</code> for
       <structfield>MapSize</structfield>.  This function must be called before
@@ -6956,17 +6828,6 @@ programming the standard VGA registers, and for handling VGA colourmaps.
 
       <blockquote><para>
 	  <programlisting>
-    void vgaHWDisable(vgaHWPtr hwp);
-	  </programlisting>
-	  <blockquote><para>
-      This function disables the VGA subsystem.  (Note, this function is
-      present in XFree86 4.1.0 and later.).
-	    </para>
-
-	  </blockquote></para></blockquote>
-
-      <blockquote><para>
-	  <programlisting>
     void vgaHWSave(ScrnInfoPtr pScrn, vgaRegPtr save, int flags);
 	  </programlisting>
 	  <blockquote><para>
@@ -7028,11 +6889,6 @@ programming the standard VGA registers, and for handling VGA colourmaps.
         Graphics[0-8]
         Sequencer[0-4]
 	      </literallayout>
-	    </para>
-
-	    <para>
-    The number of registers actually saved may be modified by a prior call
-    to <function>vgaHWSetRegCounts()</function>.
 	    </para>
 
 	  </blockquote></para></blockquote>
@@ -7112,11 +6968,6 @@ programming the standard VGA registers, and for handling VGA colourmaps.
         Graphics[0-8]
         Sequencer[0-4]
 	      </literallayout>
-	    </para>
-
-	    <para>
-    The number of registers actually restored may be modified by a prior call
-    to <function>vgaHWSetRegCounts()</function>.
 	    </para>
 
 	  </blockquote></para></blockquote>
@@ -7524,13 +7375,6 @@ visible symbols.
       </para>
 
       <para>
-  Drivers that need to access PCI vendor/device definitions need this:
-	<literallayout><filename>
-    "xf86PciInfo.h"
-	  </filename></literallayout>
-      </para>
-
-      <para>
   Drivers that need to access the PCI config space need this:
 	<literallayout><filename>
     "xf86Pci.h"
@@ -7786,7 +7630,7 @@ static const OptionInfoRec ZZZOptions[] = {
 	<programlisting>
 static MODULESETUPPROTO(zzzSetup);
 
-XF86ModuleData zzzModuleData = { &amp;zzzVersRec, zzzSetup, NULL };
+XF86ModuleData zzzModuleData = { .vers = &amp;zzzVersRec, .setup = zzzSetup, .teardown = NULL };
 
 static pointer
 zzzSetup(pointer module, pointer opts, int *errmaj, int *errmin)
@@ -7827,7 +7671,7 @@ zzzSetup(pointer module, pointer opts, int *errmaj, int *errmin)
     The <structname>ScrnInfoRec</structname>'s <structfield>driverPrivate</structfield> is
     initialised to <constant>NULL</constant>, so it is easy to check if the
     initialisation has already been done.  After allocating it, initialise
-    the fields.  By using <function>xnfcalloc()</function> to do the allocation
+    the fields.  By using <function>XNFcallocarray()</function> to do the allocation
     it is zeroed, and if the allocation fails the server exits.
 	</para>
 
@@ -7846,7 +7690,7 @@ ZZZGetRec(ScrnInfoPtr pScrn)
 {
     if (pScrn-&gt;driverPrivate != NULL)
         return TRUE;
-    pScrn-&gt;driverPrivate = xnfcalloc(sizeof(ZZZRec), 1);
+    pScrn-&gt;driverPrivate = XNFcallocarray(1, sizeof(ZZZRec));
     /* Initialise as required */
     ...
     return TRUE;
@@ -7954,15 +7798,13 @@ ZZZProbe(DriverPtr drv, int flags)
      * the details.
      */
     /* test if PCI bus present */
-    if (xf86GetPciVideoInfo()) {
-
-        numUsed = xf86MatchPciInstances(ZZZ_NAME, PCI_VENDOR_ZZZ,
+    numUsed = xf86MatchPciInstances(ZZZ_NAME, PCI_VENDOR_ZZZ,
                             ZZZChipsets, ZZZPciChipsets, devSections,
                             numDevSections, drv, &amp;usedChips);
 
-        for (i = 0; i &lt; numUsed; i++) {
-            ScrnInfoPtr pScrn = NULL;
-            if ((pScrn = xf86ConfigPciEntity(pScrn, flags, usedChips[i],
+    for (i = 0; i &lt; numUsed; i++) {
+        ScrnInfoPtr pScrn = NULL;
+        if ((pScrn = xf86ConfigPciEntity(pScrn, flags, usedChips[i],
                                              ZZZPciChipsets, NULL, NULL,
                                              NULL, NULL, NULL))) {
                /* Allocate a ScrnInfoRec */
@@ -7980,10 +7822,9 @@ ZZZProbe(DriverPtr drv, int flags)
                pScrn-&gt;ValidMode     = ZZZValidMode;
                foundScreen = TRUE;
                /* add screen to entity */
-           }
-        }
-        xfree(usedChips);
+       }
     }
+    xfree(usedChips);
 
     xfree(devSections);
     return foundScreen;
@@ -8309,7 +8150,7 @@ ZZZPreInit(ScrnInfoPtr pScrn, int flags)
 static Bool
 ZZZMapMem(ScrnInfoPtr pScrn)
 {
-    /* Call xf86MapPciMem() to map each PCI memory area */
+    /* map each PCI memory area */
     ...
     return TRUE or FALSE;
 }

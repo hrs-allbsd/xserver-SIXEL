@@ -43,17 +43,13 @@
 
 /* Instruction Decoding Stuff */
 
-#define FETCH_DECODE_MODRM(mod,rh,rl) 	fetch_decode_modrm(&mod,&rh,&rl)
-#define DECODE_RM_BYTE_REGISTER(r)    	decode_rm_byte_register(r)
-#define DECODE_RM_WORD_REGISTER(r)    	decode_rm_word_register(r)
-#define DECODE_RM_LONG_REGISTER(r)    	decode_rm_long_register(r)
+#define FETCH_DECODE_MODRM(mod,rh,rl) 	fetch_decode_modrm(&(mod),&(rh),&(rl))
+#define DECODE_RM_BYTE_REGISTER(r)    	decode_rm_byte_register((r))
+#define DECODE_RM_WORD_REGISTER(r)    	decode_rm_word_register((r))
+#define DECODE_RM_LONG_REGISTER(r)    	decode_rm_long_register((r))
 #define DECODE_CLEAR_SEGOVR()         	M.x86.mode &= ~SYSMODE_CLRMASK
 
 /*-------------------------- Function Prototypes --------------------------*/
-
-#ifdef  __cplusplus
-extern "C" {                    /* Use "C" linkage when in C++ mode */
-#endif
 
     void x86emu_intr_raise(u8 type);
     void fetch_decode_modrm(int *mod, int *regh, int *regl);
@@ -81,7 +77,4 @@ extern "C" {                    /* Use "C" linkage when in C++ mode */
     u32 decode_rm10_address(int rm);
     u32 decode_sib_address(int sib, int mod);
 
-#ifdef  __cplusplus
-}                               /* End of "C" linkage for C++           */
-#endif
 #endif                          /* __X86EMU_DECODE_H */

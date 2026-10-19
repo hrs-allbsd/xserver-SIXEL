@@ -20,9 +20,9 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
+
+#include <stdbool.h>
 
 #include "mi.h"
 #include "scrnintstr.h"
@@ -39,8 +39,8 @@ miCopyRegion(DrawablePtr pSrcDrawable,
              int dx, int dy, miCopyProc copyProc, Pixel bitPlane, void *closure)
 {
     int careful;
-    Bool reverse;
-    Bool upsidedown;
+    bool reverse;
+    bool upsidedown;
     BoxPtr pbox;
     int nbox;
     BoxPtr pboxNew1, pboxNew2, pboxBase, pboxNext, pboxTmp;
@@ -62,7 +62,7 @@ miCopyRegion(DrawablePtr pSrcDrawable,
 
         if (nbox > 1) {
             /* keep ordering in each band, reverse order of bands */
-            pboxNew1 = xallocarray(nbox, sizeof(BoxRec));
+            pboxNew1 = calloc(nbox, sizeof(BoxRec));
             if (!pboxNew1)
                 return;
             pboxBase = pboxNext = pbox + nbox - 1;
@@ -93,7 +93,7 @@ miCopyRegion(DrawablePtr pSrcDrawable,
 
         if (nbox > 1) {
             /* reverse order of rects in each band */
-            pboxNew2 = xallocarray(nbox, sizeof(BoxRec));
+            pboxNew2 = calloc(nbox, sizeof(BoxRec));
             if (!pboxNew2) {
                 free(pboxNew1);
                 return;
@@ -138,7 +138,7 @@ miDoCopy(DrawablePtr pSrcDrawable,
          int xOut, int yOut, miCopyProc copyProc, Pixel bitPlane, void *closure)
 {
     RegionPtr prgnSrcClip = NULL;       /* may be a new region, or just a copy */
-    Bool freeSrcClip = FALSE;
+    bool freeSrcClip = FALSE;
     RegionPtr prgnExposed = NULL;
     RegionRec rgnDst;
     int dx;
@@ -148,9 +148,9 @@ miDoCopy(DrawablePtr pSrcDrawable,
     int box_y1;
     int box_x2;
     int box_y2;
-    Bool fastSrc = FALSE;       /* for fast clipping with pixmap source */
-    Bool fastDst = FALSE;       /* for fast clipping with one rect dest */
-    Bool fastExpose = FALSE;    /* for fast exposures with pixmap source */
+    bool fastSrc = FALSE;       /* for fast clipping with pixmap source */
+    bool fastDst = FALSE;       /* for fast clipping with one rect dest */
+    bool fastExpose = FALSE;    /* for fast exposures with pixmap source */
 
     /* Short cut for unmapped windows */
 
@@ -159,11 +159,9 @@ miDoCopy(DrawablePtr pSrcDrawable,
         return NULL;
     }
 
-    if (pSrcDrawable->pScreen->SourceValidate) {
-        (*pSrcDrawable->pScreen->SourceValidate) (pSrcDrawable, xIn, yIn,
-                                                  widthSrc, heightSrc,
-                                                  pGC->subWindowMode);
-    }
+    (*pSrcDrawable->pScreen->SourceValidate) (pSrcDrawable, xIn, yIn,
+                                              widthSrc, heightSrc,
+                                              pGC->subWindowMode);
 
     /* Compute source clip region */
     if (pSrcDrawable->type == DRAWABLE_PIXMAP) {

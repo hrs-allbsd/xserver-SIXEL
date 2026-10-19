@@ -1,6 +1,4 @@
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
 #include <errno.h>
 #include <string.h>
@@ -9,8 +7,7 @@
 #include "xf86_OSproc.h"
 #include "xf86Pci.h"
 #include "compiler.h"
-#define _INT10_PRIVATE
-#include "xf86int10.h"
+#include "xf86int10_priv.h"
 
 #define REG pInt
 
@@ -295,6 +292,7 @@ vm86_rep(struct vm86_struct *ptr)
 {
     int __res;
 
+    /* NOLINTBEGIN(hicpp-no-assembler) */
 #ifdef __PIC__
     /* When compiling with -fPIC, we can't use asm constraint "b" because
        %ebx is already taken by gcc. */
@@ -310,6 +308,7 @@ vm86_rep(struct vm86_struct *ptr)
                          "pop %%gs":"=a"(__res):"a"((int) 113),
                          "b"((struct vm86_struct *) ptr));
 #endif
+    /* NOLINTEND(hicpp-no-assembler) */
 
     if (__res < 0) {
         errno = -__res;

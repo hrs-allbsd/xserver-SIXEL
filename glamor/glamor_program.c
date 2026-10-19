@@ -19,42 +19,45 @@
  * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
  * OF THIS SOFTWARE.
  */
+#include <dix-config.h>
 
+
+#include <stdbool.h>
 #include "glamor_priv.h"
 #include "glamor_transform.h"
 #include "glamor_program.h"
 
 static Bool
-use_solid(PixmapPtr pixmap, GCPtr gc, glamor_program *prog, void *arg)
+use_solid(DrawablePtr drawable, GCPtr gc, glamor_program *prog, void *arg)
 {
-    return glamor_set_solid(pixmap, gc, TRUE, prog->fg_uniform);
+    return glamor_set_solid(drawable, gc, TRUE, prog->fg_uniform);
 }
 
 const glamor_facet glamor_fill_solid = {
     .name = "solid",
-    .fs_exec = "       gl_FragColor = fg;\n",
+    .fs_exec = "       frag_color = fg;\n",
     .locations = glamor_program_location_fg,
     .use = use_solid,
 };
 
 static Bool
-use_tile(PixmapPtr pixmap, GCPtr gc, glamor_program *prog, void *arg)
+use_tile(DrawablePtr drawable, GCPtr gc, glamor_program *prog, void *arg)
 {
-    return glamor_set_tiled(pixmap, gc, prog->fill_offset_uniform, prog->fill_size_inv_uniform);
+    return glamor_set_tiled(drawable, gc, prog->fill_offset_uniform, prog->fill_size_inv_uniform);
 }
 
 static const glamor_facet glamor_fill_tile = {
     .name = "tile",
     .vs_exec =  "       fill_pos = (fill_offset + primitive.xy + pos) * fill_size_inv;\n",
-    .fs_exec =  "       gl_FragColor = texture2D(sampler, fill_pos);\n",
+    .fs_exec =  "       frag_color = texture(sampler, fill_pos);\n",
     .locations = glamor_program_location_fillsamp | glamor_program_location_fillpos,
     .use = use_tile,
 };
 
 static Bool
-use_stipple(PixmapPtr pixmap, GCPtr gc, glamor_program *prog, void *arg)
+use_stipple(DrawablePtr drawable, GCPtr gc, glamor_program *prog, void *arg)
 {
-    return glamor_set_stippled(pixmap, gc, prog->fg_uniform,
+    return glamor_set_stippled(drawable, gc, prog->fg_uniform,
                                prog->fill_offset_uniform,
                                prog->fill_size_inv_uniform);
 }
@@ -62,31 +65,31 @@ use_stipple(PixmapPtr pixmap, GCPtr gc, glamor_program *prog, void *arg)
 static const glamor_facet glamor_fill_stipple = {
     .name = "stipple",
     .vs_exec =  "       fill_pos = (fill_offset + primitive.xy + pos) * fill_size_inv;\n",
-    .fs_exec = ("       float a = texture2D(sampler, fill_pos).w;\n"
+    .fs_exec = ("       float a = texture(sampler, fill_pos).w;\n"
                 "       if (a == 0.0)\n"
                 "               discard;\n"
-                "       gl_FragColor = fg;\n"),
+                "       frag_color = fg;\n"),
     .locations = glamor_program_location_fg | glamor_program_location_fillsamp | glamor_program_location_fillpos,
     .use = use_stipple,
 };
 
 static Bool
-use_opaque_stipple(PixmapPtr pixmap, GCPtr gc, glamor_program *prog, void *arg)
+use_opaque_stipple(DrawablePtr drawable, GCPtr gc, glamor_program *prog, void *arg)
 {
-    if (!use_stipple(pixmap, gc, prog, arg))
+    if (!use_stipple(drawable, gc, prog, arg))
         return FALSE;
-    glamor_set_color(pixmap, gc->bgPixel, prog->bg_uniform);
+    glamor_set_color(drawable, gc->bgPixel, prog->bg_uniform);
     return TRUE;
 }
 
 static const glamor_facet glamor_fill_opaque_stipple = {
     .name = "opaque_stipple",
     .vs_exec =  "       fill_pos = (fill_offset + primitive.xy + pos) * fill_size_inv;\n",
-    .fs_exec = ("       float a = texture2D(sampler, fill_pos).w;\n"
+    .fs_exec = ("       float a = texture(sampler, fill_pos).w;\n"
                 "       if (a == 0.0)\n"
-                "               gl_FragColor = bg;\n"
+                "               frag_color = bg;\n"
                 "       else\n"
-                "               gl_FragColor = fg;\n"),
+                "               frag_color = fg;\n"),
     .locations = glamor_program_location_fg | glamor_program_location_bg | glamor_program_location_fillsamp | glamor_program_location_fillpos,
     .use = use_opaque_stipple
 };
@@ -121,12 +124,15 @@ static glamor_location_var location_vars[] = {
         .location = glamor_program_location_fillpos,
         .vs_vars = ("uniform vec2 fill_offset;\n"
                     "uniform vec2 fill_size_inv;\n"
-                    "varying vec2 fill_pos;\n"),
-        .fs_vars = ("varying vec2 fill_pos;\n")
+                    "out vec2 fill_pos;\n"),
+        .fs_vars = ("in vec2 fill_pos;\n")
     },
     {
         .location = glamor_program_location_font,
-        .fs_vars = "uniform usampler2D font;\n",
+        .fs_vars = ("#ifdef GL_ES\n"
+                    "precision mediump usampler2D;\n"
+                    "#endif\n"
+                    "uniform usampler2D font;\n"),
     },
     {
         .location = glamor_program_location_bitplane,
@@ -187,6 +193,8 @@ fs_location_vars(glamor_program_location locations)
 
 static const char vs_template[] =
     "%s"                                /* version */
+    "%s"                                /* exts */
+    "%s"                                /* in/out defines */
     "%s"                                /* defines */
     "%s"                                /* prim vs_vars */
     "%s"                                /* fill vs_vars */
@@ -199,7 +207,11 @@ static const char vs_template[] =
 
 static const char fs_template[] =
     "%s"                                /* version */
+    "%s"                                /* exts */
+    "%s"                                /* prim fs_extensions */
+    "%s"                                /* fill fs_extensions */
     GLAMOR_DEFAULT_PRECISION
+    "%s"                                /* in/out defines */
     "%s"                                /* defines */
     "%s"                                /* prim fs_vars */
     "%s"                                /* fill fs_vars */
@@ -258,10 +270,11 @@ glamor_build_program(ScreenPtr          screen,
     char                        *fs_vars = NULL;
     char                        *vs_vars = NULL;
 
-    char                        *vs_prog_string;
-    char                        *fs_prog_string;
+    char                        *vs_prog_string = NULL;
+    char                        *fs_prog_string = NULL;
 
     GLint                       fs_prog, vs_prog;
+    bool                        gpu_shader4 = FALSE;
 
     if (!fill)
         fill = &facet_null_fill;
@@ -270,8 +283,21 @@ glamor_build_program(ScreenPtr          screen,
     flags |= fill->flags;
     version = MAX(version, fill->version);
 
-    if (version > glamor_priv->glsl_version)
-        goto fail;
+    if (version > glamor_priv->glsl_version) {
+        if (version == 130 && !glamor_priv->use_gpu_shader4)
+            goto fail;
+        else {
+            version = 120;
+            gpu_shader4 = TRUE;
+        }
+    }
+
+    if (version == 130 && glamor_priv->is_gles && glamor_priv->glsl_version > 110)
+        version = 300;
+    else if (glamor_priv->is_gles)
+        version = 100;
+    else if (!version)
+        version = 120;
 
     vs_vars = vs_location_vars(locations);
     fs_vars = fs_location_vars(locations);
@@ -282,7 +308,8 @@ glamor_build_program(ScreenPtr          screen,
         goto fail;
 
     if (version) {
-        if (asprintf(&version_string, "#version %d\n", version) < 0)
+        if (asprintf(&version_string, "#version %d %s\n", version,
+                     glamor_priv->is_gles && version > 100 ? "es" : "") < 0)
             version_string = NULL;
         if (!version_string)
             goto fail;
@@ -291,6 +318,8 @@ glamor_build_program(ScreenPtr          screen,
     if (asprintf(&vs_prog_string,
                  vs_template,
                  str(version_string),
+                 gpu_shader4 ? "#extension GL_EXT_gpu_shader4 : require\n" : "",
+                 version < 130 ? GLAMOR_COMPAT_DEFINES_VS : "",
                  str(defines),
                  str(prim->vs_vars),
                  str(fill->vs_vars),
@@ -302,6 +331,10 @@ glamor_build_program(ScreenPtr          screen,
     if (asprintf(&fs_prog_string,
                  fs_template,
                  str(version_string),
+                 str(prim->fs_extensions),
+                 str(fill->fs_extensions),
+                 gpu_shader4 ? "#extension GL_EXT_gpu_shader4 : require\n#define texelFetch texelFetch2D\n#define uint unsigned int\n" : "",
+                 GLAMOR_COMPAT_DEFINES_FS,
                  str(defines),
                  str(prim->fs_vars),
                  str(fill->fs_vars),
@@ -329,8 +362,6 @@ glamor_build_program(ScreenPtr          screen,
 
     vs_prog = glamor_compile_glsl_prog(GL_VERTEX_SHADER, vs_prog_string);
     fs_prog = glamor_compile_glsl_prog(GL_FRAGMENT_SHADER, fs_prog_string);
-    free(vs_prog_string);
-    free(fs_prog_string);
     glAttachShader(prog->prog, vs_prog);
     glDeleteShader(vs_prog);
     glAttachShader(prog->prog, fs_prog);
@@ -348,7 +379,8 @@ glamor_build_program(ScreenPtr          screen,
         glBindFragDataLocationIndexed(prog->prog, 0, 1, "color1");
     }
 
-    glamor_link_glsl_prog(screen, prog->prog, "%s_%s", prim->name, fill->name);
+    if (!glamor_link_glsl_prog(screen, prog->prog, "%s_%s", prim->name, fill->name))
+        goto fail;
 
     prog->matrix_uniform = glamor_get_uniform(prog, glamor_program_location_none, "v_matrix");
     prog->fg_uniform = glamor_get_uniform(prog, glamor_program_location_fg, "fg");
@@ -363,6 +395,8 @@ glamor_build_program(ScreenPtr          screen,
     prog->atlas_uniform = glamor_get_uniform(prog, glamor_program_location_atlas, "atlas");
 
     free(version_string);
+    free(vs_prog_string);
+    free(fs_prog_string);
     free(fs_vars);
     free(vs_vars);
     return TRUE;
@@ -372,6 +406,8 @@ fail:
         glDeleteProgram(prog->prog);
         prog->prog = 0;
     }
+    free(vs_prog_string);
+    free(fs_prog_string);
     free(version_string);
     free(fs_vars);
     free(vs_vars);
@@ -379,29 +415,29 @@ fail:
 }
 
 Bool
-glamor_use_program(PixmapPtr            pixmap,
+glamor_use_program(DrawablePtr          drawable,
                    GCPtr                gc,
                    glamor_program       *prog,
                    void                 *arg)
 {
     glUseProgram(prog->prog);
 
-    if (prog->prim_use && !prog->prim_use(pixmap, gc, prog, arg))
+    if (prog->prim_use && !prog->prim_use(drawable, gc, prog, arg))
         return FALSE;
 
-    if (prog->fill_use && !prog->fill_use(pixmap, gc, prog, arg))
+    if (prog->fill_use && !prog->fill_use(drawable, gc, prog, arg))
         return FALSE;
 
     return TRUE;
 }
 
 glamor_program *
-glamor_use_program_fill(PixmapPtr               pixmap,
+glamor_use_program_fill(DrawablePtr             drawable,
                         GCPtr                   gc,
                         glamor_program_fill     *program_fill,
                         const glamor_facet      *prim)
 {
-    ScreenPtr                   screen = pixmap->drawable.pScreen;
+    ScreenPtr                   screen = drawable->pScreen;
     glamor_program              *prog = &program_fill->progs[gc->fillStyle];
 
     int                         fill_style = gc->fillStyle;
@@ -419,7 +455,7 @@ glamor_use_program_fill(PixmapPtr               pixmap,
             return NULL;
     }
 
-    if (!glamor_use_program(pixmap, gc, prog, NULL))
+    if (!glamor_use_program(drawable, gc, prog, NULL))
         return NULL;
 
     return prog;
@@ -459,7 +495,7 @@ glamor_set_blend(CARD8 op, glamor_program_alpha alpha, PicturePtr dst)
         break;
     }
 
-    if (glamor_priv->gl_flavor != GLAMOR_GL_ES2)
+    if (!glamor_priv->is_gles)
         glDisable(GL_COLOR_LOGIC_OP);
 
     if (op == PictOpSrc)
@@ -473,7 +509,7 @@ glamor_set_blend(CARD8 op, glamor_program_alpha alpha, PicturePtr dst)
     /* If there's no dst alpha channel, adjust the blend op so that we'll treat
      * it as always 1.
      */
-    if (PICT_FORMAT_A(dst->format) == 0 && op_info->dest_alpha) {
+    if (PIXMAN_FORMAT_A(dst->format) == 0 && op_info->dest_alpha) {
         if (src_blend == GL_DST_ALPHA)
             src_blend = GL_ONE;
         else if (src_blend == GL_ONE_MINUS_DST_ALPHA)
@@ -481,7 +517,8 @@ glamor_set_blend(CARD8 op, glamor_program_alpha alpha, PicturePtr dst)
     }
 
     /* Set up the source alpha value for blending in component alpha mode. */
-    if (alpha == glamor_program_alpha_dual_blend) {
+    if (alpha == glamor_program_alpha_dual_blend ||
+        alpha == glamor_program_alpha_dual_blend_gles2) {
         switch (dst_blend) {
         case GL_SRC_ALPHA:
             dst_blend = GL_SRC1_COLOR;
@@ -540,7 +577,7 @@ use_source_picture(CARD8 op, PicturePtr src, PicturePtr dst, glamor_program *pro
 static const glamor_facet glamor_source_picture = {
     .name = "render_picture",
     .vs_exec =  "       fill_pos = (fill_offset + primitive.xy + pos) * fill_size_inv;\n",
-    .fs_exec =  "       vec4 source = texture2D(sampler, fill_pos);\n",
+    .fs_exec =  "       vec4 source = texture(sampler, fill_pos);\n",
     .locations = glamor_program_location_fillsamp | glamor_program_location_fillpos,
     .use_render = use_source_picture,
 };
@@ -556,7 +593,7 @@ use_source_1x1_picture(CARD8 op, PicturePtr src, PicturePtr dst, glamor_program 
 
 static const glamor_facet glamor_source_1x1_picture = {
     .name = "render_picture",
-    .fs_exec =  "       vec4 source = texture2D(sampler, vec2(0.5));\n",
+    .fs_exec =  "       vec4 source = texture(sampler, vec2(0.5));\n",
     .locations = glamor_program_location_fillsamp,
     .use_render = use_source_1x1_picture,
 };
@@ -568,11 +605,13 @@ static const glamor_facet *glamor_facet_source[glamor_program_source_count] = {
 };
 
 static const char *glamor_combine[] = {
-    [glamor_program_alpha_normal]    = "       gl_FragColor = source * mask.a;\n",
-    [glamor_program_alpha_ca_first]  = "       gl_FragColor = source.a * mask;\n",
-    [glamor_program_alpha_ca_second] = "       gl_FragColor = source * mask;\n",
+    [glamor_program_alpha_normal]    = "       frag_color = source * mask.a;\n",
+    [glamor_program_alpha_ca_first]  = "       frag_color = source.a * mask;\n",
+    [glamor_program_alpha_ca_second] = "       frag_color = source * mask;\n",
     [glamor_program_alpha_dual_blend] = "      color0 = source * mask;\n"
-                                        "      color1 = source.a * mask;\n"
+                                        "      color1 = source.a * mask;\n",
+    [glamor_program_alpha_dual_blend_gles2] = " gl_FragColor = source * mask;\n"
+                                              " gl_SecondaryFragColorEXT = source.a * mask;\n"
 };
 
 static Bool
@@ -620,7 +659,9 @@ glamor_setup_program_render(CARD8                 op,
 
     if (glamor_is_component_alpha(mask)) {
         if (glamor_priv->has_dual_blend) {
-            alpha = glamor_program_alpha_dual_blend;
+            alpha = glamor_glsl_has_ints(glamor_priv) ?
+                    glamor_program_alpha_dual_blend :
+                    glamor_program_alpha_dual_blend_gles2;
         } else {
             /* This only works for PictOpOver */
             if (op != PictOpOver)

@@ -20,9 +20,9 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
+
+#include <stdbool.h>
 
 #include "fb.h"
 
@@ -59,7 +59,7 @@ fbZeroSegment(DrawablePtr pDrawable, GCPtr pGC, int nseg, xSegment * pSegs)
 {
     int dashOffset;
     int x, y;
-    Bool drawLast = pGC->capStyle != CapNotLast;
+    bool drawLast = pGC->capStyle != CapNotLast;
 
     x = pDrawable->x;
     y = pDrawable->y;

@@ -20,9 +20,7 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
-#include <dix-config.h>
-#endif
+#include <kdrive-config.h>
 #include "kdrive.h"
 
 KdCardInfo *kdCardInfo;
@@ -31,16 +29,18 @@ KdCardInfo *
 KdCardInfoAdd(KdCardFuncs * funcs, void *closure)
 {
     KdCardInfo *ci, **prev;
+    int n;
 
     ci = calloc(1, sizeof(KdCardInfo));
     if (!ci)
         return 0;
-    for (prev = &kdCardInfo; *prev; prev = &(*prev)->next);
+    for (prev = &kdCardInfo, n = 0; *prev; prev = &(*prev)->next, n++);
     *prev = ci;
     ci->cfuncs = funcs;
     ci->closure = closure;
     ci->screenList = 0;
     ci->selected = 0;
+    ci->mynum = n;
     ci->next = 0;
     return ci;
 }
@@ -70,7 +70,7 @@ KdCardInfoDispose(KdCardInfo * ci)
 }
 
 KdScreenInfo *
-KdScreenInfoAdd(KdCardInfo * ci)
+KdScreenInfoAdd(KdCardInfo * ci, void *closure)
 {
     KdScreenInfo *si, **prev;
     int n;
@@ -80,6 +80,7 @@ KdScreenInfoAdd(KdCardInfo * ci)
         return 0;
     for (prev = &ci->screenList, n = 0; *prev; prev = &(*prev)->next, n++);
     *prev = si;
+    si->closure = closure;
     si->next = 0;
     si->card = ci;
     si->mynum = n;

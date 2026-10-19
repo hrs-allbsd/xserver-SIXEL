@@ -44,19 +44,22 @@ ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
 SOFTWARE.
 
 ******************************************************************/
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <X11/X.h>
 #include <X11/extensions/shapeconst.h>
-#include "regionstr.h"
-#include "region.h"
-#include "mi.h"
+
+#include "dix/cursor_priv.h"
+#include "dix/dix_priv.h"
+#include "dix/input_priv.h"
+#include "dix/window_priv.h"
+#include "include/regionstr.h"
+#include "mi/mi_priv.h"
+
 #include "windowstr.h"
 #include "scrnintstr.h"
 #include "pixmapstr.h"
-#include "mivalidate.h"
 #include "inputstr.h"
 
 void
@@ -120,11 +123,13 @@ miClearToBackground(WindowPtr pWin,
 void
 miMarkWindow(WindowPtr pWin)
 {
-    ValidatePtr val;
-
     if (pWin->valdata)
         return;
-    val = (ValidatePtr) xnfalloc(sizeof(ValidateRec));
+
+    ValidatePtr val = (ValidatePtr) calloc(1, sizeof(MiValidateRec));
+    if (!val)
+        return;
+
     val->before.oldAbsCorner.x = pWin->drawable.x;
     val->before.oldAbsCorner.y = pWin->drawable.y;
     val->before.borderVisible = NullRegion;
@@ -137,7 +142,7 @@ miMarkOverlappedWindows(WindowPtr pWin, WindowPtr pFirst, WindowPtr *ppLayerWin)
 {
     BoxPtr box;
     WindowPtr pChild, pLast;
-    Bool anyMarked = FALSE;
+    bool anyMarked = FALSE;
     MarkWindowProcPtr MarkWindow = pWin->drawable.pScreen->MarkWindow;
 
     /* single layered systems are easy */
@@ -247,8 +252,8 @@ miMoveWindow(WindowPtr pWin, int x, int y, WindowPtr pNextSib, VTKind kind)
     Bool WasViewable = (Bool) (pWin->viewable);
     short bw;
     RegionPtr oldRegion = NULL;
-    DDXPointRec oldpt;
-    Bool anyMarked = FALSE;
+    xPoint oldpt;
+    bool anyMarked = FALSE;
     ScreenPtr pScreen;
     WindowPtr windowToValidate;
     WindowPtr pLayerWin;
@@ -274,7 +279,7 @@ miMoveWindow(WindowPtr pWin, int x, int y, WindowPtr pNextSib, VTKind kind)
     SetWinSize(pWin);
     SetBorderSize(pWin);
 
-    (*pScreen->PositionWindow) (pWin, x, y);
+    dixScreenRaiseWindowPosition(pWin, x, y);
 
     windowToValidate = MoveWindowInStack(pWin, pNextSib);
 
@@ -313,7 +318,6 @@ miRecomputeExposures(WindowPtr pWin, void *value)
     RegionPtr pValid = (RegionPtr) value;
 
     if (pWin->valdata) {
-#ifdef COMPOSITE
         /*
          * Redirected windows are not affected by parent window
          * gravity manipulations, so don't recompute their
@@ -321,7 +325,6 @@ miRecomputeExposures(WindowPtr pWin, void *value)
          */
         if (pWin->redirectDraw != RedirectDrawNone)
             return WT_DONTWALKCHILDREN;
-#endif
         /*
          * compute exposed regions of this window
          */
@@ -348,9 +351,9 @@ miResizeWindow(WindowPtr pWin, int x, int y, unsigned int w, unsigned int h,
     short oldx = pWin->drawable.x, oldy = pWin->drawable.y;
     int bw = wBorderWidth(pWin);
     short dw, dh;
-    DDXPointRec oldpt;
+    xPoint oldpt;
     RegionPtr oldRegion = NULL;
-    Bool anyMarked = FALSE;
+    bool anyMarked = FALSE;
     ScreenPtr pScreen;
     WindowPtr pFirstChange;
     WindowPtr pChild;
@@ -362,8 +365,8 @@ miResizeWindow(WindowPtr pWin, int x, int y, unsigned int w, unsigned int h,
     RegionPtr destClip;         /* portions of destination already written */
     RegionPtr oldWinClip = NULL;        /* old clip list for window */
     RegionPtr borderVisible = NullRegion;       /* visible area of the border */
-    Bool shrunk = FALSE;        /* shrunk in an inner dimension */
-    Bool moved = FALSE;         /* window position changed */
+    bool shrunk = FALSE;        /* shrunk in an inner dimension */
+    bool moved = FALSE;         /* window position changed */
     WindowPtr pLayerWin;
 
     /* if this is a root window, can't be resized */
@@ -444,7 +447,7 @@ miResizeWindow(WindowPtr pWin, int x, int y, unsigned int w, unsigned int h,
     ResizeChildrenWinSize(pWin, x - oldx, y - oldy, dw, dh);
 
     /* let the hardware adjust background and border pixmaps, if any */
-    (*pScreen->PositionWindow) (pWin, x, y);
+    dixScreenRaiseWindowPosition(pWin, x, y);
 
     pFirstChange = MoveWindowInStack(pWin, pSib);
 
@@ -565,11 +568,7 @@ miResizeWindow(WindowPtr pWin, int x, int y, unsigned int w, unsigned int h,
 
             /* and move those bits */
 
-            if (oldpt.x != x || oldpt.y != y
-#ifdef COMPOSITE
-                || pWin->redirectDraw
-#endif
-                ) {
+            if (oldpt.x != x || oldpt.y != y || pWin->redirectDraw) {
                 (*pWin->drawable.pScreen->CopyWindow) (pWin, oldpt,
                                                        gravitate[g]);
             }
@@ -638,7 +637,7 @@ miSetShape(WindowPtr pWin, int kind)
 {
     Bool WasViewable = (Bool) (pWin->viewable);
     ScreenPtr pScreen = pWin->drawable.pScreen;
-    Bool anyMarked = FALSE;
+    bool anyMarked = FALSE;
     WindowPtr pLayerWin;
 
     if (kind != ShapeInput) {
@@ -687,10 +686,10 @@ void
 miChangeBorderWidth(WindowPtr pWin, unsigned int width)
 {
     int oldwidth;
-    Bool anyMarked = FALSE;
+    bool anyMarked = FALSE;
     ScreenPtr pScreen;
     Bool WasViewable = (Bool) (pWin->viewable);
-    Bool HadBorder;
+    bool HadBorder;
     WindowPtr pLayerWin;
 
     oldwidth = wBorderWidth(pWin);
@@ -775,10 +774,16 @@ miSpriteTrace(SpritePtr pSprite, int x, int y)
              */
             && !pWin->unhittable) {
             if (pSprite->spriteTraceGood >= pSprite->spriteTraceSize) {
-                pSprite->spriteTraceSize += 10;
-                pSprite->spriteTrace = reallocarray(pSprite->spriteTrace,
-                                                    pSprite->spriteTraceSize,
-                                                    sizeof(WindowPtr));
+                WindowPtr *newTrace;
+                int newSize = pSprite->spriteTraceSize + 10;
+
+                newTrace = reallocarray(pSprite->spriteTrace,
+                                        newSize,
+                                        sizeof(WindowPtr));
+                if (!newTrace)
+                    return DeepestSpriteWin(pSprite);
+                pSprite->spriteTraceSize = newSize;
+                pSprite->spriteTrace = newTrace;
             }
             pSprite->spriteTrace[pSprite->spriteTraceGood++] = pWin;
             pWin = pWin->firstChild;

@@ -1,15 +1,15 @@
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
+#include <stdbool.h>
 #include <string.h>
+#include <X11/X.h>
 
-#include "misc.h"
+#include "dix/colormap_priv.h"
+#include "include/misc.h"
+#include "Xext/randr/randrstr_priv.h"
+
 #include "xf86.h"
 #include "xf86_OSproc.h"
-
-#include <X11/X.h>
 #include "scrnintstr.h"
 #include "pixmapstr.h"
 #include "windowstr.h"
@@ -17,9 +17,7 @@
 #include "cursorstr.h"
 #include "mi.h"
 #include "mipointer.h"
-#include "randrstr.h"
 #include "xf86CursorPriv.h"
-
 #include "servermd.h"
 
 static void
@@ -41,12 +39,12 @@ xf86ReverseBitOrder(CARD32 v)
 #define SCANLINE CARD32
 #define CUR_BITMAP_SCANLINE_PAD 32
 #define CUR_LOG2_BITMAP_PAD 5
-#define REVERSE_BIT_ORDER(w) xf86ReverseBitOrder(w)
+#define REVERSE_BIT_ORDER(w) xf86ReverseBitOrder((w))
 #else
 #define SCANLINE CARD64
 #define CUR_BITMAP_SCANLINE_PAD BITMAP_SCANLINE_PAD
 #define CUR_LOG2_BITMAP_PAD LOG2_BITMAP_PAD
-#define REVERSE_BIT_ORDER(w) xf86CARD64ReverseBits(w)
+#define REVERSE_BIT_ORDER(w) xf86CARD64ReverseBits((w))
 static CARD64 xf86CARD64ReverseBits(CARD64 w);
 
 static CARD64
@@ -72,7 +70,7 @@ xf86CARD64ReverseBits(CARD64 w)
 #define SCANLINE CARD32
 #define CUR_BITMAP_SCANLINE_PAD BITMAP_SCANLINE_PAD
 #define CUR_LOG2_BITMAP_PAD LOG2_BITMAP_PAD
-#define REVERSE_BIT_ORDER(w) xf86ReverseBitOrder(w)
+#define REVERSE_BIT_ORDER(w) xf86ReverseBitOrder((w))
 
 #endif                          /* BITMAP_SCANLINE_PAD == 64 */
 
@@ -140,7 +138,7 @@ Bool
 xf86CheckHWCursor(ScreenPtr pScreen, CursorPtr cursor, xf86CursorInfoPtr infoPtr)
 {
     ScreenPtr pSlave;
-    Bool use_hw_cursor = TRUE;
+    bool use_hw_cursor = TRUE;
 
     input_lock();
 
@@ -150,19 +148,19 @@ xf86CheckHWCursor(ScreenPtr pScreen, CursorPtr cursor, xf86CursorInfoPtr infoPtr
     }
 
     /* ask each driver consuming a pixmap if it can support HW cursor */
-    xorg_list_for_each_entry(pSlave, &pScreen->slave_list, slave_head) {
+    xorg_list_for_each_entry(pSlave, &pScreen->secondary_list, secondary_head) {
         xf86CursorScreenPtr sPriv;
 
         if (!RRHasScanoutPixmap(pSlave))
             continue;
 
-        sPriv = dixLookupPrivate(&pSlave->devPrivates, xf86CursorScreenKey);
+        sPriv = dixLookupPrivate(&pSlave->devPrivates, &xf86CursorScreenKeyRec);
         if (!sPriv) { /* NULL if Option "SWCursor", possibly other conditions */
             use_hw_cursor = FALSE;
 	    break;
 	}
 
-        /* FALSE if HWCursor not supported by slave */
+        /* FALSE if HWCursor not supported by secondary */
         if (!xf86ScreenCheckHWCursor(pSlave, cursor, sPriv->CursorInfoPtr)) {
             use_hw_cursor = FALSE;
 	    break;
@@ -180,7 +178,7 @@ xf86ScreenSetCursor(ScreenPtr pScreen, CursorPtr pCurs, int x, int y)
 {
     xf86CursorScreenPtr ScreenPriv =
         (xf86CursorScreenPtr) dixLookupPrivate(&pScreen->devPrivates,
-                                               xf86CursorScreenKey);
+                                               &xf86CursorScreenKeyRec);
 
     xf86CursorInfoPtr infoPtr;
     unsigned char *bits;
@@ -197,15 +195,15 @@ xf86ScreenSetCursor(ScreenPtr pScreen, CursorPtr pCurs, int x, int y)
     }
 
     /*
-     * Hot plugged GPU's do not have a CursorScreenKey, force sw cursor.
+     * Hot plugged GPU's do not have a xf86ScreenCursorBitsKeyRec, force sw cursor.
      * This check can be removed once dix/privates.c gets relocation code for
      * PRIVATE_CURSOR. Also see the related comment in AddGPUScreen().
      */
-    if (!_dixGetScreenPrivateKey(CursorScreenKey, pScreen))
+    if (!_dixGetScreenPrivateKey(&xf86ScreenCursorBitsKeyRec, pScreen))
         return FALSE;
 
-    bits =
-        dixLookupScreenPrivate(&pCurs->devPrivates, CursorScreenKey, pScreen);
+    bits = dixLookupScreenPrivate(&pCurs->devPrivates,
+                                  &xf86ScreenCursorBitsKeyRec, pScreen);
 
     x -= infoPtr->pScrn->frameX0;
     y -= infoPtr->pScrn->frameY0;
@@ -213,8 +211,8 @@ xf86ScreenSetCursor(ScreenPtr pScreen, CursorPtr pCurs, int x, int y)
     if (!pCurs->bits->argb || !xf86DriverHasLoadCursorARGB(infoPtr))
         if (!bits) {
             bits = (*infoPtr->RealizeCursor) (infoPtr, pCurs);
-            dixSetScreenPrivate(&pCurs->devPrivates, CursorScreenKey, pScreen,
-                                bits);
+            dixSetScreenPrivate(&pCurs->devPrivates,
+                                &xf86ScreenCursorBitsKeyRec, pScreen, bits);
         }
 
     if (!(infoPtr->Flags & HARDWARE_CURSOR_UPDATE_UNHIDDEN))
@@ -240,9 +238,9 @@ xf86SetCursor(ScreenPtr pScreen, CursorPtr pCurs, int x, int y)
 {
     xf86CursorScreenPtr ScreenPriv =
         (xf86CursorScreenPtr) dixLookupPrivate(&pScreen->devPrivates,
-                                               xf86CursorScreenKey);
+                                               &xf86CursorScreenKeyRec);
     ScreenPtr pSlave;
-    Bool ret = FALSE;
+    bool ret = FALSE;
 
     input_lock();
 
@@ -252,14 +250,14 @@ xf86SetCursor(ScreenPtr pScreen, CursorPtr pCurs, int x, int y)
     if (!xf86ScreenSetCursor(pScreen, pCurs, x, y))
         goto out;
 
-    /* ask each slave driver to set the cursor. */
-    xorg_list_for_each_entry(pSlave, &pScreen->slave_list, slave_head) {
+    /* ask each secondary driver to set the cursor. */
+    xorg_list_for_each_entry(pSlave, &pScreen->secondary_list, secondary_head) {
         if (!RRHasScanoutPixmap(pSlave))
             continue;
 
         if (!xf86ScreenSetCursor(pSlave, pCurs, x, y)) {
             /*
-             * hide the master (and successfully set slave) cursors,
+             * hide the primary (and successfully set secondary) cursors,
              * otherwise both the hw and sw cursor will show.
              */
             xf86SetCursor(pScreen, NullCursor, x, y);
@@ -278,7 +276,7 @@ xf86SetTransparentCursor(ScreenPtr pScreen)
 {
     xf86CursorScreenPtr ScreenPriv =
         (xf86CursorScreenPtr) dixLookupPrivate(&pScreen->devPrivates,
-                                               xf86CursorScreenKey);
+                                               &xf86CursorScreenKeyRec);
     xf86CursorInfoPtr infoPtr = ScreenPriv->CursorInfoPtr;
 
     input_lock();
@@ -304,7 +302,7 @@ xf86ScreenMoveCursor(ScreenPtr pScreen, int x, int y)
 {
     xf86CursorScreenPtr ScreenPriv =
         (xf86CursorScreenPtr) dixLookupPrivate(&pScreen->devPrivates,
-                                               xf86CursorScreenKey);
+                                               &xf86CursorScreenKeyRec);
     xf86CursorInfoPtr infoPtr = ScreenPriv->CursorInfoPtr;
 
     x -= infoPtr->pScrn->frameX0;
@@ -318,7 +316,7 @@ xf86MoveCursor(ScreenPtr pScreen, int x, int y)
 {
     xf86CursorScreenPtr ScreenPriv =
         (xf86CursorScreenPtr) dixLookupPrivate(&pScreen->devPrivates,
-                                               xf86CursorScreenKey);
+                                               &xf86CursorScreenKeyRec);
     ScreenPtr pSlave;
 
     input_lock();
@@ -328,8 +326,8 @@ xf86MoveCursor(ScreenPtr pScreen, int x, int y)
 
     xf86ScreenMoveCursor(pScreen, x, y);
 
-    /* ask each slave driver to move the cursor */
-    xorg_list_for_each_entry(pSlave, &pScreen->slave_list, slave_head) {
+    /* ask each secondary driver to move the cursor */
+    xorg_list_for_each_entry(pSlave, &pScreen->secondary_list, secondary_head) {
         if (!RRHasScanoutPixmap(pSlave))
             continue;
 
@@ -386,7 +384,7 @@ xf86RecolorCursor(ScreenPtr pScreen, CursorPtr pCurs, Bool displayed)
 {
     xf86CursorScreenPtr ScreenPriv =
         (xf86CursorScreenPtr) dixLookupPrivate(&pScreen->devPrivates,
-                                               xf86CursorScreenKey);
+                                               &xf86CursorScreenKeyRec);
 
     input_lock();
     xf86RecolorCursor_locked (ScreenPriv, pCurs);
@@ -512,9 +510,9 @@ RealizeCursorInterleave0(xf86CursorInfoPtr infoPtr, CursorPtr pCurs)
 static unsigned char *
 RealizeCursorInterleave1(xf86CursorInfoPtr infoPtr, CursorPtr pCurs)
 {
-    unsigned char *DstS, *DstM;
-    unsigned char *pntr;
-    unsigned char *mem, *mem2;
+    CARD8 *DstS, *DstM;
+    CARD8 *pntr;
+    void *mem, *mem2;
     int count;
     int size = (infoPtr->MaxWidth * infoPtr->MaxHeight) >> 2;
 
@@ -532,7 +530,7 @@ RealizeCursorInterleave1(xf86CursorInfoPtr infoPtr, CursorPtr pCurs)
     DstM = DstS + (size >> 1);
     pntr = mem;
     count = size;
-    while (count) {
+    while (count > 1) {
         *pntr++ = ((*DstS & 0x01)) | ((*DstM & 0x01) << 1) |
             ((*DstS & 0x02) << 1) | ((*DstM & 0x02) << 2) |
             ((*DstS & 0x04) << 2) | ((*DstM & 0x04) << 3) |
@@ -552,144 +550,43 @@ RealizeCursorInterleave1(xf86CursorInfoPtr infoPtr, CursorPtr pCurs)
     return mem;
 }
 
-static unsigned char *
-RealizeCursorInterleave8(xf86CursorInfoPtr infoPtr, CursorPtr pCurs)
-{
-    unsigned char *DstS, *DstM;
-    unsigned char *pntr;
-    unsigned char *mem, *mem2;
-    int count;
-    int size = (infoPtr->MaxWidth * infoPtr->MaxHeight) >> 2;
+#define _RealizeCursorInterleave(x) \
+static unsigned char * \
+RealizeCursorInterleave##x(xf86CursorInfoPtr infoPtr, CursorPtr pCurs) \
+{ \
+    CARD##x *DstS, *DstM; \
+    CARD##x *pntr; \
+    void *mem, *mem2; \
+    int size = (infoPtr->MaxWidth * infoPtr->MaxHeight) / 4; /* XXX bytes per pixel? XXX */ \
+\
+    /* Realize the cursor without interleaving */ \
+    if (!(mem2 = RealizeCursorInterleave0(infoPtr, pCurs))) \
+        return NULL; \
+\
+    if (!(mem = calloc((size + sizeof(CARD##x) - 1) / sizeof(CARD##x), sizeof(CARD##x)))) { \
+        free(mem2); \
+        return NULL; \
+    } \
+\
+    /* x bit interleave */ \
+    size /= sizeof(CARD##x); /* Array size of the hw cursor */ \
+    size /= 2; /* Half of the array size */ \
+    DstS = mem2; \
+    DstM = DstS + size; \
+    pntr = mem; \
+    for (int i = 0; i < size; i++) { \
+        *pntr++ = *DstS++; \
+        *pntr++ = *DstM++; \
+    } \
+\
+    /* Free the uninterleaved cursor */ \
+    free(mem2); \
+\
+    return mem; \
+} \
 
-    /* Realize the cursor without interleaving */
-    if (!(mem2 = RealizeCursorInterleave0(infoPtr, pCurs)))
-        return NULL;
 
-    if (!(mem = calloc(1, size))) {
-        free(mem2);
-        return NULL;
-    }
-
-    /* 8 bit interleave */
-    DstS = mem2;
-    DstM = DstS + (size >> 1);
-    pntr = mem;
-    count = size;
-    while (count) {
-        *pntr++ = *DstS++;
-        *pntr++ = *DstM++;
-        count -= 2;
-    }
-
-    /* Free the uninterleaved cursor */
-    free(mem2);
-
-    return mem;
-}
-
-static unsigned char *
-RealizeCursorInterleave16(xf86CursorInfoPtr infoPtr, CursorPtr pCurs)
-{
-    unsigned short *DstS, *DstM;
-    unsigned short *pntr;
-    unsigned char *mem, *mem2;
-    int count;
-    int size = (infoPtr->MaxWidth * infoPtr->MaxHeight) >> 2;
-
-    /* Realize the cursor without interleaving */
-    if (!(mem2 = RealizeCursorInterleave0(infoPtr, pCurs)))
-        return NULL;
-
-    if (!(mem = calloc(1, size))) {
-        free(mem2);
-        return NULL;
-    }
-
-    /* 16 bit interleave */
-    DstS = (void *) mem2;
-    DstM = DstS + (size >> 2);
-    pntr = (void *) mem;
-    count = (size >> 1);
-    while (count) {
-        *pntr++ = *DstS++;
-        *pntr++ = *DstM++;
-        count -= 2;
-    }
-
-    /* Free the uninterleaved cursor */
-    free(mem2);
-
-    return mem;
-}
-
-static unsigned char *
-RealizeCursorInterleave32(xf86CursorInfoPtr infoPtr, CursorPtr pCurs)
-{
-    CARD32 *DstS, *DstM;
-    CARD32 *pntr;
-    unsigned char *mem, *mem2;
-    int count;
-    int size = (infoPtr->MaxWidth * infoPtr->MaxHeight) >> 2;
-
-    /* Realize the cursor without interleaving */
-    if (!(mem2 = RealizeCursorInterleave0(infoPtr, pCurs)))
-        return NULL;
-
-    if (!(mem = calloc(1, size))) {
-        free(mem2);
-        return NULL;
-    }
-
-    /* 32 bit interleave */
-    DstS = (void *) mem2;
-    DstM = DstS + (size >> 3);
-    pntr = (void *) mem;
-    count = (size >> 2);
-    while (count) {
-        *pntr++ = *DstS++;
-        *pntr++ = *DstM++;
-        count -= 2;
-    }
-
-    /* Free the uninterleaved cursor */
-    free(mem2);
-
-    return mem;
-}
-
-static unsigned char *
-RealizeCursorInterleave64(xf86CursorInfoPtr infoPtr, CursorPtr pCurs)
-{
-    CARD32 *DstS, *DstM;
-    CARD32 *pntr;
-    unsigned char *mem, *mem2;
-    int count;
-    int size = (infoPtr->MaxWidth * infoPtr->MaxHeight) >> 2;
-
-    /* Realize the cursor without interleaving */
-    if (!(mem2 = RealizeCursorInterleave0(infoPtr, pCurs)))
-        return NULL;
-
-    if (!(mem = calloc(1, size))) {
-        free(mem2);
-        return NULL;
-    }
-
-    /* 64 bit interleave */
-    DstS = (void *) mem2;
-    DstM = DstS + (size >> 3);
-    pntr = (void *) mem;
-    count = (size >> 2);
-    while (count) {
-        *pntr++ = *DstS++;
-        *pntr++ = *DstS++;
-        *pntr++ = *DstM++;
-        *pntr++ = *DstM++;
-        count -= 4;
-    }
-
-    /* Free the uninterleaved cursor */
-    free(mem2);
-
-    return mem;
-}
+_RealizeCursorInterleave(8)
+_RealizeCursorInterleave(16)
+_RealizeCursorInterleave(32)
+_RealizeCursorInterleave(64)

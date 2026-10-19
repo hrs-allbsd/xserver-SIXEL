@@ -23,57 +23,53 @@
  * Author: Daniel Stone <daniel@fooishbar.org>
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <unistd.h>
+
+#include "config/config-hal.h"
+#include "config/config-udev.h"
+#include "config/config-wscons.h"
+#include "config/hotplug_priv.h"
+
 #include "os.h"
 #include "inputstr.h"
-#include "hotplug.h"
 #include "config-backends.h"
-#include "systemd-logind.h"
+
+#include "../hw/xfree86/os-support/linux/systemd-logind.h"
+#include "../hw/xfree86/common/seatd-libseat.h"
 
 void
 config_pre_init(void)
 {
-#ifdef CONFIG_UDEV
     if (!config_udev_pre_init())
         ErrorF("[config] failed to pre-init udev\n");
-#endif
 }
 
 void
 config_init(void)
 {
-#ifdef CONFIG_UDEV
     if (!config_udev_init())
         ErrorF("[config] failed to initialise udev\n");
-#elif defined(CONFIG_HAL)
     if (!config_hal_init())
         ErrorF("[config] failed to initialise HAL\n");
-#elif defined(CONFIG_WSCONS)
     if (!config_wscons_init())
         ErrorF("[config] failed to initialise wscons\n");
-#endif
 }
 
 void
 config_fini(void)
 {
-#if defined(CONFIG_UDEV)
     config_udev_fini();
-#elif defined(CONFIG_HAL)
     config_hal_fini();
-#elif defined(CONFIG_WSCONS)
     config_wscons_fini();
-#endif
 }
 
 void
 config_odev_probe(config_odev_probe_proc_ptr probe_callback)
 {
-#if defined(CONFIG_UDEV_KMS)
+#if defined(CONFIG_UDEV) && defined(CONFIG_UDEV_KMS)
     config_udev_odev_probe(probe_callback);
 #endif
 }
@@ -111,29 +107,11 @@ remove_devices(const char *backend, const char *config_info)
     RemoveInputDeviceTraces(config_info);
 }
 
-BOOL
-device_is_duplicate(const char *config_info)
-{
-    DeviceIntPtr dev;
-
-    for (dev = inputInfo.devices; dev; dev = dev->next) {
-        if (dev->config_info && (strcmp(dev->config_info, config_info) == 0))
-            return TRUE;
-    }
-
-    for (dev = inputInfo.off_devices; dev; dev = dev->next) {
-        if (dev->config_info && (strcmp(dev->config_info, config_info) == 0))
-            return TRUE;
-    }
-
-    return FALSE;
-}
-
 struct OdevAttributes *
 config_odev_allocate_attributes(void)
 {
     struct OdevAttributes *attribs =
-        xnfcalloc(1, sizeof (struct OdevAttributes));
+        XNFcallocarray(1, sizeof (struct OdevAttributes));
     attribs->fd = -1;
     return attribs;
 }
@@ -141,8 +119,10 @@ config_odev_allocate_attributes(void)
 void
 config_odev_free_attributes(struct OdevAttributes *attribs)
 {
-    if (attribs->fd != -1)
+    if (attribs->fd != -1) {
+        seatd_libseat_close_graphics(attribs->fd);
         systemd_logind_release_fd(attribs->major, attribs->minor, attribs->fd);
+    }
     free(attribs->path);
     free(attribs->syspath);
     free(attribs->busid);

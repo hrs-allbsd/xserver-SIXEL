@@ -1,11 +1,14 @@
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
+
+#include <stdbool.h>
+
+#include "dix/colormap_priv.h"
+#include "dix/cursor_priv.h"
+#include "dix/screen_hooks_priv.h"
+#include "mi/mipointer_priv.h"
 
 #include "xf86.h"
 #include "xf86CursorPriv.h"
-#include "colormapst.h"
 #include "cursorstr.h"
 
 /* FIXME: This was added with the ABI change of the miPointerSpriteFuncs for
@@ -18,6 +21,7 @@
 #include "inputstr.h"
 
 DevPrivateKeyRec xf86CursorScreenKeyRec;
+DevScreenPrivateKeyRec xf86ScreenCursorBitsKeyRec;
 
 /* sprite functions */
 
@@ -42,7 +46,7 @@ static miPointerSpriteFuncRec xf86CursorSpriteFuncs = {
 static void xf86CursorInstallColormap(ColormapPtr);
 static void xf86CursorRecolorCursor(DeviceIntPtr pDev, ScreenPtr, CursorPtr,
                                     Bool);
-static Bool xf86CursorCloseScreen(ScreenPtr);
+static void xf86CursorCloseScreen(CallbackListPtr *, ScreenPtr, void *);
 static void xf86CursorQueryBestSize(int, unsigned short *, unsigned short *,
                                     ScreenPtr);
 
@@ -68,7 +72,11 @@ xf86InitCursor(ScreenPtr pScreen, xf86CursorInfoPtr infoPtr)
     if (!ScreenPriv)
         return FALSE;
 
-    dixSetPrivate(&pScreen->devPrivates, xf86CursorScreenKey, ScreenPriv);
+    if (!dixRegisterScreenPrivateKey(&xf86ScreenCursorBitsKeyRec, pScreen,
+                                     PRIVATE_CURSOR, 0))
+        return FALSE;
+
+    dixSetPrivate(&pScreen->devPrivates, &xf86CursorScreenKeyRec, ScreenPriv);
 
     ScreenPriv->SWCursor = TRUE;
     ScreenPriv->isUp = FALSE;
@@ -77,8 +85,7 @@ xf86InitCursor(ScreenPtr pScreen, xf86CursorInfoPtr infoPtr)
     ScreenPriv->PalettedCursor = FALSE;
     ScreenPriv->pInstalledMap = NULL;
 
-    ScreenPriv->CloseScreen = pScreen->CloseScreen;
-    pScreen->CloseScreen = xf86CursorCloseScreen;
+    dixScreenHookClose(pScreen, xf86CursorCloseScreen);
     ScreenPriv->QueryBestSize = pScreen->QueryBestSize;
     pScreen->QueryBestSize = xf86CursorQueryBestSize;
     ScreenPriv->RecolorCursor = pScreen->RecolorCursor;
@@ -116,24 +123,27 @@ xf86InitCursor(ScreenPtr pScreen, xf86CursorInfoPtr infoPtr)
 
 /***** Screen functions *****/
 
-static Bool
-xf86CursorCloseScreen(ScreenPtr pScreen)
+static void xf86CursorCloseScreen(CallbackListPtr *pcbl,
+                                  ScreenPtr pScreen, void *unused)
 {
     ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
+    if (!pScrn)
+        return;
+
+    dixScreenUnhookClose(pScreen, xf86CursorCloseScreen);
+
     miPointerScreenPtr PointPriv =
         (miPointerScreenPtr) dixLookupPrivate(&pScreen->devPrivates,
                                               miPointerScreenKey);
     xf86CursorScreenPtr ScreenPriv =
         (xf86CursorScreenPtr) dixLookupPrivate(&pScreen->devPrivates,
-                                               xf86CursorScreenKey);
+                                               &xf86CursorScreenKeyRec);
 
     if (ScreenPriv->isUp && pScrn->vtSema)
         xf86SetCursor(pScreen, NullCursor, ScreenPriv->x, ScreenPriv->y);
 
-    if (ScreenPriv->CurrentCursor)
-        FreeCursor(ScreenPriv->CurrentCursor, None);
+    FreeCursor(ScreenPriv->CurrentCursor, None);
 
-    pScreen->CloseScreen = ScreenPriv->CloseScreen;
     pScreen->QueryBestSize = ScreenPriv->QueryBestSize;
     pScreen->RecolorCursor = ScreenPriv->RecolorCursor;
     if (ScreenPriv->InstallColormap)
@@ -147,8 +157,7 @@ xf86CursorCloseScreen(ScreenPtr pScreen)
 
     free(ScreenPriv->transparentData);
     free(ScreenPriv);
-
-    return (*pScreen->CloseScreen) (pScreen);
+    dixSetPrivate(&pScreen->devPrivates, &xf86CursorScreenKeyRec, NULL);
 }
 
 static void
@@ -158,7 +167,7 @@ xf86CursorQueryBestSize(int class,
 {
     xf86CursorScreenPtr ScreenPriv =
         (xf86CursorScreenPtr) dixLookupPrivate(&pScreen->devPrivates,
-                                               xf86CursorScreenKey);
+                                               &xf86CursorScreenKeyRec);
 
     if (class == CursorShape) {
         if (*width > ScreenPriv->CursorInfoPtr->MaxWidth)
@@ -175,7 +184,7 @@ xf86CursorInstallColormap(ColormapPtr pMap)
 {
     xf86CursorScreenPtr ScreenPriv =
         (xf86CursorScreenPtr) dixLookupPrivate(&pMap->pScreen->devPrivates,
-                                               xf86CursorScreenKey);
+                                               &xf86CursorScreenKeyRec);
 
     ScreenPriv->pInstalledMap = pMap;
 
@@ -188,7 +197,7 @@ xf86CursorRecolorCursor(DeviceIntPtr pDev,
 {
     xf86CursorScreenPtr ScreenPriv =
         (xf86CursorScreenPtr) dixLookupPrivate(&pScreen->devPrivates,
-                                               xf86CursorScreenKey);
+                                               &xf86CursorScreenKeyRec);
 
     if (!displayed)
         return;
@@ -209,7 +218,7 @@ xf86CursorEnableDisableFBAccess(ScrnInfoPtr pScrn, Bool enable)
     ScreenPtr pScreen = xf86ScrnToScreen(pScrn);
     xf86CursorScreenPtr ScreenPriv =
         (xf86CursorScreenPtr) dixLookupPrivate(&pScreen->devPrivates,
-                                               xf86CursorScreenKey);
+                                               &xf86CursorScreenKeyRec);
 
     if (!enable && ScreenPriv->CurrentCursor != NullCursor) {
         CursorPtr currentCursor = RefCursor(ScreenPriv->CurrentCursor);
@@ -239,11 +248,11 @@ xf86CursorEnableDisableFBAccess(ScrnInfoPtr pScrn, Bool enable)
 static Bool
 xf86CursorSwitchMode(ScrnInfoPtr pScrn, DisplayModePtr mode)
 {
-    Bool ret;
+    bool ret;
     ScreenPtr pScreen = xf86ScrnToScreen(pScrn);
     xf86CursorScreenPtr ScreenPriv =
         (xf86CursorScreenPtr) dixLookupPrivate(&pScreen->devPrivates,
-                                               xf86CursorScreenKey);
+                                               &xf86CursorScreenKeyRec);
 
     if (ScreenPriv->isUp) {
         xf86SetCursor(pScreen, NullCursor, ScreenPriv->x, ScreenPriv->y);
@@ -270,11 +279,11 @@ xf86CursorRealizeCursor(DeviceIntPtr pDev, ScreenPtr pScreen, CursorPtr pCurs)
 {
     xf86CursorScreenPtr ScreenPriv =
         (xf86CursorScreenPtr) dixLookupPrivate(&pScreen->devPrivates,
-                                               xf86CursorScreenKey);
+                                               &xf86CursorScreenKeyRec);
 
     if (CursorRefCount(pCurs) <= 1)
-        dixSetScreenPrivate(&pCurs->devPrivates, CursorScreenKey, pScreen,
-                            NULL);
+        dixSetScreenPrivate(&pCurs->devPrivates, &xf86ScreenCursorBitsKeyRec,
+                            pScreen, NULL);
 
     return (*ScreenPriv->spriteFuncs->RealizeCursor) (pDev, pScreen, pCurs);
 }
@@ -284,13 +293,13 @@ xf86CursorUnrealizeCursor(DeviceIntPtr pDev, ScreenPtr pScreen, CursorPtr pCurs)
 {
     xf86CursorScreenPtr ScreenPriv =
         (xf86CursorScreenPtr) dixLookupPrivate(&pScreen->devPrivates,
-                                               xf86CursorScreenKey);
+                                               &xf86CursorScreenKeyRec);
 
     if (CursorRefCount(pCurs) <= 1) {
         free(dixLookupScreenPrivate
-             (&pCurs->devPrivates, CursorScreenKey, pScreen));
-        dixSetScreenPrivate(&pCurs->devPrivates, CursorScreenKey, pScreen,
-                            NULL);
+             (&pCurs->devPrivates, &xf86ScreenCursorBitsKeyRec, pScreen));
+        dixSetScreenPrivate(&pCurs->devPrivates, &xf86ScreenCursorBitsKeyRec,
+                            pScreen, NULL);
     }
 
     return (*ScreenPriv->spriteFuncs->UnrealizeCursor) (pDev, pScreen, pCurs);
@@ -302,7 +311,7 @@ xf86CursorSetCursor(DeviceIntPtr pDev, ScreenPtr pScreen, CursorPtr pCurs,
 {
     xf86CursorScreenPtr ScreenPriv =
         (xf86CursorScreenPtr) dixLookupPrivate(&pScreen->devPrivates,
-                                               xf86CursorScreenKey);
+                                               &xf86CursorScreenKeyRec);
     xf86CursorInfoPtr infoPtr = ScreenPriv->CursorInfoPtr;
 
     if (pCurs == NullCursor) {  /* means we're supposed to remove the cursor */
@@ -314,8 +323,7 @@ xf86CursorSetCursor(DeviceIntPtr pDev, ScreenPtr pScreen, CursorPtr pCurs,
             xf86SetCursor(pScreen, NullCursor, x, y);
             ScreenPriv->isUp = FALSE;
         }
-        if (ScreenPriv->CurrentCursor)
-            FreeCursor(ScreenPriv->CurrentCursor, None);
+        FreeCursor(ScreenPriv->CurrentCursor, None);
         ScreenPriv->CurrentCursor = NullCursor;
         return;
     }
@@ -324,8 +332,7 @@ xf86CursorSetCursor(DeviceIntPtr pDev, ScreenPtr pScreen, CursorPtr pCurs,
        sprite. The second cursor is never HW rendered anyway. */
     if (GetMaster(pDev, MASTER_POINTER) == inputInfo.pointer) {
         CursorPtr cursor = RefCursor(pCurs);
-        if (ScreenPriv->CurrentCursor)
-            FreeCursor(ScreenPriv->CurrentCursor, None);
+        FreeCursor(ScreenPriv->CurrentCursor, None);
         ScreenPriv->CurrentCursor = cursor;
         ScreenPriv->x = x;
         ScreenPriv->y = y;
@@ -335,8 +342,7 @@ xf86CursorSetCursor(DeviceIntPtr pDev, ScreenPtr pScreen, CursorPtr pCurs,
 
         if (!infoPtr->pScrn->vtSema) {
             cursor = RefCursor(cursor);
-            if (ScreenPriv->SavedCursor)
-                FreeCursor(ScreenPriv->SavedCursor, None);
+            FreeCursor(ScreenPriv->SavedCursor, None);
             ScreenPriv->SavedCursor = cursor;
             return;
         }
@@ -394,11 +400,11 @@ xf86CursorResetCursor(ScreenPtr pScreen)
     if (!inputInfo.pointer)
         return;
 
-    if (!dixPrivateKeyRegistered(xf86CursorScreenKey))
+    if (!dixPrivateKeyRegistered(&xf86CursorScreenKeyRec))
         return;
 
     ScreenPriv = (xf86CursorScreenPtr) dixLookupPrivate(&pScreen->devPrivates,
-                                                        xf86CursorScreenKey);
+                                                        &xf86CursorScreenKeyRec);
     if (!ScreenPriv)
         return;
 
@@ -411,7 +417,7 @@ xf86CursorMoveCursor(DeviceIntPtr pDev, ScreenPtr pScreen, int x, int y)
 {
     xf86CursorScreenPtr ScreenPriv =
         (xf86CursorScreenPtr) dixLookupPrivate(&pScreen->devPrivates,
-                                               xf86CursorScreenKey);
+                                               &xf86CursorScreenKeyRec);
 
     /* only update coordinate state for first sprite, otherwise we get jumps
        when removing a sprite. The second sprite is never HW rendered anyway */
@@ -437,7 +443,7 @@ xf86ForceHWCursor(ScreenPtr pScreen, Bool on)
     DeviceIntPtr pDev = inputInfo.pointer;
     xf86CursorScreenPtr ScreenPriv =
         (xf86CursorScreenPtr) dixLookupPrivate(&pScreen->devPrivates,
-                                               xf86CursorScreenKey);
+                                               &xf86CursorScreenKeyRec);
 
     if (on) {
         if (ScreenPriv->ForceHWCursorCount++ == 0) {
@@ -464,10 +470,10 @@ xf86CurrentCursor(ScreenPtr pScreen)
 {
     xf86CursorScreenPtr ScreenPriv;
 
-    if (pScreen->is_output_slave)
-        pScreen = pScreen->current_master;
+    if (pScreen->is_output_secondary)
+        pScreen = pScreen->current_primary;
 
-    ScreenPriv = dixLookupPrivate(&pScreen->devPrivates, xf86CursorScreenKey);
+    ScreenPriv = dixLookupPrivate(&pScreen->devPrivates, &xf86CursorScreenKeyRec);
     return ScreenPriv->CurrentCursor;
 }
 
@@ -484,7 +490,7 @@ xf86DestroyCursorInfoRec(xf86CursorInfoPtr infoPtr)
 }
 
 /**
- * New cursor has been created. Do your initalizations here.
+ * New cursor has been created. Do your initializations here.
  */
 static Bool
 xf86DeviceCursorInitialize(DeviceIntPtr pDev, ScreenPtr pScreen)
@@ -492,7 +498,7 @@ xf86DeviceCursorInitialize(DeviceIntPtr pDev, ScreenPtr pScreen)
     int ret;
     xf86CursorScreenPtr ScreenPriv =
         (xf86CursorScreenPtr) dixLookupPrivate(&pScreen->devPrivates,
-                                               xf86CursorScreenKey);
+                                               &xf86CursorScreenKeyRec);
 
     /* Init SW cursor */
     ret = (*ScreenPriv->spriteFuncs->DeviceCursorInitialize) (pDev, pScreen);
@@ -508,7 +514,7 @@ xf86DeviceCursorCleanup(DeviceIntPtr pDev, ScreenPtr pScreen)
 {
     xf86CursorScreenPtr ScreenPriv =
         (xf86CursorScreenPtr) dixLookupPrivate(&pScreen->devPrivates,
-                                               xf86CursorScreenKey);
+                                               &xf86CursorScreenKeyRec);
 
     /* Clean up SW cursor */
     (*ScreenPriv->spriteFuncs->DeviceCursorCleanup) (pDev, pScreen);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1987, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1987, Oracle and/or its affiliates.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -27,12 +27,14 @@
  * XFree86Server being defined.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
 #include <X11/X.h>
-#include "fb.h"
+
+#include "dix/colormap_priv.h"
+#include "fb/fb_priv.h"
+#include "mi/mi_priv.h"
+
 #include "micmap.h"
 
 int
@@ -64,6 +66,41 @@ Bool
 fbInitializeColormap(ColormapPtr pmap)
 {
     return miInitializeColormap(pmap);
+}
+
+Bool
+mfbCreateColormap(ColormapPtr pmap)
+{
+    ScreenPtr	pScreen;
+    unsigned short  red0, green0, blue0;
+    unsigned short  red1, green1, blue1;
+    Pixel pix;
+
+    pScreen = pmap->pScreen;
+    if (pScreen->whitePixel == 0)
+    {
+	red0 = green0 = blue0 = ~0;
+	red1 = green1 = blue1 = 0;
+    }
+    else
+    {
+	red0 = green0 = blue0 = 0;
+	red1 = green1 = blue1 = ~0;
+    }
+
+    /* this is a monochrome colormap, it only has two entries, just fill
+     * them in by hand.  If it were a more complex static map, it would be
+     * worth writing a for loop or three to initialize it */
+
+    /* this will be pixel 0 */
+    pix = 0;
+    if (AllocColor(pmap, &red0, &green0, &blue0, &pix, 0) != Success)
+	return FALSE;
+
+    /* this will be pixel 1 */
+    if (AllocColor(pmap, &red1, &green1, &blue1, &pix, 0) != Success)
+	return FALSE;
+    return TRUE;
 }
 
 int
@@ -101,7 +138,7 @@ fbSetVisualTypesAndMasks(int depth, int visuals, int bitsPerRGB,
 
 /*
  * Given a list of formats for a screen, create a list
- * of visuals and depths for the screen which coorespond to
+ * of visuals and depths for the screen which correspond to
  * the set which can be used with this version of fb.
  */
 Bool

@@ -20,18 +20,19 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <stdlib.h>
 
-#include "fb.h"
+#include "fb/fb_priv.h"
+#include "fb/fbbits.h"
+
 #include "miline.h"
 
-#define fbBresShiftMask(mask,dir,bpp) ((bpp == FB_STIP_UNIT) ? 0 : \
-					((dir < 0) ? FbStipLeft(mask,bpp) : \
-					 FbStipRight(mask,bpp)))
+#define fbBresShiftMask(mask,dir,bpp) (((bpp) == FB_STIP_UNIT) ? 0 : \
+					(((dir) < 0) ? FbStipLeft((mask),(bpp)) : \
+					 FbStipRight((mask),(bpp))))
 
 static void
 fbBresSolid(DrawablePtr pDrawable,
@@ -125,8 +126,8 @@ fbBresDash(DrawablePtr pDrawable,
 
     FbDashDeclare;
     int dashlen;
-    Bool even;
-    Bool doOdd;
+    bool even;
+    bool doOdd;
 
     fbGetStipDrawable(pDrawable, dst, dstStride, dstBpp, dstXoff, dstYoff);
     doOdd = pGC->lineStyle == LineDoubleDash;
@@ -213,7 +214,7 @@ fbSetFg(DrawablePtr pDrawable, GCPtr pGC, Pixel fg)
         ChangeGCVal val;
 
         val.val = fg;
-        ChangeGC(NullClient, pGC, GCForeground, &val);
+        ChangeGC(NULL, pGC, GCForeground, &val);
         ValidateGC(pDrawable, pGC);
     }
 }
@@ -230,9 +231,9 @@ fbBresFillDash(DrawablePtr pDrawable,
 
     FbDashDeclare;
     int dashlen;
-    Bool even;
-    Bool doOdd;
-    Bool doBg;
+    bool even;
+    bool doOdd;
+    bool doBg;
     Pixel fg, bg;
 
     fg = pGC->fgPixel;

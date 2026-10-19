@@ -27,10 +27,10 @@
  *
  * Authors:	Harold L Hunt II
  */
-
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
+
+#include <stdbool.h>
+
 #include "win.h"
 #include "winmsg.h"
 
@@ -147,9 +147,6 @@ winSetEngine(ScreenPtr pScreen)
 
     /* ShadowGDI is the only engine that supports Multi Window Mode */
     if (FALSE
-#ifdef XWIN_MULTIWINDOWEXTWM
-        || pScreenInfo->fMWExtWM
-#endif
         || pScreenInfo->fMultiWindow
         ) {
         winErrorFVerb(2,
@@ -211,7 +208,7 @@ winSetEngine(ScreenPtr pScreen)
 Bool
 winGetDDProcAddresses(void)
 {
-    Bool fReturn = TRUE;
+    bool fReturn = TRUE;
 
     /* Load the DirectDraw library */
     g_hmodDirectDraw = LoadLibraryEx("ddraw.dll", NULL, 0);

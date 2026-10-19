@@ -26,10 +26,9 @@ other dealings in this Software without prior written authorization
 from The Open Group.
 
 */
-
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
+
+#include <stdbool.h>
 
 #include "win.h"
 #include "winmonitors.h"
@@ -39,7 +38,7 @@ from The Open Group.
  */
 
 static
-    wBOOL CALLBACK
+WINBOOL CALLBACK
 getMonitorInfo(HMONITOR hMonitor, HDC hdc, LPRECT rect, LPARAM _data)
 {
     struct GetMonitorInfoData *data = (struct GetMonitorInfoData *) _data;
@@ -58,8 +57,7 @@ getMonitorInfo(HMONITOR hMonitor, HDC hdc, LPRECT rect, LPARAM _data)
     return TRUE;
 }
 
-Bool
-QueryMonitor(int i, struct GetMonitorInfoData *data)
+bool QueryMonitor(int i, struct GetMonitorInfoData *data)
 {
     /* prepare data */
     if (data == NULL)
@@ -70,5 +68,5 @@ QueryMonitor(int i, struct GetMonitorInfoData *data)
     /* query information */
     EnumDisplayMonitors(NULL, NULL, getMonitorInfo, (LPARAM) data);
 
-    return TRUE;
+    return data->bMonitorSpecifiedExists;
 }

@@ -27,20 +27,19 @@
  * prior written authorization.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <stddef.h>
+
 #include "mi.h"
 #include "scrnintstr.h"
 #include "gcstruct.h"
 #include "pixmapstr.h"
 #include "windowstr.h"
 #include "dixfontstr.h"
-#include "mivalidate.h"
 #include "driWrap.h"
-#include "dri.h"
+#include "xpr_dri.h"
 
 #include <OpenGL/OpenGL.h>
 
@@ -54,7 +53,7 @@ typedef struct {
 } DRIWrapScreenRec;
 
 typedef struct {
-    Bool didSave;
+    bool didSave;
     int devKind;
     DevUnion devPrivate;
 } DRISavedDrawableState;
@@ -68,12 +67,12 @@ static DevPrivateKeyRec driWrapScreenKeyRec;
 static GCOps driGCOps;
 
 #define wrap(priv, real, member, func) { \
-        priv->member = real->member; \
-        real->member = func; \
+        (priv)->member = (real)->member; \
+        (real)->member = (func); \
 }
 
 #define unwrap(priv, real, member)     { \
-        real->member = priv->member; \
+        (real)->member = (priv)->member; \
 }
 
 static DRIGCRec *
@@ -528,7 +527,7 @@ DRICreateGC(GCPtr pGC)
     ScreenPtr pScreen = pGC->pScreen;
     DRIWrapScreenRec *pScreenPriv;
     DRIGCRec *pGCPriv;
-    Bool ret;
+    bool ret;
 
     pScreenPriv = dixLookupPrivate(&pScreen->devPrivates, driWrapScreenKey);
 

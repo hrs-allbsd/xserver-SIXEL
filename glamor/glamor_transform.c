@@ -19,6 +19,7 @@
  * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
  * OF THIS SOFTWARE.
  */
+#include <dix-config.h>
 
 #include "glamor_priv.h"
 #include "glamor_transform.h"
@@ -121,17 +122,16 @@ glamor_set_color_depth(ScreenPtr      pScreen,
 
     glamor_get_rgba_from_pixel(pixel,
                                &color[0], &color[1], &color[2], &color[3],
-                               format_for_depth(depth));
+                               glamor_priv->formats[depth].render_format);
 
-    if ((depth == 1 || depth == 8) &&
-        glamor_priv->one_channel_format == GL_RED)
+    if ((depth <= 8) && glamor_priv->formats[8].format == GL_RED)
       color[0] = color[3];
 
     glUniform4fv(uniform, 1, color);
 }
 
 Bool
-glamor_set_solid(PixmapPtr      pixmap,
+glamor_set_solid(DrawablePtr    drawable,
                  GCPtr          gc,
                  Bool           use_alu,
                  GLint          uniform)
@@ -144,7 +144,7 @@ glamor_set_solid(PixmapPtr      pixmap,
 
     pixel = gc->fgPixel;
 
-    if (!glamor_set_alu(pixmap->drawable.pScreen, alu)) {
+    if (!glamor_set_alu(drawable, alu)) {
         switch (gc->alu) {
         case GXclear:
             pixel = 0;
@@ -159,7 +159,7 @@ glamor_set_solid(PixmapPtr      pixmap,
             return FALSE;
         }
     }
-    glamor_set_color(pixmap, gc->fgPixel, uniform);
+    glamor_set_color(drawable, pixel, uniform);
 
     return TRUE;
 }
@@ -205,12 +205,12 @@ glamor_set_texture(PixmapPtr    texture,
 }
 
 Bool
-glamor_set_tiled(PixmapPtr      pixmap,
+glamor_set_tiled(DrawablePtr    drawable,
                  GCPtr          gc,
                  GLint          offset_uniform,
                  GLint          size_inv_uniform)
 {
-    if (!glamor_set_alu(pixmap->drawable.pScreen, gc->alu))
+    if (!glamor_set_alu(drawable, gc->alu))
         return FALSE;
 
     if (!glamor_set_planemask(gc->depth, gc->planemask))
@@ -254,7 +254,7 @@ glamor_get_stipple_pixmap(GCPtr gc)
 
     changes[0].val = 0xff;
     changes[1].val = 0x00;
-    if (ChangeGC(NullClient, scratch_gc,
+    if (ChangeGC(NULL, scratch_gc,
                  GCForeground|GCBackground, changes) != Success)
         goto bail_gc;
     ValidateGC(&pixmap->drawable, scratch_gc);
@@ -283,7 +283,7 @@ bail:
 }
 
 Bool
-glamor_set_stippled(PixmapPtr      pixmap,
+glamor_set_stippled(DrawablePtr    drawable,
                     GCPtr          gc,
                     GLint          fg_uniform,
                     GLint          offset_uniform,
@@ -295,7 +295,7 @@ glamor_set_stippled(PixmapPtr      pixmap,
     if (!stipple)
         return FALSE;
 
-    if (!glamor_set_solid(pixmap, gc, TRUE, fg_uniform))
+    if (!glamor_set_solid(drawable, gc, TRUE, fg_uniform))
         return FALSE;
 
     return glamor_set_texture(stipple,

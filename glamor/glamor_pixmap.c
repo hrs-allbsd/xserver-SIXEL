@@ -26,6 +26,7 @@
  *    Zhigang Gong <zhigang.gong@linux.intel.com>
  *
  */
+#include <dix-config.h>
 
 #include <stdlib.h>
 
@@ -39,13 +40,11 @@ void
 glamor_get_drawable_deltas(DrawablePtr drawable, PixmapPtr pixmap,
                            int *x, int *y)
 {
-#ifdef COMPOSITE
     if (drawable->type == DRAWABLE_WINDOW) {
         *x = -pixmap->screen_x;
         *y = -pixmap->screen_y;
         return;
     }
-#endif
 
     *x = 0;
     *y = 0;
@@ -120,11 +119,12 @@ glamor_set_planemask(int depth, unsigned long planemask)
 }
 
 Bool
-glamor_set_alu(ScreenPtr screen, unsigned char alu)
+glamor_set_alu(DrawablePtr drawable, unsigned char alu)
 {
+    ScreenPtr screen = drawable->pScreen;
     glamor_screen_private *glamor_priv = glamor_get_screen_private(screen);
 
-    if (glamor_priv->gl_flavor == GLAMOR_GL_ES2) {
+    if (glamor_priv->is_gles) {
         if (alu != GXcopy)
             return FALSE;
         else
@@ -135,6 +135,21 @@ glamor_set_alu(ScreenPtr screen, unsigned char alu)
         glDisable(GL_COLOR_LOGIC_OP);
         return TRUE;
     }
+
+    switch (alu) {
+    case GXnoop:
+    case GXor:
+    case GXset:
+        /* These leave the alpha channel at 1.0 */
+        break;
+    default:
+        if (glamor_drawable_effective_depth(drawable) == 24 &&
+            glamor_get_drawable_pixmap(drawable)->drawable.depth == 32) {
+            glamor_fallback("ALU %x not supported with mixed depth\n", alu);
+            return FALSE;
+        }
+    }
+
     glEnable(GL_COLOR_LOGIC_OP);
     switch (alu) {
     case GXclear:

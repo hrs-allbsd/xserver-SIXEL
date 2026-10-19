@@ -20,11 +20,16 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <stdlib.h>
+
+#include "dix/screen_hooks_priv.h"
+#include "include/mipict.h"
+#include "os/mathx_priv.h"
+#include "os/osdep.h"
+#include "Xext/render/glyphstr_priv.h"
 
 #include    <X11/X.h>
 #include    "scrnintstr.h"
@@ -34,7 +39,6 @@
 #include    <X11/fonts/fontstruct.h>
 #include    <X11/fonts/libxfont2.h>
 #include    "mi.h"
-#include    "mipict.h"
 #include    "regionstr.h"
 #include    "globals.h"
 #include    "gcstruct.h"
@@ -91,11 +95,7 @@ getDrawableDamageRef(DrawablePtr pDrawable)
         ScreenPtr pScreen = pDrawable->pScreen;
 
         pPixmap = 0;
-        if (pScreen->GetWindowPixmap
-#ifdef ROOTLESS_WORKAROUND
-            && ((WindowPtr) pDrawable)->viewable
-#endif
-            )
+        if (pScreen->GetWindowPixmap)
             pPixmap = (*pScreen->GetWindowPixmap) ((WindowPtr) pDrawable);
 
         if (!pPixmap) {
@@ -125,7 +125,7 @@ getDrawableDamageRef(DrawablePtr pDrawable)
 static void
 _damageRegionAppend(DrawablePtr pDrawable, RegionPtr pRegion, Bool clip,
                     int subWindowMode, const char *where)
-#define damageRegionAppend(d,r,c,m) _damageRegionAppend(d,r,c,m,__FUNCTION__)
+#define damageRegionAppend(d,r,c,m) _damageRegionAppend(d,r,c,m,__func__)
 #else
 static void
 damageRegionAppend(DrawablePtr pDrawable, RegionPtr pRegion, Bool clip,
@@ -142,15 +142,12 @@ damageRegionAppend(DrawablePtr pDrawable, RegionPtr pRegion, Bool clip,
     RegionRec pixClip;
     int draw_x, draw_y;
 
-#ifdef COMPOSITE
     int screen_x = 0, screen_y = 0;
-#endif
 
     /* short circuit for empty regions */
     if (!RegionNotEmpty(pRegion))
         return;
 
-#ifdef COMPOSITE
     /*
      * When drawing to a pixmap which is storing window contents,
      * the region presented is in pixmap relative coordinates which
@@ -162,7 +159,6 @@ damageRegionAppend(DrawablePtr pDrawable, RegionPtr pRegion, Bool clip,
     }
     if (screen_x || screen_y)
         RegionTranslate(pRegion, screen_x, screen_y);
-#endif
 
     if (pDrawable->type == DRAWABLE_WINDOW &&
         ((WindowPtr) (pDrawable))->backingStore == NotUseful) {
@@ -201,7 +197,6 @@ damageRegionAppend(DrawablePtr pDrawable, RegionPtr pRegion, Bool clip,
 
         draw_x = pDamage->pDrawable->x;
         draw_y = pDamage->pDrawable->y;
-#ifdef COMPOSITE
         /*
          * Need to move everyone to screen coordinates
          * XXX what about off-screen pixmaps with non-zero x/y?
@@ -210,7 +205,6 @@ damageRegionAppend(DrawablePtr pDrawable, RegionPtr pRegion, Bool clip,
             draw_x += ((PixmapPtr) pDamage->pDrawable)->screen_x;
             draw_y += ((PixmapPtr) pDamage->pDrawable)->screen_y;
         }
-#endif
 
         /*
          * Clip against border or pixmap bounds
@@ -274,10 +268,8 @@ damageRegionAppend(DrawablePtr pDrawable, RegionPtr pRegion, Bool clip,
         if (pDamageRegion == pRegion && (draw_x || draw_y))
             RegionTranslate(pDamageRegion, draw_x, draw_y);
     }
-#ifdef COMPOSITE
     if (screen_x || screen_y)
         RegionTranslate(pRegion, -screen_x, -screen_y);
-#endif
 
     RegionUninit(&clippedRec);
 }
@@ -304,7 +296,7 @@ damageRegionProcessPending(DrawablePtr pDrawable)
 }
 
 #if DAMAGE_DEBUG_ENABLE
-#define damageDamageBox(d,b,m) _damageDamageBox(d,b,m,__FUNCTION__)
+#define damageDamageBox(d,b,m) _damageDamageBox(d,b,m,__func__)
 static void
 _damageDamageBox(DrawablePtr pDrawable, BoxPtr pBox, int subWindowMode,
                  const char *where)
@@ -346,7 +338,7 @@ damageCreateGC(GCPtr pGC)
 
     damageScrPriv(pScreen);
     damageGCPriv(pGC);
-    Bool ret;
+    bool ret;
 
     unwrap(pScrPriv, pScreen, CreateGC);
     if ((ret = (*pScreen->CreateGC) (pGC))) {
@@ -603,8 +595,8 @@ damageAddTraps(PicturePtr pPicture,
         x = pPicture->pDrawable->x + x_off;
         y = pPicture->pDrawable->y + y_off;
         for (i = 0; i < ntrap; i++) {
-            pixman_fixed_t l = min(t->top.l, t->bot.l);
-            pixman_fixed_t r = max(t->top.r, t->bot.r);
+            pixman_fixed_t l = MIN(t->top.l, t->bot.l);
+            pixman_fixed_t r = MAX(t->top.r, t->bot.r);
             int x1 = x + pixman_fixed_to_int(l);
             int x2 = x + pixman_fixed_to_int(pixman_fixed_ceil(r));
             int y1 = y + pixman_fixed_to_int(t->top.y);
@@ -633,7 +625,7 @@ damageAddTraps(PicturePtr pPicture,
 
 static void
 damageFillSpans(DrawablePtr pDrawable,
-                GC * pGC, int npt, DDXPointPtr ppt, int *pwidth, int fSorted)
+                GCPtr pGC, int npt, DDXPointPtr ppt, int *pwidth, int fSorted)
 {
     DAMAGE_GC_OP_PROLOGUE(pGC, pDrawable);
 
@@ -752,7 +744,7 @@ damagePutImage(DrawablePtr pDrawable,
 static RegionPtr
 damageCopyArea(DrawablePtr pSrc,
                DrawablePtr pDst,
-               GC * pGC,
+               GCPtr pGC,
                int srcx, int srcy, int width, int height, int dstx, int dsty)
 {
     RegionPtr ret;
@@ -1317,14 +1309,14 @@ damageText(DrawablePtr pDrawable,
     CharInfoPtr *charinfo;
     unsigned long i;
     unsigned int n;
-    Bool imageblt;
+    bool imageblt;
 
     imageblt = (textType == TT_IMAGE8) || (textType == TT_IMAGE16);
 
     if (!checkGCDamage(pDrawable, pGC))
         return;
 
-    charinfo = xallocarray(count, sizeof(CharInfoPtr));
+    charinfo = calloc(count, sizeof(CharInfoPtr));
     if (!charinfo)
         return;
 
@@ -1452,8 +1444,10 @@ damagePushPixels(GCPtr pGC,
 }
 
 static void
-damageRemoveDamage(DamagePtr * pPrev, DamagePtr pDamage)
+damageRemoveDamage(DrawablePtr pListDrawable, DamagePtr pDamage)
 {
+    DamagePtr *pPrev = getDrawableDamageRef(pListDrawable);
+
     while (*pPrev) {
         if (*pPrev == pDamage) {
             *pPrev = pDamage->pNext;
@@ -1467,6 +1461,16 @@ damageRemoveDamage(DamagePtr * pPrev, DamagePtr pDamage)
 #endif
 }
 
+/*
+ * Link pDamage onto the list headed by pPrev, remembering that list so that damageRemoveDamage() can later unlink it
+ * from the same place.
+ *
+ * The list a window's damage belongs on is chosen by getDrawableDamageRef() and depends on the window pixmap, which can
+ * change while the damage is registered (Composite redirection, rootless drawing and Present flips all swap it).
+ * Re-deriving the list at removal time can therefore consult a different list than the damage was inserted onto, in
+ * which case the removal silently does nothing and leaves an unregistered -- possibly freed -- damage linked where
+ * damageRegionAppend() will dereference its NULL pDrawable.
+ */
 static void
 damageInsertDamage(DamagePtr * pPrev, DamagePtr pDamage)
 {
@@ -1481,33 +1485,23 @@ damageInsertDamage(DamagePtr * pPrev, DamagePtr pDamage)
 #endif
     pDamage->pNext = *pPrev;
     *pPrev = pDamage;
+    pDamage->pListDrawable = pDamage->pDrawable;
 }
-
-static Bool
-damageDestroyPixmap(PixmapPtr pPixmap)
+static void
+damagePixmapDestroy(CallbackListPtr *pcbl, ScreenPtr pScreen, PixmapPtr pPixmap)
 {
-    ScreenPtr pScreen = pPixmap->drawable.pScreen;
+    DamagePtr *pPrev = getPixmapDamageRef(pPixmap);
+    DamagePtr pDamage;
 
-    damageScrPriv(pScreen);
-
-    if (pPixmap->refcnt == 1) {
-        DamagePtr *pPrev = getPixmapDamageRef(pPixmap);
-        DamagePtr pDamage;
-
-        while ((pDamage = *pPrev)) {
-            damageRemoveDamage(pPrev, pDamage);
-            if (!pDamage->isWindow)
-                DamageDestroy(pDamage);
-        }
+    while ((pDamage = *pPrev)) {
+        damageRemoveDamage((DrawablePtr)pPixmap, pDamage);
+        if (!pDamage->isWindow)
+            DamageDestroy(pDamage);
     }
-    unwrap(pScrPriv, pScreen, DestroyPixmap);
-    (*pScreen->DestroyPixmap) (pPixmap);
-    wrap(pScrPriv, pScreen, DestroyPixmap, damageDestroyPixmap);
-    return TRUE;
 }
 
 static void
-damageCopyWindow(WindowPtr pWindow, DDXPointRec ptOldOrg, RegionPtr prgnSrc)
+damageCopyWindow(WindowPtr pWindow, xPoint ptOldOrg, RegionPtr prgnSrc)
 {
     ScreenPtr pScreen = pWindow->drawable.pScreen;
 
@@ -1553,11 +1547,9 @@ damageSetWindowPixmap(WindowPtr pWindow, PixmapPtr pPixmap)
     damageScrPriv(pScreen);
 
     if ((pDamage = damageGetWinPriv(pWindow))) {
-        PixmapPtr pOldPixmap = (*pScreen->GetWindowPixmap) (pWindow);
-        DamagePtr *pPrev = getPixmapDamageRef(pOldPixmap);
-
         while (pDamage) {
-            damageRemoveDamage(pPrev, pDamage);
+            if (pDamage->pListDrawable)
+                damageRemoveDamage(pDamage->pListDrawable, pDamage);
             pDamage = pDamage->pNextWin;
         }
     }
@@ -1574,35 +1566,31 @@ damageSetWindowPixmap(WindowPtr pWindow, PixmapPtr pPixmap)
     }
 }
 
-static Bool
-damageDestroyWindow(WindowPtr pWindow)
+static void
+damageWindowDestroy(CallbackListPtr *pcbl, ScreenPtr pScreen, WindowPtr pWindow)
 {
     DamagePtr pDamage;
-    ScreenPtr pScreen = pWindow->drawable.pScreen;
-    Bool ret;
-
-    damageScrPriv(pScreen);
 
     while ((pDamage = damageGetWinPriv(pWindow))) {
         DamageDestroy(pDamage);
     }
-    unwrap(pScrPriv, pScreen, DestroyWindow);
-    ret = (*pScreen->DestroyWindow) (pWindow);
-    wrap(pScrPriv, pScreen, DestroyWindow, damageDestroyWindow);
-    return ret;
 }
 
-static Bool
-damageCloseScreen(ScreenPtr pScreen)
+static void damageCloseScreen(CallbackListPtr *pcbl, ScreenPtr pScreen, void *unused)
 {
-    damageScrPriv(pScreen);
+    dixScreenUnhookPostClose(pScreen, damageCloseScreen);
+    dixScreenUnhookWindowDestroy(pScreen, damageWindowDestroy);
+    dixScreenUnhookPixmapDestroy(pScreen, damagePixmapDestroy);
 
-    unwrap(pScrPriv, pScreen, DestroyPixmap);
+    damageScrPriv(pScreen);
+    if (!pScrPriv)
+        return;
+
     unwrap(pScrPriv, pScreen, CreateGC);
     unwrap(pScrPriv, pScreen, CopyWindow);
-    unwrap(pScrPriv, pScreen, CloseScreen);
+
+    dixSetPrivate(&pScreen->devPrivates, damageScrPrivateKey, NULL);
     free(pScrPriv);
-    return (*pScreen->CloseScreen) (pScreen);
 }
 
 /**
@@ -1659,7 +1647,6 @@ miDamageDestroy(DamagePtr pDamage)
 Bool
 DamageSetup(ScreenPtr pScreen)
 {
-    DamageScrPrivPtr pScrPriv;
     PictureScreenPtr ps = GetPictureScreenIfSet(pScreen);
 
     const DamageScreenFuncsRec miFuncs = {
@@ -1682,19 +1669,20 @@ DamageSetup(ScreenPtr pScreen)
     if (!dixRegisterPrivateKey(&damageWinPrivateKeyRec, PRIVATE_WINDOW, 0))
         return FALSE;
 
-    pScrPriv = malloc(sizeof(DamageScrPrivRec));
+    DamageScrPrivPtr pScrPriv = calloc(1, sizeof(DamageScrPrivRec));
     if (!pScrPriv)
         return FALSE;
 
     pScrPriv->internalLevel = 0;
     pScrPriv->pScreenDamage = 0;
 
-    wrap(pScrPriv, pScreen, DestroyPixmap, damageDestroyPixmap);
+    dixScreenHookPostClose(pScreen, damageCloseScreen);
+    dixScreenHookWindowDestroy(pScreen, damageWindowDestroy);
+    dixScreenHookPixmapDestroy(pScreen, damagePixmapDestroy);
+
     wrap(pScrPriv, pScreen, CreateGC, damageCreateGC);
-    wrap(pScrPriv, pScreen, DestroyWindow, damageDestroyWindow);
     wrap(pScrPriv, pScreen, SetWindowPixmap, damageSetWindowPixmap);
     wrap(pScrPriv, pScreen, CopyWindow, damageCopyWindow);
-    wrap(pScrPriv, pScreen, CloseScreen, damageCloseScreen);
     if (ps) {
         wrap(pScrPriv, ps, Glyphs, damageGlyphs);
         wrap(pScrPriv, ps, Composite, damageComposite);
@@ -1721,6 +1709,7 @@ DamageCreate(DamageReportFunc damageReport,
         return 0;
     pDamage->pNext = 0;
     pDamage->pNextWin = 0;
+    pDamage->pListDrawable = NULL;
     RegionNull(&pDamage->damage);
     RegionNull(&pDamage->pendingDamage);
 
@@ -1735,7 +1724,8 @@ DamageCreate(DamageReportFunc damageReport,
     pDamage->damageDestroy = damageDestroy;
     pDamage->pScreen = pScreen;
 
-    (*pScrPriv->funcs.Create) (pDamage);
+    if (pScrPriv && pScrPriv->funcs.Create)
+        pScrPriv->funcs.Create (pDamage);
 
     return pDamage;
 }
@@ -1776,7 +1766,8 @@ DamageRegister(DrawablePtr pDrawable, DamagePtr pDamage)
         pDamage->isWindow = FALSE;
     pDamage->pDrawable = pDrawable;
     damageInsertDamage(getDrawableDamageRef(pDrawable), pDamage);
-    (*pScrPriv->funcs.Register) (pDrawable, pDamage);
+    if (pScrPriv && pScrPriv->funcs.Register)
+        pScrPriv->funcs.Register (pDrawable, pDamage);
 }
 
 void
@@ -1795,7 +1786,8 @@ DamageUnregister(DamagePtr pDamage)
 
     damageScrPriv(pScreen);
 
-    (*pScrPriv->funcs.Unregister) (pDrawable, pDamage);
+    if (pScrPriv && pScrPriv->funcs.Unregister)
+        pScrPriv->funcs.Unregister (pDrawable, pDamage);
 
     if (pDrawable->type == DRAWABLE_WINDOW) {
         WindowPtr pWindow = (WindowPtr) pDrawable;
@@ -1822,8 +1814,9 @@ DamageUnregister(DamagePtr pDamage)
         }
 #endif
     }
+    if (pDamage->pListDrawable)
+        damageRemoveDamage(pDamage->pListDrawable, pDamage);
     pDamage->pDrawable = 0;
-    damageRemoveDamage(getDrawableDamageRef(pDrawable), pDamage);
 }
 
 void
@@ -1838,7 +1831,10 @@ DamageDestroy(DamagePtr pDamage)
 
     if (pDamage->damageDestroy)
         (*pDamage->damageDestroy) (pDamage, pDamage->closure);
-    (*pScrPriv->funcs.Destroy) (pDamage);
+
+    if (pScrPriv && pScrPriv->funcs.Destroy)
+        pScrPriv->funcs.Destroy (pDamage);
+
     RegionUninit(&pDamage->damage);
     RegionUninit(&pDamage->pendingDamage);
     free(pDamage);
@@ -1877,19 +1873,20 @@ DamageSubtract(DamagePtr pDamage, const RegionPtr pRegion)
 void
 DamageEmpty(DamagePtr pDamage)
 {
-    RegionEmpty(&pDamage->damage);
+    if (pDamage)
+        RegionEmpty(&pDamage->damage);
 }
 
 RegionPtr
 DamageRegion(DamagePtr pDamage)
 {
-    return &pDamage->damage;
+    return pDamage ? &pDamage->damage : NULL;
 }
 
 RegionPtr
 DamagePendingRegion(DamagePtr pDamage)
 {
-    return &pDamage->pendingDamage;
+    return pDamage ? &pDamage->pendingDamage : NULL;
 }
 
 void
@@ -1935,7 +1932,7 @@ DamageReportDamage(DamagePtr pDamage, RegionPtr pDamageRegion)
 {
     BoxRec tmpBox;
     RegionRec tmpRegion;
-    Bool was_empty;
+    bool was_empty;
 
     switch (pDamage->damageLevel) {
     case DamageReportRawRegion:

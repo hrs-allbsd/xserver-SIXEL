@@ -20,15 +20,13 @@
  * PERFORMANCE OF THIS SOFTWARE.
  *
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
 #include <X11/X.h>
 
 #include "xf86.h"
 #include "xf86Priv.h"
+#include "xf86_os_support.h"
 #include "xf86_OSlib.h"
 
 /*
@@ -41,10 +39,9 @@ xf86VTSwitchPending(void)
     return FALSE;
 }
 
-Bool
-xf86VTSwitchAway(void)
+bool xf86VTSwitchAway(void)
 {
-    return FALSE;
+    return false;
 }
 
 Bool

@@ -27,10 +27,10 @@
  *
  * Authors:	Harold L Hunt II
  */
-
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
+
+#include "dix/dix_priv.h"
+
 #include "win.h"
 #include "shellapi.h"
 
@@ -61,7 +61,7 @@ winCreateBoundingWindowFullScreen(ScreenPtr pScreen)
     WNDCLASSEX wc;
     char szTitle[256];
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
     winDebug("winCreateBoundingWindowFullScreen\n");
 #endif
 
@@ -72,18 +72,12 @@ winCreateBoundingWindowFullScreen(ScreenPtr pScreen)
     wc.cbClsExtra = 0;
     wc.cbWndExtra = 0;
     wc.hInstance = g_hInstance;
-    wc.hIcon =
-        (HICON) LoadImage(g_hInstance, MAKEINTRESOURCE(IDI_XWIN), IMAGE_ICON,
-                          GetSystemMetrics(SM_CXICON),
-                          GetSystemMetrics(SM_CYICON), 0);
+    wc.hIcon = pScreenInfo->hIcon;
     wc.hCursor = 0;
     wc.hbrBackground = 0;
     wc.lpszMenuName = NULL;
     wc.lpszClassName = WINDOW_CLASS;
-    wc.hIconSm =
-        (HICON) LoadImage(g_hInstance, MAKEINTRESOURCE(IDI_XWIN), IMAGE_ICON,
-                          GetSystemMetrics(SM_CXSMICON),
-                          GetSystemMetrics(SM_CYSMICON), LR_DEFAULTSIZE);
+    wc.hIconSm = pScreenInfo->hIconSm;
     RegisterClassEx(&wc);
 
     /* Set display and screen-specific tooltip text */
@@ -152,9 +146,6 @@ winCreateBoundingWindowWindowed(ScreenPtr pScreen)
 
     /* Decorated or undecorated window */
     if (pScreenInfo->fDecoration
-#ifdef XWIN_MULTIWINDOWEXTWM
-        && !pScreenInfo->fMWExtWM
-#endif
         && !pScreenInfo->fRootless
         && !pScreenInfo->fMultiWindow
         ) {
@@ -182,18 +173,12 @@ winCreateBoundingWindowWindowed(ScreenPtr pScreen)
     wc.cbClsExtra = 0;
     wc.cbWndExtra = 0;
     wc.hInstance = g_hInstance;
-    wc.hIcon =
-        (HICON) LoadImage(g_hInstance, MAKEINTRESOURCE(IDI_XWIN), IMAGE_ICON,
-                          GetSystemMetrics(SM_CXICON),
-                          GetSystemMetrics(SM_CYICON), 0);
+    wc.hIcon = pScreenInfo->hIcon;
     wc.hCursor = 0;
     wc.hbrBackground = (HBRUSH) GetStockObject(WHITE_BRUSH);
     wc.lpszMenuName = NULL;
     wc.lpszClassName = WINDOW_CLASS;
-    wc.hIconSm =
-        (HICON) LoadImage(g_hInstance, MAKEINTRESOURCE(IDI_XWIN), IMAGE_ICON,
-                          GetSystemMetrics(SM_CXSMICON),
-                          GetSystemMetrics(SM_CYSMICON), LR_DEFAULTSIZE);
+    wc.hIconSm = pScreenInfo->hIconSm;
     RegisterClassEx(&wc);
 
     /* Get size of work area */
@@ -214,9 +199,6 @@ winCreateBoundingWindowWindowed(ScreenPtr pScreen)
 
     /* Clean up the scrollbars flag, if necessary */
     if ((!pScreenInfo->fDecoration
-#ifdef XWIN_MULTIWINDOWEXTWM
-         || pScreenInfo->fMWExtWM
-#endif
          || pScreenInfo->fRootless
          || pScreenInfo->fMultiWindow
         )
@@ -227,28 +209,25 @@ winCreateBoundingWindowWindowed(ScreenPtr pScreen)
 
     /* Did the user specify a height and width? */
     if (pScreenInfo->fUserGaveHeightAndWidth) {
-        /* User gave a desired height and width, try to accomodate */
-#if CYGDEBUG
+        /* User gave a desired height and width, try to accommodate */
+#if ENABLE_DEBUG
         winDebug("winCreateBoundingWindowWindowed - User gave height "
                  "and width\n");
 #endif
 
         /* Adjust the window width and height for borders and title bar */
         if (pScreenInfo->fDecoration
-#ifdef XWIN_MULTIWINDOWEXTWM
-            && !pScreenInfo->fMWExtWM
-#endif
             && !pScreenInfo->fRootless
             && !pScreenInfo->fMultiWindow
             ) {
-#if CYGDEBUG
+#if ENABLE_DEBUG
             winDebug
                 ("winCreateBoundingWindowWindowed - Window has decoration\n");
 #endif
 
             /* Are we resizable */
             if (pScreenInfo->iResizeMode != resizeNotAllowed) {
-#if CYGDEBUG
+#if ENABLE_DEBUG
                 winDebug
                     ("winCreateBoundingWindowWindowed - Window is resizable\n");
 #endif
@@ -258,7 +237,7 @@ winCreateBoundingWindowWindowed(ScreenPtr pScreen)
                     + GetSystemMetrics(SM_CYCAPTION);
             }
             else {
-#if CYGDEBUG
+#if ENABLE_DEBUG
                 winDebug
                     ("winCreateBoundingWindowWindowed - Window is not resizable\n");
 #endif
@@ -271,7 +250,7 @@ winCreateBoundingWindowWindowed(ScreenPtr pScreen)
     }
     else {
         /* By default, we are creating a window that is as large as possible */
-#if CYGDEBUG
+#if ENABLE_DEBUG
         winDebug("winCreateBoundingWindowWindowed - User did not give "
                  "height and width\n");
 #endif
@@ -284,9 +263,6 @@ winCreateBoundingWindowWindowed(ScreenPtr pScreen)
 
     /* Make sure window is no bigger than work area */
     if (TRUE
-#ifdef XWIN_MULTIWINDOWEXTWM
-        && !pScreenInfo->fMWExtWM
-#endif
         && !pScreenInfo->fMultiWindow
         ) {
         /* Trim window width to fit work area */
@@ -297,7 +273,7 @@ winCreateBoundingWindowWindowed(ScreenPtr pScreen)
         if (iHeight >= (rcWorkArea.bottom - rcWorkArea.top))
             iHeight = rcWorkArea.bottom - rcWorkArea.top;
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
         winDebug("winCreateBoundingWindowWindowed - Adjusted width: %d "
                  "height: %d\n", iWidth, iHeight);
 #endif
@@ -331,7 +307,7 @@ winCreateBoundingWindowWindowed(ScreenPtr pScreen)
         return FALSE;
     }
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
     winDebug("winCreateBoundingWindowWindowed - CreateWindowEx () returned\n");
 #endif
 
@@ -384,7 +360,7 @@ winCreateBoundingWindowWindowed(ScreenPtr pScreen)
      * size of the window area minus the space the caption, borders, and
      * scrollbars (if any) occupy, and the range is the size of the
      * underlying X visual.  Notice that, contrary to what some of the
-     * MSDN Library arcticles lead you to believe, the windows
+     * MSDN Library articles lead you to believe, the windows
      * ``client area'' size does not include the scrollbars.  In other words,
      * the whole client area size that is reported to you is drawable by
      * you; you do not have to subtract the size of the scrollbars from
@@ -419,9 +395,6 @@ winCreateBoundingWindowWindowed(ScreenPtr pScreen)
 
     /* Show the window */
     if (FALSE
-#ifdef XWIN_MULTIWINDOWEXTWM
-        || pScreenInfo->fMWExtWM
-#endif
         || pScreenInfo->fMultiWindow
         ) {
         pScreenPriv->fRootWindowShown = FALSE;
@@ -436,9 +409,6 @@ winCreateBoundingWindowWindowed(ScreenPtr pScreen)
 
     /* Attempt to bring our window to the top of the display */
     if (TRUE
-#ifdef XWIN_MULTIWINDOWEXTWM
-        && !pScreenInfo->fMWExtWM
-#endif
         && !pScreenInfo->fRootless
         && !pScreenInfo->fMultiWindow
         ) {
@@ -542,14 +512,12 @@ winGetWorkArea(RECT * prcWorkArea, winScreenInfo * pScreenInfo)
 static Bool
 winTaskbarOnScreenEdge(unsigned int uEdge, winScreenInfo * pScreenInfo)
 {
-    APPBARDATA abd;
-    HWND hwndAutoHide;
+    APPBARDATA abd = (APPBARDATA) {
+        .cbSize = sizeof(APPBARDATA),
+        .uEdge = uEdge
+    };
 
-    ZeroMemory(&abd, sizeof(abd));
-    abd.cbSize = sizeof(abd);
-    abd.uEdge = uEdge;
-
-    hwndAutoHide = (HWND) SHAppBarMessage(ABM_GETAUTOHIDEBAR, &abd);
+    HWND hwndAutoHide = (HWND) SHAppBarMessage(ABM_GETAUTOHIDEBAR, &abd);
     if (hwndAutoHide != NULL) {
         /*
            Found an autohide taskbar on that edge, but is it on the
@@ -571,15 +539,15 @@ winTaskbarOnScreenEdge(unsigned int uEdge, winScreenInfo * pScreenInfo)
 static Bool
 winAdjustForAutoHide(RECT * prcWorkArea, winScreenInfo * pScreenInfo)
 {
-    APPBARDATA abd;
+    APPBARDATA abd = (APPBARDATA) {
+        .cbSize = sizeof(APPBARDATA)
+    };
 
     winDebug("winAdjustForAutoHide - Original WorkArea: %d %d %d %d\n",
              (int) prcWorkArea->top, (int) prcWorkArea->left,
              (int) prcWorkArea->bottom, (int) prcWorkArea->right);
 
     /* Find out if the Windows taskbar is set to auto-hide */
-    ZeroMemory(&abd, sizeof(abd));
-    abd.cbSize = sizeof(abd);
     if (SHAppBarMessage(ABM_GETSTATE, &abd) & ABS_AUTOHIDE)
         winDebug("winAdjustForAutoHide - Taskbar is auto hide\n");
 

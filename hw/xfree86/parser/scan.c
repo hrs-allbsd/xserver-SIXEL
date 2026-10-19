@@ -50,11 +50,9 @@
  * the sale, use or other dealings in this Software without prior written
  * authorization from the copyright holder(s) and author(s).
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
+#include <stdbool.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,16 +61,14 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include <limits.h>
 #include <X11/Xdefs.h>
 #include <X11/Xfuncproto.h>
-#include <limits.h>
 
-#if !defined(MAXHOSTNAMELEN)
-#define MAXHOSTNAMELEN 32
-#endif                          /* !MAXHOSTNAMELEN */
+#include "include/misc.h" /* for PATH_MAX */
+#include "os/xhostname.h"
 
-/* For PATH_MAX */
-#include "misc.h"
+#include "xf86Parser_priv.h"
 
 #include "Configint.h"
 #include "xf86tokens.h"
@@ -117,20 +113,20 @@ xf86getNextLine(void)
 
     /*
      * reallocate the string if it was grown last time (i.e., is no
-     * longer CONFIG_BUF_LEN); we malloc the new strings first, so
-     * that if either of the mallocs fail, we can fall back on the
+     * longer CONFIG_BUF_LEN); we calloc the new strings first, so
+     * that if either of the callocs fail, we can fall back on the
      * existing buffer allocations
      */
 
     if (configBufLen != CONFIG_BUF_LEN) {
 
-        tmpConfigBuf = malloc(CONFIG_BUF_LEN);
-        tmpConfigRBuf = malloc(CONFIG_BUF_LEN);
+        tmpConfigBuf = calloc(1, CONFIG_BUF_LEN);
+        tmpConfigRBuf = calloc(1, CONFIG_BUF_LEN);
 
         if (!tmpConfigBuf || !tmpConfigRBuf) {
 
             /*
-             * at least one of the mallocs failed; keep the old buffers
+             * at least one of the callocs failed; keep the old buffers
              * and free any partial allocations
              */
 
@@ -141,7 +137,7 @@ xf86getNextLine(void)
         else {
 
             /*
-             * malloc succeeded; free the old buffers and use the new
+             * calloc succeeded; free the old buffers and use the new
              * buffers
              */
 
@@ -332,18 +328,18 @@ xf86getToken(const xf86ConfigSymTabRec * tab)
             }
             while ((c != '\n') && (c != '\r') && (c != '\0'));
             configRBuf[i] = '\0';
-            /* XXX no private copy.
+            /* XXX private copy.
              * Use xf86addComment when setting a comment.
              */
-            xf86_lex_val.str = configRBuf;
+            xf86_lex_val.str = strdup(configRBuf);
             return COMMENT;
         }
 
         /* GJA -- handle '-' and ','  * Be careful: "-hsync" is a keyword. */
-        else if ((c == ',') && !isalpha(configBuf[configPos])) {
+        else if ((c == ',') && !isalpha((unsigned char)configBuf[configPos])) {
             return COMMA;
         }
-        else if ((c == '-') && !isalpha(configBuf[configPos])) {
+        else if ((c == '-') && !isalpha((unsigned char)configBuf[configPos])) {
             return DASH;
         }
 
@@ -392,9 +388,9 @@ xf86getToken(const xf86ConfigSymTabRec * tab)
             }
             while ((c != '\"') && (c != '\n') && (c != '\r') && (c != '\0'));
             configRBuf[i] = '\0';
-            xf86_lex_val.str = malloc(strlen(configRBuf) + 1);
+            xf86_lex_val.str = calloc(1, strlen(configRBuf) + 1);
             strcpy(xf86_lex_val.str, configRBuf);        /* private copy ! */
-            return STRING;
+            return XF86_TOKEN_STRING;
         }
 
         /*
@@ -427,7 +423,7 @@ xf86getToken(const xf86ConfigSymTabRec * tab)
 
         if (temp == COMMA || temp == DASH)
             return temp;
-        if (temp == NUMBER || temp == STRING)
+        if (temp == NUMBER || temp == XF86_TOKEN_STRING)
             return temp;
     }
 
@@ -448,8 +444,11 @@ xf86getSubToken(char **comment)
     for (;;) {
         token = xf86getToken(NULL);
         if (token == COMMENT) {
-            if (comment)
+            if (comment) {
                 *comment = xf86addComment(*comment, xf86_lex_val.str);
+                free(xf86_lex_val.str);
+                xf86_lex_val.str = NULL;
+            }
         }
         else
             return token;
@@ -464,8 +463,11 @@ xf86getSubTokenWithTab(char **comment, const xf86ConfigSymTabRec * tab)
     for (;;) {
         token = xf86getToken(tab);
         if (token == COMMENT) {
-            if (comment)
+            if (comment) {
                 *comment = xf86addComment(*comment, xf86_lex_val.str);
+                free(xf86_lex_val.str);
+                xf86_lex_val.str = NULL;
+            }
         }
         else
             return token;
@@ -526,9 +528,6 @@ xf86pathIsSafe(const char *path)
  *    %S    cmdline argument as a "safe" path (relative, and no ".." elements)
  *    %X    default config file name ("xorg.conf")
  *    %H    hostname
- *    %E    config file environment ($XORGCONFIG) as an absolute path
- *    %F    config file environment ($XORGCONFIG) as a relative path
- *    %G    config file environment ($XORGCONFIG) as a safe path
  *    %P    projroot
  *    %C    sysconfdir
  *    %D    datadir
@@ -536,7 +535,6 @@ xf86pathIsSafe(const char *path)
  */
 
 #define XCONFIGSUFFIX	".conf"
-#define XCONFENV	"XORGCONFIG"
 
 #define BAIL_OUT		do {									\
 							free(result);				\
@@ -550,11 +548,11 @@ xf86pathIsSafe(const char *path)
 						} while (0)
 
 #define APPEND_STR(s)	do {									\
-							if (strlen(s) + l > PATH_MAX) {		\
+							if (strlen((s)) + l > PATH_MAX) {		\
 								BAIL_OUT;						\
 							} else {							\
-								strcpy(result + l, s);			\
-								l += strlen(s);					\
+								strcpy(result + l, (s));			\
+								l += strlen((s));					\
 							}									\
 						} while (0)
 
@@ -562,9 +560,7 @@ static char *
 DoSubstitution(const char *template, const char *cmdline, const char *projroot,
                int *cmdlineUsed, int *envUsed, const char *XConfigFile)
 {
-    char *result;
     int i, l;
-    static const char *env = NULL;
     static char *hostname = NULL;
 
     if (!template)
@@ -575,7 +571,10 @@ DoSubstitution(const char *template, const char *cmdline, const char *projroot,
     if (envUsed)
         *envUsed = 0;
 
-    result = malloc(PATH_MAX + 1);
+    char *result = calloc(1, PATH_MAX + 1);
+    if (!result)
+        return NULL;
+
     l = 0;
     for (i = 0; template[i]; i++) {
         if (template[i] != '%') {
@@ -616,51 +615,12 @@ DoSubstitution(const char *template, const char *cmdline, const char *projroot,
                 break;
             case 'H':
                 if (!hostname) {
-                    if ((hostname = malloc(MAXHOSTNAMELEN + 1))) {
-                        if (gethostname(hostname, MAXHOSTNAMELEN) == 0) {
-                            hostname[MAXHOSTNAMELEN] = '\0';
-                        }
-                        else {
-                            free(hostname);
-                            hostname = NULL;
-                        }
-                    }
+                    struct xhostname hn;
+                    if (xhostname(&hn))
+                        hostname = strdup(hn.name);
                 }
                 if (hostname)
                     APPEND_STR(hostname);
-                break;
-            case 'E':
-                if (!env)
-                    env = getenv(XCONFENV);
-                if (env && xf86pathIsAbsolute(env)) {
-                    APPEND_STR(env);
-                    if (envUsed)
-                        *envUsed = 1;
-                }
-                else
-                    BAIL_OUT;
-                break;
-            case 'F':
-                if (!env)
-                    env = getenv(XCONFENV);
-                if (env && !xf86pathIsAbsolute(env)) {
-                    APPEND_STR(env);
-                    if (envUsed)
-                        *envUsed = 1;
-                }
-                else
-                    BAIL_OUT;
-                break;
-            case 'G':
-                if (!env)
-                    env = getenv(XCONFENV);
-                if (env && xf86pathIsSafe(env)) {
-                    APPEND_STR(env);
-                    if (envUsed)
-                        *envUsed = 1;
-                }
-                else
-                    BAIL_OUT;
                 break;
             case 'P':
                 if (projroot && xf86pathIsAbsolute(projroot))
@@ -758,11 +718,10 @@ static Bool
 AddConfigDirFiles(const char *dirpath, struct dirent **list, int num)
 {
     int i;
-    Bool openedFile = FALSE;
-    Bool warnOnce = FALSE;
+    bool openedFile = FALSE;
+    bool warnOnce = FALSE;
 
     for (i = 0; i < num; i++) {
-        char *path;
         FILE *file;
 
         if (numFiles >= CONFIG_MAX_FILES) {
@@ -773,7 +732,7 @@ AddConfigDirFiles(const char *dirpath, struct dirent **list, int num)
             continue;
         }
 
-        path = malloc(PATH_MAX + 1);
+        char *path = calloc(1, PATH_MAX + 1);
         snprintf(path, PATH_MAX + 1, "%s/%s", dirpath, list[i]->d_name);
         file = fopen(path, "r");
         if (!file) {
@@ -800,7 +759,7 @@ OpenConfigDir(const char *path, const char *cmdline, const char *projroot,
 {
     char *dirpath = NULL, *pathcopy;
     const char *template;
-    Bool found = FALSE;
+    bool found = FALSE;
     int cmdlineUsed = 0;
 
     pathcopy = strdup(path);
@@ -850,8 +809,8 @@ xf86initConfigFiles(void)
     configLineNo = 0;
     pushToken = LOCK_TOKEN;
 
-    configBuf = malloc(CONFIG_BUF_LEN);
-    configRBuf = malloc(CONFIG_BUF_LEN);
+    configBuf = calloc(1, CONFIG_BUF_LEN);
+    configRBuf = calloc(1, CONFIG_BUF_LEN);
     configBuf[0] = '\0';        /* sanity ... */
 }
 
@@ -875,8 +834,6 @@ xf86initConfigFiles(void)
 #ifndef DEFAULT_CONF_PATH
 #define DEFAULT_CONF_PATH	"/etc/X11/%S," \
 							"%P/etc/X11/%S," \
-							"/etc/X11/%G," \
-							"%P/etc/X11/%G," \
 							"/etc/X11/%X-%M," \
 							"/etc/X11/%X," \
 							"/etc/%X," \
@@ -968,7 +925,7 @@ xf86parseError(const char *format, ...)
     ErrorF("Parse error on line %d of section %s in file %s\n\t",
            configLineNo, configSection, filename);
     va_start(ap, format);
-    VErrorF(format, ap);
+    LogVMessageVerb(X_NONE, -1, format, ap);
     va_end(ap);
 
     ErrorF("\n");
@@ -983,7 +940,7 @@ xf86validationError(const char *format, ...)
 
     ErrorF("Data incomplete in file %s\n\t", filename);
     va_start(ap, format);
-    VErrorF(format, ap);
+    LogVMessageVerb(X_NONE, -1, format, ap);
     va_end(ap);
 
     ErrorF("\n");
@@ -1028,8 +985,8 @@ xf86nameCompare(const char *s1, const char *s2)
         s1++;
     while (*s2 == '_' || *s2 == ' ' || *s2 == '\t')
         s2++;
-    c1 = (isupper(*s1) ? tolower(*s1) : *s1);
-    c2 = (isupper(*s2) ? tolower(*s2) : *s2);
+    c1 = (isupper((unsigned char)*s1) ? tolower((unsigned char)*s1) : *s1);
+    c2 = (isupper((unsigned char)*s2) ? tolower((unsigned char)*s2) : *s2);
     while (c1 == c2) {
         if (c1 == '\0')
             return 0;
@@ -1039,8 +996,8 @@ xf86nameCompare(const char *s1, const char *s2)
             s1++;
         while (*s2 == '_' || *s2 == ' ' || *s2 == '\t')
             s2++;
-        c1 = (isupper(*s1) ? tolower(*s1) : *s1);
-        c2 = (isupper(*s2) ? tolower(*s2) : *s2);
+        c1 = (isupper((unsigned char)*s1) ? tolower((unsigned char)*s1) : *s1);
+        c2 = (isupper((unsigned char)*s2) ? tolower((unsigned char)*s2) : *s2);
     }
     return c1 - c2;
 }

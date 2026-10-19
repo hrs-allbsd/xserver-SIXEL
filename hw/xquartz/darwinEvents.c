@@ -40,30 +40,7 @@
 
 #include "sanitizedCarbon.h"
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
-
-#include <X11/X.h>
-#include <X11/Xmd.h>
-#include <X11/Xproto.h>
-#include "misc.h"
-#include "windowstr.h"
-#include "pixmapstr.h"
-#include "inputstr.h"
-#include "inpututils.h"
-#include "eventstr.h"
-#include "mi.h"
-#include "scrnintstr.h"
-#include "mipointer.h"
-#include "os.h"
-#include "exglobals.h"
-
-#include "darwin.h"
-#include "quartz.h"
-#include "quartzKeyboard.h"
-#include "quartzRandR.h"
-#include "darwinEvents.h"
 
 #include <sys/types.h>
 #include <sys/uio.h>
@@ -71,6 +48,29 @@
 #include <pthread.h>
 #include <errno.h>
 #include <time.h>
+#include <X11/X.h>
+#include <X11/Xmd.h>
+#include <X11/Xproto.h>
+
+#include "dix/inpututils_priv.h"
+#include "include/misc.h"
+#include "mi/mi_priv.h"
+#include "os/client_priv.h"
+#include "Xext/xinput/exglobals.h"
+
+#include "windowstr.h"
+#include "pixmapstr.h"
+#include "inputstr.h"
+#include "eventstr.h"
+#include "scrnintstr.h"
+#include "mipointer.h"
+#include "os.h"
+
+#include "darwin.h"
+#include "quartz.h"
+#include "quartzKeyboard.h"
+#include "quartzRandR.h"
+#include "darwinEvents.h"
 
 #include <IOKit/hidsystem/IOLLEvent.h>
 
@@ -129,6 +129,11 @@ create_thread(void *(*func)(void *), void *arg)
     pthread_attr_init(&attr);
     pthread_attr_setscope(&attr, PTHREAD_SCOPE_SYSTEM);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+#ifdef QOS_CLASS_USER_INITIATED
+    if (&pthread_attr_set_qos_class_np) {
+        pthread_attr_set_qos_class_np(&attr, QOS_CLASS_USER_INITIATED, 0);
+    }
+#endif
     pthread_create(&tid, &attr, func, arg);
     pthread_attr_destroy(&attr);
 
@@ -199,7 +204,7 @@ DarwinUpdateModifiers(int pressed,                    // KeyPress or KeyRelease
         }
 }
 
-/* Generic handler for Xquartz-specifc events.  When possible, these should
+/* Generic handler for Xquartz-specific events.  When possible, these should
    be moved into their own individual functions and set as handlers using
    mieqSetHandler. */
 
@@ -355,8 +360,7 @@ DarwinProcessFDAdditionQueue_thread(void *args)
     return NULL;
 }
 
-Bool
-DarwinEQInit(void)
+void DarwinEQInit(void)
 {
     int *p;
 
@@ -376,8 +380,6 @@ DarwinEQInit(void)
         fd_add_tid = create_thread(DarwinProcessFDAdditionQueue_thread, NULL);
 
     signal_mieq_init();
-
-    return TRUE;
 }
 
 void
@@ -453,7 +455,7 @@ DarwinSendTabletEvents(DeviceIntPtr pDev, int ev_type, int ev_button,
     screen = miPointerGetScreen(pDev);
     if (!screen) {
         DEBUG_LOG("%s called before screen was initialized\n",
-                  __FUNCTION__);
+                  __func__);
         return;
     }
 
@@ -496,7 +498,7 @@ DarwinSendPointerEvents(DeviceIntPtr pDev, int ev_type, int ev_button,
     screen = miPointerGetScreen(pDev);
     if (!screen) {
         DEBUG_LOG("%s called before screen was initialized\n",
-                  __FUNCTION__);
+                  __func__);
         return;
     }
 

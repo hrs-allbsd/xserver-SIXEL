@@ -28,10 +28,8 @@
  * Authors:	Keith Packard, MIT X Consortium
  *		Harold L Hunt II
  */
-
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
+
 #include "win.h"
 
 /* See Porting Layer Definition - p. 58 */
@@ -47,7 +45,7 @@ winAllocatePrivates(ScreenPtr pScreen)
 {
     winPrivScreenPtr pScreenPriv;
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
     winDebug("winAllocateScreenPrivates - g_ulServerGeneration: %lu "
              "serverGeneration: %lu\n", g_ulServerGeneration, serverGeneration);
 #endif
@@ -58,16 +56,13 @@ winAllocatePrivates(ScreenPtr pScreen)
     }
 
     /* Allocate memory for the screen private structure */
-    pScreenPriv = malloc(sizeof(winPrivScreenRec));
+    pScreenPriv = calloc(1, sizeof(winPrivScreenRec));
     if (!pScreenPriv) {
         ErrorF("winAllocateScreenPrivates - malloc () failed\n");
         return FALSE;
     }
 
-    /* Initialize the memory of the private structure */
-    ZeroMemory(pScreenPriv, sizeof(winPrivScreenRec));
-
-    /* Intialize private structure members */
+    /* Initialize private structure members */
     pScreenPriv->fActive = TRUE;
 
     /* Register our screen private */
@@ -105,7 +100,7 @@ winAllocatePrivates(ScreenPtr pScreen)
 Bool
 winInitCmapPrivates(ColormapPtr pcmap, int i)
 {
-#if CYGDEBUG
+#if ENABLE_DEBUG
     winDebug("winInitCmapPrivates\n");
 #endif
 
@@ -130,9 +125,9 @@ Bool
 winAllocateCmapPrivates(ColormapPtr pCmap)
 {
     winPrivCmapPtr pCmapPriv;
-    static unsigned long s_ulPrivateGeneration = 0;
+    static x_server_generation_t s_ulPrivateGeneration = 0;
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
     winDebug("winAllocateCmapPrivates\n");
 #endif
 
@@ -143,14 +138,11 @@ winAllocateCmapPrivates(ColormapPtr pCmap)
     }
 
     /* Allocate memory for our private structure */
-    pCmapPriv = malloc(sizeof(winPrivCmapRec));
+    pCmapPriv = calloc(1, sizeof(winPrivCmapRec));
     if (!pCmapPriv) {
         ErrorF("winAllocateCmapPrivates - malloc () failed\n");
         return FALSE;
     }
-
-    /* Initialize the memory of the private structure */
-    ZeroMemory(pCmapPriv, sizeof(winPrivCmapRec));
 
     /* Register our colourmap private */
     if (!dixRegisterPrivateKey(g_iCmapPrivateKey, PRIVATE_COLORMAP, 0)) {
@@ -161,7 +153,7 @@ winAllocateCmapPrivates(ColormapPtr pCmap)
     /* Save the cmap private pointer */
     winSetCmapPriv(pCmap, pCmapPriv);
 
-#if CYGDEBUG
+#if ENABLE_DEBUG
     winDebug("winAllocateCmapPrivates - Returning\n");
 #endif
 

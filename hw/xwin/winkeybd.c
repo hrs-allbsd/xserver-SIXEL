@@ -30,15 +30,20 @@
  *		Peter Busch
  *		Harold L Hunt II
  */
-
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
+
+#include <stdbool.h>
+
+#include "dix/screenint_priv.h"
+#include "mi/mi_priv.h"
+
 #include "win.h"
+
+#include "dix/dix_priv.h"
+
 #include "winkeybd.h"
 #include "winconfig.h"
 #include "winmsg.h"
-
 #include "xkbsrv.h"
 
 /* C does not have a logical XOR operator, so we use a macro instead */
@@ -251,8 +256,8 @@ winRestoreModeKeyStates(void)
 
     /* Only process events if the rootwindow is mapped. The keyboard events
      * will cause segfaults otherwise */
-    if (screenInfo.screens[0]->root &&
-        screenInfo.screens[0]->root->mapped == FALSE)
+    ScreenPtr masterScreen = dixGetMasterScreen();
+    if (masterScreen->root && masterScreen->root->mapped == FALSE)
         processEvents = FALSE;
 
     /* Force to process all pending events in the mi event queue */
@@ -347,7 +352,7 @@ winIsFakeCtrl_L(UINT message, WPARAM wParam, LPARAM lParam)
 {
     MSG msgNext;
     LONG lTime;
-    Bool fReturn;
+    bool fReturn;
 
     static Bool lastWasControlL = FALSE;
     static LONG lastTime;

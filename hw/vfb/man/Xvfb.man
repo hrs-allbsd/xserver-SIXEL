@@ -48,8 +48,8 @@ rendering engine, load testing, as an aid to porting the X server to a
 new platform, and providing an unobtrusive way to run applications
 that don't really need an X server but insist on having one anyway.
 .SH OPTIONS
-.PP
-In addition to the normal server options described in the \fIXserver(1)\fP
+In addition to the normal server options described in the
+.BR Xserver (1)
 manual page, \fIXvfb\fP accepts the following command line switches:
 .TP 4
 .B "\-screen \fIscreennum\fP \fIWxHxD\fP"
@@ -80,6 +80,12 @@ interface.
 If neither \fB\-shmem\fP nor \fB\-fbdir\fP is specified,
 the framebuffer memory will be allocated with malloc().
 .TP 4
+.B "\-glamor"
+Enable glamor hw acceleration.
+.TP 4
+.B "\-dri \fI/dev/dri/renderDxxx\fP"
+render device node for glamor to use to enable DRI3.
+.TP 4
 .B "\-linebias \fIn\fP"
 This option specifies how to adjust the pixelization of thin lines.
 The value \fIn\fP is a bitmask of octants in which to prefer an axial
@@ -90,6 +96,14 @@ possible with the fb code.
 .TP 4
 .B "\-blackpixel \fIpixel-value\fP, \-whitepixel \fIpixel-value\fP"
 These options specify the black and white pixel values the server should use.
+.TP 4
+.BI "\-crtcs " n[@\fIW\fPx\fIH\fP]
+Sets the number of screen CRTCs to \fIn\fP and, optionally, sets each CRTC to
+the width \fIW\fP and height \fIH\fP.  When \fIW\fP and \fIH\fP are omitted,
+each CRTC uses the full screen size.  If \fB\-crtcs\fP is not supplied, a
+single CRTC matching the screen dimensions is created.  Unless overridden by
+\fB\-screen\fP, this is equivalent to \fB1@1280x1024\fP.  In all cases, only the
+first CRTC has a mode set at start\-up.
 .SH FILES
 The following files are created if the \-fbdir option is given.
 .TP 4
@@ -118,7 +132,10 @@ and will use memory mapped files in /var/tmp for the framebuffer.
 xwud -in /var/tmp/Xvfb_screen0
 Displays screen 0 of the server started by the preceding example.
 .SH "SEE ALSO"
-.PP
-X(@miscmansuffix@), Xserver(1), xwd(1), xwud(1), XWDFile.h
+.BR X (@miscmansuffix@),
+.BR Xserver (1),
+.BR xwd (1),
+.BR xwud (1),
+.B XWDFile.h
 .SH AUTHORS
 David P. Wiggins, The Open Group, Inc.

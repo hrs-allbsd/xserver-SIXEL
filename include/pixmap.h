@@ -85,13 +85,13 @@ typedef union _PixUnion {
     ((isPixel) ? (a).pixel == (b).pixel : (a).pixmap == (b).pixmap)
 
 #define EqualPixUnion(as, a, bs, b)				\
-    ((as) == (bs) && (SamePixUnion (a, b, as)))
+    ((as) == (bs) && (SamePixUnion ((a), (b), (as))))
 
 #define OnScreenDrawable(type) \
-	(type == DRAWABLE_WINDOW)
+	((type) == DRAWABLE_WINDOW)
 
 #define WindowDrawable(type) \
-	((type == DRAWABLE_WINDOW) || (type == UNDRAWABLE_WINDOW))
+	(((type) == DRAWABLE_WINDOW) || ((type) == UNDRAWABLE_WINDOW))
 
 extern _X_EXPORT PixmapPtr GetScratchPixmapHeader(ScreenPtr pScreen,
                                                   int width,
@@ -103,9 +103,7 @@ extern _X_EXPORT PixmapPtr GetScratchPixmapHeader(ScreenPtr pScreen,
 
 extern _X_EXPORT void FreeScratchPixmapHeader(PixmapPtr /*pPixmap */ );
 
-extern _X_EXPORT Bool CreateScratchPixmapsForScreen(ScreenPtr /*pScreen */ );
-
-extern _X_EXPORT void FreeScratchPixmapsForScreen(ScreenPtr /*pScreen */ );
+extern _X_EXPORT Bool PixmapScreenInit(ScreenPtr /*pScreen */ );
 
 extern _X_EXPORT PixmapPtr AllocatePixmap(ScreenPtr /*pScreen */ ,
                                           int /*pixDataSize */ );
@@ -113,10 +111,10 @@ extern _X_EXPORT PixmapPtr AllocatePixmap(ScreenPtr /*pScreen */ ,
 extern _X_EXPORT void FreePixmap(PixmapPtr /*pPixmap */ );
 
 extern _X_EXPORT PixmapPtr
-PixmapShareToSlave(PixmapPtr pixmap, ScreenPtr slave);
+PixmapShareToSecondary(PixmapPtr pixmap, ScreenPtr secondary);
 
 extern _X_EXPORT void
-PixmapUnshareSlavePixmap(PixmapPtr slave_pixmap);
+PixmapUnshareSecondaryPixmap(PixmapPtr secondary_pixmap);
 
 #define HAS_DIRTYTRACKING_ROTATION 1
 #define HAS_DIRTYTRACKING_DRAWABLE_SRC 1
@@ -130,8 +128,13 @@ extern _X_EXPORT Bool
 PixmapStopDirtyTracking(DrawablePtr src, PixmapPtr slave_dst);
 
 /* helper function, drivers can do this themselves if they can do it more
-   efficently */
+   efficiently */
 extern _X_EXPORT Bool
 PixmapSyncDirtyHelper(PixmapDirtyUpdatePtr dirty);
+
+extern _X_EXPORT void
+PixmapDirtyCopyArea(PixmapPtr dst, DrawablePtr src,
+                    int x, int y, int dst_x, int dst_y,
+                    RegionPtr dirty_region);
 
 #endif                          /* PIXMAP_H */

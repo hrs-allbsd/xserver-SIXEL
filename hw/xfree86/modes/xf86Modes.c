@@ -24,15 +24,17 @@
  * the sale, use or other dealings in this Software without prior written
  * authorization from the copyright holder(s) and author(s).
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
+#include <stdbool.h>
+#include <libxcvt/libxcvt.h>
+
+#include "os/mathx_priv.h"
+
+#include "xf86_priv.h"
+#include "xf86Config.h"
 #include "xf86Modes.h"
 #include "xf86Priv.h"
-
-extern XF86ConfigPtr xf86configptr;
 
 /**
  * Calculates the horizontal sync rate of a mode.
@@ -125,12 +127,14 @@ void
 xf86SetModeDefaultName(DisplayModePtr mode)
 {
     Bool interlaced = ! !(mode->Flags & V_INTERLACE);
-    char *tmp;
+    char *tmp = NULL;
 
     free((void *) mode->name);
 
-    XNFasprintf(&tmp, "%dx%d%s", mode->HDisplay, mode->VDisplay,
-                interlaced ? "i" : "");
+    if (asprintf(&tmp, "%dx%d%s", mode->HDisplay, mode->VDisplay,
+                   interlaced ? "i" : "") == -1)
+        LogMessage(X_ERROR, "xf86SetModeDefaultName() failed to allocate memory\n");
+
     mode->name = tmp;
 }
 
@@ -179,10 +183,10 @@ xf86SetModeCrtc(DisplayModePtr p, int adjustFlags)
         p->CrtcVSyncEnd *= p->VScan;
         p->CrtcVTotal *= p->VScan;
     }
-    p->CrtcVBlankStart = min(p->CrtcVSyncStart, p->CrtcVDisplay);
-    p->CrtcVBlankEnd = max(p->CrtcVSyncEnd, p->CrtcVTotal);
-    p->CrtcHBlankStart = min(p->CrtcHSyncStart, p->CrtcHDisplay);
-    p->CrtcHBlankEnd = max(p->CrtcHSyncEnd, p->CrtcHTotal);
+    p->CrtcVBlankStart = MIN(p->CrtcVSyncStart, p->CrtcVDisplay);
+    p->CrtcVBlankEnd = MAX(p->CrtcVSyncEnd, p->CrtcVTotal);
+    p->CrtcHBlankStart = MIN(p->CrtcHSyncStart, p->CrtcHDisplay);
+    p->CrtcHBlankEnd = MAX(p->CrtcHSyncEnd, p->CrtcHTotal);
 
     p->CrtcHAdjusted = FALSE;
     p->CrtcVAdjusted = FALSE;
@@ -211,7 +215,7 @@ xf86DuplicateMode(const DisplayModeRec * pMode)
 {
     DisplayModePtr pNew;
 
-    pNew = xnfalloc(sizeof(DisplayModeRec));
+    pNew = XNFalloc(sizeof(DisplayModeRec));
     *pNew = *pMode;
     pNew->next = NULL;
     pNew->prev = NULL;
@@ -219,7 +223,7 @@ xf86DuplicateMode(const DisplayModeRec * pMode)
     if (pMode->name == NULL)
         xf86SetModeDefaultName(pNew);
     else
-        pNew->name = xnfstrdup(pMode->name);
+        pNew->name = XNFstrdup(pMode->name);
 
     return pNew;
 }
@@ -287,7 +291,7 @@ xf86ModesEqual(const DisplayModeRec * pMode1, const DisplayModeRec * pMode2)
 static void
 add(char **p, const char *new)
 {
-    *p = xnfrealloc(*p, strlen(*p) + strlen(new) + 2);
+    *p = XNFrealloc(*p, strlen(*p) + strlen(new) + 2);
     strcat(*p, " ");
     strcat(*p, new);
 }
@@ -321,7 +325,7 @@ void
 xf86PrintModeline(int scrnIndex, DisplayModePtr mode)
 {
     char tmp[256];
-    char *flags = xnfcalloc(1, 1);
+    char *flags = XNFcallocarray(1, 1);
 
 #define TBITS 6
     const char tchar[TBITS + 1] = "UezdPb";
@@ -466,7 +470,7 @@ xf86ValidateModesSync(ScrnInfoPtr pScrn, DisplayModePtr modeList, MonPtr mon)
     DisplayModePtr mode;
 
     for (mode = modeList; mode != NULL; mode = mode->next) {
-        Bool bad;
+        bool bad;
         int i;
 
         bad = TRUE;
@@ -513,7 +517,7 @@ xf86ValidateModesClocks(ScrnInfoPtr pScrn, DisplayModePtr modeList,
     int i;
 
     for (mode = modeList; mode != NULL; mode = mode->next) {
-        Bool good = FALSE;
+        bool good = FALSE;
 
         for (i = 0; i < n_ranges; i++) {
             if (mode->Clock >= min[i] * (1 - SYNC_TOLERANCE) &&
@@ -549,7 +553,7 @@ xf86ValidateModesUserConfig(ScrnInfoPtr pScrn, DisplayModePtr modeList)
 
     for (mode = modeList; mode != NULL; mode = mode->next) {
         int i;
-        Bool good = FALSE;
+        bool good = FALSE;
 
         for (i = 0; pScrn->display->modes[i] != NULL; i++) {
             if (strncmp(pScrn->display->modes[i], mode->name,
@@ -680,7 +684,7 @@ xf86GetConfigModes(XF86ConfModeLinePtr conf_mode)
         mode = calloc(1, sizeof(DisplayModeRec));
         if (!mode)
             continue;
-        mode->name = xstrdup(conf_mode->ml_identifier);
+        mode->name = Xstrdup(conf_mode->ml_identifier);
         if (!mode->name) {
             free(mode);
             continue;
@@ -791,4 +795,39 @@ xf86PruneDuplicateModes(DisplayModePtr modes)
     }
 
     return modes;
+}
+
+/*
+ * Generate a CVT standard mode from HDisplay, VDisplay and VRefresh.
+ */
+DisplayModePtr
+xf86CVTMode(int HDisplay, int VDisplay, float VRefresh, Bool Reduced,
+            Bool Interlaced)
+{
+    struct libxcvt_mode_info *libxcvt_mode_info;
+    DisplayModeRec *Mode = XNFcallocarray(1, sizeof(DisplayModeRec));
+    char *tmp = NULL;
+
+    libxcvt_mode_info =
+        libxcvt_gen_mode_info(HDisplay, VDisplay, VRefresh, Reduced, Interlaced);
+
+    if (asprintf(&tmp, "%dx%d", HDisplay, VDisplay) == -1)
+        return NULL;
+    Mode->name = tmp;
+
+    Mode->VDisplay   = libxcvt_mode_info->vdisplay;
+    Mode->HDisplay   = libxcvt_mode_info->hdisplay;
+    Mode->Clock      = libxcvt_mode_info->dot_clock;
+    Mode->HSyncStart = libxcvt_mode_info->hsync_start;
+    Mode->HSyncEnd   = libxcvt_mode_info->hsync_end;
+    Mode->HTotal     = libxcvt_mode_info->htotal;
+    Mode->VSyncStart = libxcvt_mode_info->vsync_start;
+    Mode->VSyncEnd   = libxcvt_mode_info->vsync_end;
+    Mode->VTotal     = libxcvt_mode_info->vtotal;
+    Mode->VRefresh   = libxcvt_mode_info->vrefresh;
+    Mode->Flags      = libxcvt_mode_info->mode_flags;
+
+    free(libxcvt_mode_info);
+
+    return Mode;
 }

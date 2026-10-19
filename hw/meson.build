@@ -1,12 +1,6 @@
-if get_option('xephyr')
-    subdir('kdrive')
-endif
+subdir('kdrive')
 
-if get_option('dmx')
-    subdir('dmx')
-endif
-
-if get_option('xvfb')
+if build_xvfb
     subdir('vfb')
 endif
 
@@ -20,10 +14,6 @@ endif
 
 if build_xquartz
     subdir('xquartz')
-endif
-
-if build_xwayland
-    subdir('xwayland')
 endif
 
 if build_xwin

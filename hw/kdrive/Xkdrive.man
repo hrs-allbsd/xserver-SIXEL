@@ -10,13 +10,14 @@ Xkdrive \- tiny X server
 .SH DESCRIPTION
 .B Xkdrive
 is a family of X servers designed to be particularly small.  This
-manual page describes the common functionality of the 
+manual page describes the common functionality of the
 .B Xkdrive
 servers; for information on a specific X server, please refer to the
 relevant manual page.
 .SH OPTIONS
 In addition to the standard options accepted by all X servers (see
-Xserver(1)), all the 
+.BR Xserver (@appmansuffix@),
+all the
 .B Xkdrive
 servers accept the following options:
 .TP 8
@@ -43,8 +44,83 @@ enable emulation of a middle mouse button by chording.
 .TP 8
 .B -3button
 disable emulation of a middle mouse button by chording.
+
+.PP
+Additionally, kdrive X servers using the common glamor code (currently Xfbdev),
+also support the following options:
+
+.TP 8
+.B -dri "</dev/dri/cardxx|/dev/dri/renderDxxx>"
+enables DRI3 support for the X server.
+.TP 8
+.B -glamor
+force enables glamor render acceleration (even on top of sw renderers like softpipe/llvmpipe).
+.TP 8
+.B -gbm
+allows glamor to use libgbm.
+.TP 8
+.B -nogbm
+forces glamor to not use libgbm.
+.TP 8
+.B -direct-dri3
+Forces glamor to use the direct implementation of DRI3.
+.TP 8
+.B -noglamor
+force disables glamor render acceleration.
+.TP 8
+.B -glvendor "<library>"
+tells the X server what gl vendor library to use.
+Particularly useful on multi-card systems.
+.TP 8
+.B -force-gl
+tells the X server to only use desktop OpenGL contexts.
+.TP 8
+.B -force-es
+tells the X server to only use embedded GLES contexts.
+.TP 8
+.B -noxv
+disables X-Video support.
+
+.SH KEYBOARD
+The
+.B Xkdrive
+servers are normally configured to recognize various special combinations
+of key presses that instruct the server to perform some action, rather
+than just sending the key press event to a client application.
+These actions depend on the XKB keymap loaded by a particular keyboard device
+and may or may not be available on a given configuration.
+.PP
+The following key special combinations are recognized by the
+.B Xkdrive
+servers.
+.TP 8
+.B Ctrl+Alt+Backspace
+.TP 8
+.B Ctrl+Alt+Delete
+.TP 8
+.B Ctrl+Alt+KeyPadDelete
+Immediately kills the server -- no questions asked. It can be disabled by
+adding the
+.B -nozap
+command-line argument.
+
+.PP
+Additionally, kdrive X servers using the linux backend (currently Xfbdev),
+also support the following special key combinations:
+
+.TP 8
+.B Ctrl+Alt+F1...F12
+For systems with virtual terminal support, these keystroke
+combinations are used to switch to virtual terminals 1 through 12,
+respectively.
+
 .SH SEE ALSO
-X(@miscmansuffix@), Xserver(1), xdm(1), xinit(1), Xvesa(1), Xfbdev(1).
+.BR X (@miscmansuffix@),
+.BR Xserver (@appmansuffix@),
+.BR xdm (@appmansuffix@),
+.BR xinit (@appmansuffix@),
+.BR Xvesa (@appmansuffix@),
+.BR Xfbdev (@appmansuffix@).
 .SH AUTHORS
 The Xkdrive common core was written by Keith Packard,
 and is based on the Sample Implementation of X.

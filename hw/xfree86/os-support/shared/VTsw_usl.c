@@ -20,20 +20,23 @@
  * PERFORMANCE OF THIS SOFTWARE.
  *
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
 #include <X11/X.h>
 
+#include "os/osdep.h"
+
 #include "xf86.h"
 #include "xf86Priv.h"
+#include "xf86_os_support.h"
 #include "xf86_OSlib.h"
+
+#include "seatd-libseat.h"
 
 /*
  * Handle the VT-switching interface for OSs that use USL-style ioctl()s
- * (the sysv, sco, and linux subdirs).
+ * (this used to include the sysv, sco, and linux subdirs, but only linux
+ *  remains now).
  */
 
 /*
@@ -54,20 +57,23 @@ xf86VTSwitchPending(void)
     return xf86Info.vtRequestsPending ? TRUE : FALSE;
 }
 
-Bool
-xf86VTSwitchAway(void)
+bool xf86VTSwitchAway(void)
 {
     xf86Info.vtRequestsPending = FALSE;
+    if (seatd_libseat_controls_session())
+        return true;
     if (ioctl(xf86Info.consoleFd, VT_RELDISP, 1) < 0)
-        return FALSE;
+        return false;
     else
-        return TRUE;
+        return true;
 }
 
 Bool
 xf86VTSwitchTo(void)
 {
     xf86Info.vtRequestsPending = FALSE;
+    if (seatd_libseat_controls_session())
+        return TRUE;
     if (ioctl(xf86Info.consoleFd, VT_RELDISP, VT_ACKACQ) < 0)
         return FALSE;
     else

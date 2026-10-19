@@ -1,17 +1,3 @@
-fb = shared_module(
-    'fb',
-    'fbmodule.c',
-
-    include_directories: [inc, xorg_inc],
-    c_args: xorg_c_args,
-    dependencies: common_dep,
-    link_whole: libxserver_fb,
-    link_with: e,
-
-    install: true,
-    install_dir: module_dir,
-)
-
 shared_module(
     'wfb',
     'fbmodule.c',
@@ -20,10 +6,10 @@ shared_module(
     c_args: [ xorg_c_args, wfb_args ],
     dependencies: common_dep,
     link_whole: libxserver_wfb,
-    link_with: e,
+    link_with: xserver_exec,
 
     install: true,
-    install_dir: module_dir,
+    install_dir: module_abi_dir,
 )
 
 shared_module(
@@ -34,10 +20,10 @@ shared_module(
     c_args: xorg_c_args,
     dependencies: common_dep,
     link_whole: libxserver_miext_shadow,
-    link_with: [fb, e],
+    link_with: xserver_exec,
 
     install: true,
-    install_dir: module_dir,
+    install_dir: module_abi_dir,
 )
 
 if build_glx
@@ -45,13 +31,13 @@ if build_glx
         'glx',
         [ 'glxmodule.c', srcs_glxdri2 ],
 
-        include_directories: [ inc, xorg_inc, glx_inc ],
+        include_directories: [ inc, xorg_inc ],
         c_args: [ xorg_c_args, glx_align64 ],
-        dependencies: [ common_dep, dl_dep ],
+        dependencies: [ common_dep, dl_dep, dri_dep ],
         link_whole: libxserver_glx,
-        link_with: e,
+        link_with: xserver_exec,
 
         install: true,
-        install_dir: join_paths(module_dir, 'extensions')
+        install_dir: join_paths(module_abi_dir, 'extensions')
     )
 endif

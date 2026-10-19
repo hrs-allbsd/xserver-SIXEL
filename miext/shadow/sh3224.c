@@ -20,25 +20,23 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include "dix-config.h"
-#endif
 
 #include "shadow.h"
 #include "fb.h"
 
-#define Get8(a)	((CARD32) READ(a))
+#define Get8(a)	((CARD32) READ((a)))
 
 #if BITMAP_BIT_ORDER == MSBFirst
-#define Get24(a)    ((Get8(a) << 16) | (Get8((a)+1) << 8) | Get8((a)+2))
-#define Put24(a,p)  ((WRITE((a+0), (CARD8) ((p) >> 16))), \
-		     (WRITE((a+1), (CARD8) ((p) >> 8))), \
-		     (WRITE((a+2), (CARD8) (p))))
+#define Get24(a)    ((Get8((a)) << 16) | (Get8((a)+1) << 8) | Get8((a)+2))
+#define Put24(a,p)  ((WRITE(((a)+0), (CARD8) ((p) >> 16))), \
+		     (WRITE(((a)+1), (CARD8) ((p) >> 8))), \
+		     (WRITE(((a)+2), (CARD8) (p))))
 #else
-#define Get24(a)    (Get8(a) | (Get8((a)+1) << 8) | (Get8((a)+2)<<16))
-#define Put24(a,p)  ((WRITE((a+0), (CARD8) (p))), \
-		     (WRITE((a+1), (CARD8) ((p) >> 8))), \
-		     (WRITE((a+2), (CARD8) ((p) >> 16))))
+#define Get24(a)    (Get8((a)) | (Get8((a)+1) << 8) | (Get8((a)+2)<<16))
+#define Put24(a,p)  ((WRITE(((a)+0), (CARD8) (p))), \
+		     (WRITE(((a)+1), (CARD8) ((p) >> 8))), \
+		     (WRITE(((a)+2), (CARD8) ((p) >> 16))))
 #endif
 
 static void

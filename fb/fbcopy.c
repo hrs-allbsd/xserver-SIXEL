@@ -20,13 +20,11 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
 #include <stdlib.h>
 
-#include "fb.h"
+#include "fb/fb_priv.h"
 
 void
 fbCopyNtoN(DrawablePtr pSrcDrawable,
@@ -194,7 +192,7 @@ fbCopyNto1(DrawablePtr pSrcDrawable,
             height = pbox->y2 - pbox->y1;
 
             tmpStride = ((width + FB_STIP_MASK) >> FB_STIP_SHIFT);
-            tmp = xallocarray(tmpStride * height, sizeof(FbStip));
+            tmp = calloc(tmpStride * height, sizeof(FbStip));
             if (!tmp)
                 return;
 

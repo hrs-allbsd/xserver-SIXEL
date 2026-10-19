@@ -32,9 +32,8 @@
  */
 /* $XFree86: $ */
 
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #define _STDLIB_H 1 /* bison checks this to know if stdlib has been included */
@@ -310,7 +309,7 @@ static void
 AddMenuLine (const char *text, MENUCOMMANDTYPE cmd, const char *param)
 {
   if (menu.menuItem==NULL)
-    menu.menuItem = malloc(sizeof(MENUITEM));
+    menu.menuItem = calloc(1, sizeof(MENUITEM));
   else
     menu.menuItem = realloc(menu.menuItem, sizeof(MENUITEM)*(menu.menuItems+1));
 
@@ -339,7 +338,7 @@ CloseMenu (void)
   if (pref.menuItems)
     pref.menu = realloc (pref.menu, (pref.menuItems+1)*sizeof(MENUPARSED));
   else
-    pref.menu = malloc (sizeof(MENUPARSED));
+    pref.menu = calloc(1, sizeof(MENUPARSED));
   
   memcpy (pref.menu+pref.menuItems, &menu, sizeof(MENUPARSED));
   pref.menuItems++;
@@ -362,7 +361,7 @@ static void
 AddIconLine (char *matchstr, char *iconfile)
 {
   if (pref.icon==NULL)
-    pref.icon = malloc(sizeof(ICONITEM));
+    pref.icon = calloc(1, sizeof(ICONITEM));
   else
     pref.icon = realloc(pref.icon, sizeof(ICONITEM)*(pref.iconItems+1));
 
@@ -397,7 +396,7 @@ static void
 AddStyleLine (char *matchstr, unsigned long style)
 {
   if (pref.style==NULL)
-    pref.style = malloc(sizeof(STYLEITEM));
+    pref.style = calloc(1, sizeof(STYLEITEM));
   else
     pref.style = realloc(pref.style, sizeof(STYLEITEM)*(pref.styleItems+1));
 
@@ -429,7 +428,7 @@ static void
 AddSysMenuLine (char *matchstr, char *menuname, int pos)
 {
   if (pref.sysMenu==NULL)
-    pref.sysMenu = malloc(sizeof(SYSMENUITEM));
+    pref.sysMenu = calloc(1, sizeof(SYSMENUITEM));
   else
     pref.sysMenu = realloc(pref.sysMenu, sizeof(SYSMENUITEM)*(pref.sysMenuItems+1));
 

@@ -31,9 +31,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
 #include <dlfcn.h>
 
@@ -43,18 +41,24 @@
 #include <X11/Xproto.h>
 #include <GL/glxproto.h>
 
-#include <glxserver.h>
-#include <glxutil.h>
+#include "Xext/glx/glxserver.h"
+#include "Xext/glx/glxutil.h"
+#include "Xext/glx/extension_string.h"
 
 #include "x-hash.h"
 
 #include "visualConfigs.h"
-#include "dri.h"
-#include "extension_string.h"
+/* This is XQuartz's own DRI surface API (hw/xquartz/xpr/xpr_dri.h), not the
+ * generic xfree86 include/dri.h.  It was renamed from dri.h to xpr_dri.h in
+ * 9bd146a39 ("xfree86: dri: move over public SDK headers to include/"); before
+ * that, "dri.h" resolved to ../xpr/dri.h.  Include the new name explicitly so
+ * we don't fall through to include/dri.h, which pulls in Linux-only
+ * <pciaccess.h> and xf86dri.h. */
+#include "xpr_dri.h"
 
 #include "darwin.h"
 #define GLAQUA_DEBUG_MSG(msg, args ...) ASL_LOG(ASL_LEVEL_DEBUG, "GLXAqua", \
-                                                msg, \
+                                                (msg), \
                                                 ## args)
 
 __GLXprovider *
@@ -299,15 +303,21 @@ attach(__GLXAquaContext *context, __GLXAquaDrawable *draw)
         //if (!quartzProcs->CreateSurface(pDraw->pScreen, pDraw->id, pDraw,
         if (!DRICreateSurface(pDraw->pScreen, pDraw->id, pDraw,
                               0, &draw->sid, NULL,
-                              surface_notify, draw))
+                              surface_notify, draw)) {
+            ErrorF("%s: DRICreateSurface failed for drawable 0x%x\n",
+                   __func__, (unsigned int)pDraw->id);
             return TRUE;
+        }
         draw->pDraw = pDraw;
     }
 
     if (!context->isAttached || context->sid != draw->sid) {
         x_list *lst;
+        xp_error xp_err = xp_attach_gl_context(context->ctx, draw->sid);
 
-        if (xp_attach_gl_context(context->ctx, draw->sid) != Success) {
+        if (xp_err != Success) {
+            ErrorF("%s: xp_attach_gl_context(ctx %p, sid 0x%x) failed: %d\n",
+                   __func__, context->ctx, (unsigned int)draw->sid, xp_err);
             //quartzProcs->DestroySurface(pDraw->pScreen, pDraw->id, pDraw,
             DRIDestroySurface(pDraw->pScreen, pDraw->id, pDraw,
                               surface_notify, draw);
@@ -343,33 +353,6 @@ attach(__GLXAquaContext *context, __GLXAquaDrawable *draw)
     return FALSE;
 }
 
-#if 0     // unused
-static void
-unattach(__GLXAquaContext *context)
-{
-    x_list *lst;
-    GLAQUA_DEBUG_MSG("unattach\n");
-    if (context == NULL) {
-        ErrorF("Tried to unattach a null context\n");
-        return;
-    }
-    if (context->isAttached) {
-        GLAQUA_DEBUG_MSG("unattaching\n");
-
-        if (surface_hash != NULL) {
-            lst = x_hash_table_lookup(surface_hash, (void *)context->sid,
-                                      NULL);
-            lst = x_list_remove(lst, context);
-            x_hash_table_insert(surface_hash, (void *)context->sid, lst);
-        }
-
-        CGLClearDrawable(context->ctx);
-        context->isAttached = FALSE;
-        context->sid = 0;
-    }
-}
-#endif
-
 static int
 __glXAquaContextMakeCurrent(__GLXcontext *baseContext)
 {
@@ -379,8 +362,12 @@ __glXAquaContextMakeCurrent(__GLXcontext *baseContext)
 
     GLAQUA_DEBUG_MSG("glAquaMakeCurrent (ctx 0x%p)\n", baseContext);
 
-    if (context->base.drawPriv != context->base.readPriv)
+    if (context->base.drawPriv != context->base.readPriv) {
+        ErrorF("%s: separate read/draw drawables are unsupported "
+               "(draw %p, read %p)\n", __func__,
+               context->base.drawPriv, context->base.readPriv);
         return 0;
+    }
 
     if (attach(context, drawPriv))
         return /*error*/ 0;
@@ -538,19 +525,31 @@ __glXAquaScreenProbe(ScreenPtr pScreen)
         &screen->base.numFBConfigs, pScreen->myNum);
 
     __glXInitExtensionEnableBits(screen->base.glx_enable_bits);
+
+    /* Advertise GLX_ARB_create_context so clients can call
+     * glXCreateContextAttribsARB.  XQuartz uses AppleDRI + client-side CGL
+     * (direct rendering), which means the server-side createContext hook
+     * (__glXAquaScreenCreateContext) only fires for indirect requests --
+     * those are still capped at GL 1.4 by createcontext.c:validate_GL_version.
+     * The direct path routes to __glXdirectContextCreate in the core dispatch
+     * and the requested profile/version is honored on the client side.
+     *
+     * GLX_ARB_create_context_robustness is advertised for compatibility with
+     * clients that always ask for it, but CGL has no GPU-reset notification
+     * mechanism: GLX_CONTEXT_ROBUST_ACCESS_BIT_ARB /
+     * GLX_LOSE_CONTEXT_ON_RESET_ARB are silently accepted and never signal
+     * a reset.
+     *
+     * This is needed for OpenGL core profile support.
+     */
+    __glXEnableExtension(screen->base.glx_enable_bits, "GLX_ARB_create_context");
+    __glXEnableExtension(screen->base.glx_enable_bits, "GLX_ARB_create_context_profile");
+    __glXEnableExtension(screen->base.glx_enable_bits, "GLX_ARB_create_context_robustness");
+
     __glXScreenInit(&screen->base, pScreen);
 
     return &screen->base;
 }
-
-#if 0 // unused
-static void
-__glXAquaDrawableCopySubBuffer(__GLXdrawable *drawable,
-                               int x, int y, int w, int h)
-{
-    /*TODO finish me*/
-}
-#endif
 
 static void
 __glXAquaDrawableDestroy(__GLXdrawable *base)
@@ -587,9 +586,7 @@ __glXAquaScreenCreateDrawable(ClientPtr client,
                               XID glxDrawId,
                               __GLXconfig *conf)
 {
-    __GLXAquaDrawable *glxPriv;
-
-    glxPriv = malloc(sizeof *glxPriv);
+    __GLXAquaDrawable *glxPriv = calloc(1, sizeof *glxPriv);
 
     if (glxPriv == NULL)
         return NULL;

@@ -43,11 +43,11 @@ ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
 SOFTWARE.
 
 ******************************************************************/
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
+#include <stdbool.h>
 #include <X11/X.h>
+
 #include "gcstruct.h"
 #include "scrnintstr.h"
 #include "pixmapstr.h"
@@ -59,10 +59,10 @@ SOFTWARE.
 
 /* These were stolen from mfb.  They don't really belong here. */
 #define LONG2CHARSSAMEORDER(x) ((MiBits)(x))
-#define LONG2CHARSDIFFORDER( x ) ( ( ( ( x ) & (MiBits)0x000000FF ) << 0x18 ) \
-                        | ( ( ( x ) & (MiBits)0x0000FF00 ) << 0x08 ) \
-                        | ( ( ( x ) & (MiBits)0x00FF0000 ) >> 0x08 ) \
-                        | ( ( ( x ) & (MiBits)0xFF000000 ) >> 0x18 ) )
+#define LONG2CHARSDIFFORDER( x ) ( ( ( ( (x) ) & (MiBits)0x000000FF ) << 0x18 ) \
+                        | ( ( ( (x) ) & (MiBits)0x0000FF00 ) << 0x08 ) \
+                        | ( ( ( (x) ) & (MiBits)0x00FF0000 ) >> 0x08 ) \
+                        | ( ( ( (x) ) & (MiBits)0xFF000000 ) >> 0x18 ) )
 
 #define PGSZB	4
 #define PPW	(PGSZB<<3)      /* assuming 8 bits per byte */
@@ -95,30 +95,30 @@ miPushPixels(GCPtr pGC, PixmapPtr pBitMap, DrawablePtr pDrawable,
              int dx, int dy, int xOrg, int yOrg)
 {
     int h, dxDivPPW, ibEnd;
-    MiBits *pwLineStart;
     MiBits *pw, *pwEnd;
     MiBits msk;
     int ib, w;
     int ipt;                    /* index into above arrays */
-    Bool fInBox;
-    DDXPointRec pt[NPT], ptThisLine;
+    bool fInBox;
+    xPoint pt[NPT], ptThisLine;
     int width[NPT];
 
 #if 1
     MiBits startmask;
 
-    if (screenInfo.bitmapBitOrder == IMAGE_BYTE_ORDER)
+    if (screenInfo.bitmapBitOrder == IMAGE_BYTE_ORDER) {
         if (screenInfo.bitmapBitOrder == LSBFirst)
             startmask = (MiBits) (-1) ^ LONG2CHARSSAMEORDER((MiBits) (-1) << 1);
         else
             startmask = (MiBits) (-1) ^ LONG2CHARSSAMEORDER((MiBits) (-1) >> 1);
+    }
     else if (screenInfo.bitmapBitOrder == LSBFirst)
         startmask = (MiBits) (-1) ^ LONG2CHARSDIFFORDER((MiBits) (-1) << 1);
     else
         startmask = (MiBits) (-1) ^ LONG2CHARSDIFFORDER((MiBits) (-1) >> 1);
 #endif
 
-    pwLineStart = malloc(BitmapBytePad(dx));
+    MiBits *pwLineStart = calloc(1, BitmapBytePad(dx));
     if (!pwLineStart)
         return;
     ipt = 0;
@@ -166,13 +166,14 @@ miPushPixels(GCPtr pGC, PixmapPtr pBitMap, DrawablePtr pDrawable,
                 }
 #if 1
                 /* This is not quite right, but it'll do for now */
-                if (screenInfo.bitmapBitOrder == IMAGE_BYTE_ORDER)
+                if (screenInfo.bitmapBitOrder == IMAGE_BYTE_ORDER) {
                     if (screenInfo.bitmapBitOrder == LSBFirst)
                         msk =
                             LONG2CHARSSAMEORDER(LONG2CHARSSAMEORDER(msk) << 1);
                     else
                         msk =
                             LONG2CHARSSAMEORDER(LONG2CHARSSAMEORDER(msk) >> 1);
+                }
                 else if (screenInfo.bitmapBitOrder == LSBFirst)
                     msk = LONG2CHARSDIFFORDER(LONG2CHARSDIFFORDER(msk) << 1);
                 else
@@ -216,13 +217,14 @@ miPushPixels(GCPtr pGC, PixmapPtr pBitMap, DrawablePtr pDrawable,
                 }
 #if 1
                 /* This is not quite right, but it'll do for now */
-                if (screenInfo.bitmapBitOrder == IMAGE_BYTE_ORDER)
+                if (screenInfo.bitmapBitOrder == IMAGE_BYTE_ORDER) {
                     if (screenInfo.bitmapBitOrder == LSBFirst)
                         msk =
                             LONG2CHARSSAMEORDER(LONG2CHARSSAMEORDER(msk) << 1);
                     else
                         msk =
                             LONG2CHARSSAMEORDER(LONG2CHARSSAMEORDER(msk) >> 1);
+                }
                 else if (screenInfo.bitmapBitOrder == LSBFirst)
                     msk = LONG2CHARSDIFFORDER(LONG2CHARSDIFFORDER(msk) << 1);
                 else

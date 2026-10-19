@@ -20,20 +20,21 @@
  * OF THIS SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
-#include <X11/Xos.h>
-#include <X11/Xdefs.h>
-#include "misc.h"
-#include <busfault.h>
-#include <list.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <sys/mman.h>
 #include <signal.h>
+#include <X11/Xos.h>
+#include <X11/Xdefs.h>
+
+#include "include/misc.h"
+#include "os/busfault.h"
+
+#include <list.h>
 
 struct busfault {
     struct xorg_list    list;
@@ -41,7 +42,7 @@ struct busfault {
     void                *addr;
     size_t              size;
 
-    Bool                valid;
+    bool                valid;
 
     busfault_notify_ptr notify;
     void                *context;
@@ -136,17 +137,17 @@ panic:
         FatalError("bus error\n");
 }
 
-Bool
-busfault_init(void)
+void busfault_init(void)
 {
     struct sigaction    act, old_act;
 
     act.sa_sigaction = busfault_sigaction;
     act.sa_flags = SA_SIGINFO;
     sigemptyset(&act.sa_mask);
-    if (sigaction(SIGBUS, &act, &old_act) < 0)
-        return FALSE;
+    if (sigaction(SIGBUS, &act, &old_act) < 0) {
+        ErrorF("busfault_init: sigaction() failed.\n");
+        return;
+    }
     previous_busfault_sigaction = old_act.sa_sigaction;
     xorg_list_init(&busfaults);
-    return TRUE;
 }

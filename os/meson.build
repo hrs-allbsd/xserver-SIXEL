@@ -1,74 +1,86 @@
 srcs_os = [
     'WaitFor.c',
     'access.c',
+    'alloc.c',
     'auth.c',
     'backtrace.c',
     'client.c',
+    'cmdline.c',
     'connection.c',
+    'fmt.c',
     'inputthread.c',
     'io.c',
     'mitauth.c',
-    'oscolor.c',
     'osinit.c',
     'ospoll.c',
+    'ossock.c',
+    'serverlock.c',
+    'string.c',
+    'transport.c',
     'utils.c',
     'xdmauth.c',
+    'xhostname.c',
     'xsha1.c',
-    'xstrans.c',
     'xprintf.c',
     'log.c',
 ]
 
-# Wrapper code for missing C library functions
+conf_data.set('CONFIG_SYSLOG', cc.has_header('syslog.h') ? '1' : false)
+
+have_strlcpy = cc.has_function('strlcpy', dependencies: libbsd_dep)
+have_strlcat = cc.has_function('strlcat', dependencies: libbsd_dep)
+
+conf_data.set('HAVE_STRLCAT', have_strlcat ? '1' : false)
+conf_data.set('HAVE_STRLCPY', have_strlcpy ? '1' : false)
+
+# Wrapper code for missing C library functions. Note that conf_data contains either '1' or false.
 srcs_libc = []
-if not conf_data.get('HAVE_REALLOCARRAY')
+if conf_data.get('HAVE_REALLOCARRAY').to_int() == 0
     srcs_libc += 'reallocarray.c'
 endif
-if not conf_data.get('HAVE_STRCASECMP')
-    srcs_libc += 'strcasecmp.c'
-endif
-if not conf_data.get('HAVE_STRCASESTR')
-    srcs_libc += 'strcasestr.c'
-endif
-if not conf_data.get('HAVE_STRLCAT')
+if not have_strlcat
     srcs_libc += 'strlcat.c'
 endif
-if not conf_data.get('HAVE_STRLCPY')
+if not have_strlcpy
     srcs_libc += 'strlcpy.c'
 endif
-if not conf_data.get('HAVE_STRNDUP')
+if conf_data.get('HAVE_STRNDUP').to_int() == 0
     srcs_libc += 'strndup.c'
 endif
-if not conf_data.get('HAVE_TIMINGSAFE_MEMCMP')
+if conf_data.get('HAVE_TIMINGSAFE_MEMCMP').to_int() == 0
     srcs_libc += 'timingsafe_memcmp.c'
 endif
-if not conf_data.get('HAVE_POLL')
+if conf_data.get('HAVE_POLL').to_int() == 0
     srcs_os += 'xserver_poll.c'
 endif
 
-if conf_data.get('BUSFAULT')
+if conf_data.get('HAVE_SIGACTION').to_int() != 0
     srcs_os += 'busfault.c'
 endif
 
-if get_option('xdmcp')
+if build_xdmcp
     srcs_os += 'xdmcp.c'
 endif
 
-rpc_dep = []
-if get_option('secure-rpc')
-    # prefer libtirpc (if available), otherwise ensure RPC functions are
-    # provided by libc.
-    rpc_dep = dependency('libtirpc', required: false)
-    if not (rpc_dep.found() or cc.has_header('rpc/rpc.h'))
-        error('secure-rpc requested, but neither libtirpc or libc RPC support were found')
-    endif
+os_dep = []
+os_c_args = []
 
-    srcs_os += 'rpcauth.c'
+# eg. struct msghdr -> msg_control 
+if host_machine.system() == 'sunos'
+    os_c_args += '-D_XOPEN_SOURCE=1'
+    os_c_args += '-D_XOPEN_SOURCE_EXTENDED=1'
+    os_c_args += '-D__EXTENSIONS__'
+    os_dep += cc.find_library('socket')
+    os_dep += cc.find_library('nsl')
+endif
+
+if host_machine.system() == 'openbsd'
+    os_dep += cc.find_library('kvm')
 endif
 
 libxlibc = []
 if srcs_libc.length() > 0
-    libxlibc = static_library('libxlibc',
+    libxlibc = static_library('xlibc',
         srcs_libc,
         include_directories: inc,
         dependencies: [
@@ -77,15 +89,21 @@ if srcs_libc.length() > 0
     )
 endif
 
-libxserver_os = static_library('libxserver_os',
+if enable_input_thread
+    os_dep += cc.find_library('pthread')
+endif
+
+libxserver_os = static_library('xserver_os',
     srcs_os,
     include_directories: inc,
     dependencies: [
+        dtrace_dep,
         common_dep,
         dl_dep,
         sha1_dep,
-        rpc_dep,
+        os_dep,
         dependency('xau')
     ],
+    c_args: os_c_args,
     link_with: libxlibc,
 )

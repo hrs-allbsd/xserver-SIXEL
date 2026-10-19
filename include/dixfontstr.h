@@ -27,8 +27,6 @@ SOFTWARE.
 #include "servermd.h"
 #include "dixfont.h"
 #include <X11/fonts/fontstruct.h>
-#include <X11/fonts/libxfont2.h>
-#include "closure.h"
 #include <X11/Xproto.h>         /* for xQueryFontReply */
 
 #define FONTCHARSET(font)	  (font)
@@ -59,36 +57,14 @@ SOFTWARE.
 /*
  * for linear char sets
  */
-#define N1dChars(pfont)	(FONTLASTCOL(pfont) - FONTFIRSTCOL(pfont) + 1)
+#define N1dChars(pfont)	(FONTLASTCOL((pfont)) - FONTFIRSTCOL((pfont)) + 1)
 
 /*
  * for 2D char sets
  */
-#define N2dChars(pfont)	(N1dChars(pfont) * \
-			 (FONTLASTROW(pfont) - FONTFIRSTROW(pfont) + 1))
+#define N2dChars(pfont)	(N1dChars((pfont)) * \
+			 (FONTLASTROW((pfont)) - FONTFIRSTROW((pfont)) + 1))
 
-#ifndef GLYPHPADBYTES
-#define GLYPHPADBYTES -1
-#endif
-
-#if GLYPHPADBYTES == 0 || GLYPHPADBYTES == 1
-#define	GLYPHWIDTHBYTESPADDED(pci)	(GLYPHWIDTHBYTES(pci))
-#define	PADGLYPHWIDTHBYTES(w)		(((w)+7)>>3)
-#endif
-
-#if GLYPHPADBYTES == 2
-#define	GLYPHWIDTHBYTESPADDED(pci)	((GLYPHWIDTHBYTES(pci)+1) & ~0x1)
-#define	PADGLYPHWIDTHBYTES(w)		(((((w)+7)>>3)+1) & ~0x1)
-#endif
-
-#if GLYPHPADBYTES == 4
-#define	GLYPHWIDTHBYTESPADDED(pci)	((GLYPHWIDTHBYTES(pci)+3) & ~0x3)
-#define	PADGLYPHWIDTHBYTES(w)		(((((w)+7)>>3)+3) & ~0x3)
-#endif
-
-#if GLYPHPADBYTES == 8          /* for a cray? */
-#define	GLYPHWIDTHBYTESPADDED(pci)	((GLYPHWIDTHBYTES(pci)+7) & ~0x7)
-#define	PADGLYPHWIDTHBYTES(w)		(((((w)+7)>>3)+7) & ~0x7)
-#endif
+#define	GLYPHWIDTHBYTESPADDED(pci)	((GLYPHWIDTHBYTES((pci))+3) & ~0x3)
 
 #endif                          /* DIXFONTSTRUCT_H */

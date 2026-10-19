@@ -27,11 +27,14 @@
  *
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
-#include "exa_priv.h"
+
+#include <stdbool.h>
 #include <X11/fonts/fontstruct.h>
+
+#include "os/mathx_priv.h"
+
+#include "exa_priv.h"
 #include "dixfontstr.h"
 #include "exa.h"
 
@@ -147,7 +150,7 @@ exaDoPutImage(DrawablePtr pDrawable, GCPtr pGC, int depth, int x, int y,
     int nbox;
     int xoff, yoff;
     int bpp = pDrawable->bitsPerPixel;
-    Bool ret = TRUE;
+    bool ret = TRUE;
 
     if (pExaScr->fallback_counter || pExaPixmap->accel_blocked ||
         !pExaScr->info->UploadToScreen)
@@ -174,7 +177,7 @@ exaDoPutImage(DrawablePtr pDrawable, GCPtr pGC, int depth, int x, int y,
         pixmaps[0].as_dst = TRUE;
         pixmaps[0].as_src = FALSE;
         pixmaps[0].pPix = pPix;
-        pixmaps[0].pReg = DamagePendingRegion(pExaPixmap->pDamage);
+        pixmaps[0].pReg = NULL;
 
         exaDoMigration(pixmaps, 1, TRUE);
     }
@@ -195,7 +198,7 @@ exaDoPutImage(DrawablePtr pDrawable, GCPtr pGC, int depth, int x, int y,
         int x2 = x + w;
         int y2 = y + h;
         char *src;
-        Bool ok;
+        bool ok;
 
         if (x1 < pbox->x1)
             x1 = pbox->x1;
@@ -236,7 +239,7 @@ exaPutImage(DrawablePtr pDrawable, GCPtr pGC, int depth, int x, int y,
                          bits);
 }
 
-static Bool inline
+static inline Bool
 exaCopyNtoNTwoDir(DrawablePtr pSrcDrawable, DrawablePtr pDstDrawable,
                   GCPtr pGC, BoxPtr pbox, int nbox, int dx, int dy)
 {
@@ -373,8 +376,7 @@ exaHWCopyNtoN(DrawablePtr pSrcDrawable,
     int src_off_x, src_off_y;
     int dst_off_x, dst_off_y;
     RegionPtr srcregion = NULL, dstregion = NULL;
-    xRectangle *rects;
-    Bool ret = TRUE;
+    bool ret = TRUE;
 
     /* avoid doing copy operations if no boxes */
     if (nbox == 0)
@@ -386,8 +388,7 @@ exaHWCopyNtoN(DrawablePtr pSrcDrawable,
     exaGetDrawableDeltas(pSrcDrawable, pSrcPixmap, &src_off_x, &src_off_y);
     exaGetDrawableDeltas(pDstDrawable, pDstPixmap, &dst_off_x, &dst_off_y);
 
-    rects = xallocarray(nbox, sizeof(xRectangle));
-
+    xRectangle *rects = calloc(nbox, sizeof(xRectangle));
     if (rects) {
         int i;
         int ordering;
@@ -616,7 +617,6 @@ exaPolyPoint(DrawablePtr pDrawable, GCPtr pGC, int mode, int npt,
 {
     ExaScreenPriv(pDrawable->pScreen);
     int i;
-    xRectangle *prect;
 
     /* If we can't reuse the current GC as is, don't bother accelerating the
      * points.
@@ -626,7 +626,9 @@ exaPolyPoint(DrawablePtr pDrawable, GCPtr pGC, int mode, int npt,
         return;
     }
 
-    prect = xallocarray(npt, sizeof(xRectangle));
+    xRectangle *prect = calloc(npt, sizeof(xRectangle));
+    if (!prect)
+        return;
     for (i = 0; i < npt; i++) {
         prect[i].x = ppt[i].x;
         prect[i].y = ppt[i].y;
@@ -651,7 +653,6 @@ exaPolylines(DrawablePtr pDrawable, GCPtr pGC, int mode, int npt,
              DDXPointPtr ppt)
 {
     ExaScreenPriv(pDrawable->pScreen);
-    xRectangle *prect;
     int x1, x2, y1, y2;
     int i;
 
@@ -667,7 +668,9 @@ exaPolylines(DrawablePtr pDrawable, GCPtr pGC, int mode, int npt,
         return;
     }
 
-    prect = xallocarray(npt - 1, sizeof(xRectangle));
+    xRectangle *prect = calloc(npt - 1, sizeof(xRectangle));
+    if (!prect)
+        return;
     x1 = ppt[0].x;
     y1 = ppt[0].y;
     /* If we have any non-horizontal/vertical, fall back. */
@@ -720,7 +723,7 @@ static void
 exaPolySegment(DrawablePtr pDrawable, GCPtr pGC, int nseg, xSegment * pSeg)
 {
     ExaScreenPriv(pDrawable->pScreen);
-    xRectangle *prect;
+;
     int i;
 
     /* Don't try to do wide lines or non-solid fill style. */
@@ -738,7 +741,9 @@ exaPolySegment(DrawablePtr pDrawable, GCPtr pGC, int nseg, xSegment * pSeg)
         }
     }
 
-    prect = xallocarray(nseg, sizeof(xRectangle));
+    xRectangle *prect = calloc(1, (unsigned int)nseg * sizeof(xRectangle));
+    if (!prect)
+        return;
     for (i = 0; i < nseg; i++) {
         if (pSeg[i].x1 < pSeg[i].x2) {
             prect[i].x = pSeg[i].x1;
@@ -948,7 +953,7 @@ const GCOps exaOps = {
 };
 
 void
-exaCopyWindow(WindowPtr pWin, DDXPointRec ptOldOrg, RegionPtr prgnSrc)
+exaCopyWindow(WindowPtr pWin, xPoint ptOldOrg, RegionPtr prgnSrc)
 {
     RegionRec rgnDst;
     int dx, dy;
@@ -963,10 +968,8 @@ exaCopyWindow(WindowPtr pWin, DDXPointRec ptOldOrg, RegionPtr prgnSrc)
     RegionInit(&rgnDst, NullBox, 0);
 
     RegionIntersect(&rgnDst, &pWin->borderClip, prgnSrc);
-#ifdef COMPOSITE
     if (pPixmap->screen_x || pPixmap->screen_y)
         RegionTranslate(&rgnDst, -pPixmap->screen_x, -pPixmap->screen_y);
-#endif
 
     if (pExaScr->fallback_counter) {
         pExaScr->fallback_flags |= EXA_FALLBACK_COPYWINDOW;
@@ -997,7 +1000,7 @@ exaFillRegionSolid(DrawablePtr pDrawable, RegionPtr pRegion, Pixel pixel,
 
     ExaPixmapPriv(pPixmap);
     int xoff, yoff;
-    Bool ret = FALSE;
+    bool ret = FALSE;
 
     exaGetDrawableDeltas(pDrawable, pPixmap, &xoff, &yoff);
     RegionTranslate(pRegion, xoff, yoff);
@@ -1083,7 +1086,7 @@ exaFillRegionTiled(DrawablePtr pDrawable, RegionPtr pRegion, PixmapPtr pTile,
     int tileWidth, tileHeight;
     int nbox = RegionNumRects(pRegion);
     BoxPtr pBox = RegionRects(pRegion);
-    Bool ret = FALSE;
+    bool ret = FALSE;
     int i;
 
     tileWidth = pTile->drawable.width;
@@ -1136,7 +1139,7 @@ exaFillRegionTiled(DrawablePtr pDrawable, RegionPtr pRegion, PixmapPtr pTile,
             int tileY;
 
             if (alu == GXcopy)
-                height = min(height, tileHeight);
+                height = MIN(height, tileHeight);
 
             modulus(dstY - yoff - pDrawable->y - pPatOrg->y, tileHeight, tileY);
 
@@ -1147,7 +1150,7 @@ exaFillRegionTiled(DrawablePtr pDrawable, RegionPtr pRegion, PixmapPtr pTile,
                 int h = tileHeight - tileY;
 
                 if (alu == GXcopy)
-                    width = min(width, tileWidth);
+                    width = MIN(width, tileWidth);
 
                 if (h > height)
                     h = height;
@@ -1185,7 +1188,7 @@ exaFillRegionTiled(DrawablePtr pDrawable, RegionPtr pRegion, PixmapPtr pTile,
         if (alu != GXcopy)
             ret = TRUE;
         else {
-            Bool more_copy = FALSE;
+            bool more_copy = FALSE;
 
             for (i = 0; i < nbox; i++) {
                 int dstX = pBox[i].x1 + tileWidth;
@@ -1206,26 +1209,26 @@ exaFillRegionTiled(DrawablePtr pDrawable, RegionPtr pRegion, PixmapPtr pTile,
                 for (i = 0; i < nbox; i++) {
                     int dstX = pBox[i].x1 + tileWidth;
                     int dstY = pBox[i].y1 + tileHeight;
-                    int width = min(pBox[i].x2 - dstX, tileWidth);
-                    int height = min(pBox[i].y2 - pBox[i].y1, tileHeight);
+                    int width = MIN(pBox[i].x2 - dstX, tileWidth);
+                    int height = MIN(pBox[i].y2 - pBox[i].y1, tileHeight);
 
                     while (dstX < pBox[i].x2) {
                         (*pExaScr->info->Copy) (pPixmap, pBox[i].x1, pBox[i].y1,
                                                 dstX, pBox[i].y1, width,
                                                 height);
                         dstX += width;
-                        width = min(pBox[i].x2 - dstX, width * 2);
+                        width = MIN(pBox[i].x2 - dstX, width * 2);
                     }
 
                     width = pBox[i].x2 - pBox[i].x1;
-                    height = min(pBox[i].y2 - dstY, tileHeight);
+                    height = MIN(pBox[i].y2 - dstY, tileHeight);
 
                     while (dstY < pBox[i].y2) {
                         (*pExaScr->info->Copy) (pPixmap, pBox[i].x1, pBox[i].y1,
                                                 pBox[i].x1, dstY, width,
                                                 height);
                         dstY += height;
-                        height = min(pBox[i].y2 - dstY, height * 2);
+                        height = MIN(pBox[i].y2 - dstY, height * 2);
                     }
                 }
 
@@ -1260,7 +1263,7 @@ exaGetImage(DrawablePtr pDrawable, int x, int y, int w, int h,
 
     ExaPixmapPriv(pPix);
     int xoff, yoff;
-    Bool ok;
+    bool ok;
 
     if (pExaScr->fallback_counter || pExaScr->swappedOut)
         goto fallback;

@@ -56,11 +56,7 @@ SOFTWARE.
  *  callback manager stuff
  */
 
-#ifndef _XTYPEDEF_CALLBACKLISTPTR
-typedef struct _CallbackList *CallbackListPtr;  /* also in misc.h */
-
-#define _XTYPEDEF_CALLBACKLISTPTR
-#endif
+typedef struct _CallbackList *CallbackListPtr;
 
 typedef void (*CallbackProcPtr) (CallbackListPtr *, void *, void *);
 
@@ -82,10 +78,5 @@ CallCallbacks(CallbackListPtr *pcbl, void *call_data)
         return;
     _CallCallbacks(pcbl, call_data);
 }
-
-extern _X_EXPORT void DeleteCallbackList(CallbackListPtr *pcbl);
-
-extern _X_EXPORT void InitCallbackManager(void);
-extern _X_EXPORT void DeleteCallbackManager(void);
 
 #endif                          /* CALLBACK_H */

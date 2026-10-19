@@ -21,9 +21,12 @@
  *  DEALINGS IN THE SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
+/* Test relies on assert() */
+#undef NDEBUG
+
 #include <dix-config.h>
-#endif
+
+#include <assert.h>
 
 /*
  * Protocol testing for XIPassiveGrab request.
@@ -32,14 +35,23 @@
 #include <X11/X.h>
 #include <X11/Xproto.h>
 #include <X11/extensions/XI2proto.h>
+
+#include "dix/exevents_priv.h"
+#include "Xext/xinput/handlers.h"
+
 #include "inputstr.h"
 #include "windowstr.h"
 #include "scrnintstr.h"
-#include "xipassivegrab.h"
-#include "exevents.h"
-#include "exglobals.h"
+#include "Xext/xinput/exglobals.h"
 
 #include "protocol-common.h"
+
+DECLARE_WRAP_FUNCTION(dixWriteToClient, void, ClientPtr client, int len, void *data);
+DECLARE_WRAP_FUNCTION(GrabButton, int,
+                      ClientPtr client, DeviceIntPtr dev,
+                      DeviceIntPtr modifier_device, int button,
+                      GrabParameters *param, enum InputLevel grabtype,
+                      GrabMask *mask);
 
 extern ClientRec client_window;
 static ClientRec client_request;
@@ -51,26 +63,16 @@ static struct test_data {
     int num_modifiers;
 } testdata;
 
-int __wrap_GrabButton(ClientPtr client, DeviceIntPtr dev,
-                      DeviceIntPtr modifier_device, int button,
-                      GrabParameters *param, enum InputLevel grabtype,
-                      GrabMask *mask);
-int __real_GrabButton(ClientPtr client, DeviceIntPtr dev,
-                      DeviceIntPtr modifier_device, int button,
-                      GrabParameters *param, enum InputLevel grabtype,
-                      GrabMask *mask);
-static void reply_XIPassiveGrabDevice_data(ClientPtr client, int len,
-                                           char *data, void *closure);
 
-int
-__wrap_GrabButton(ClientPtr client, DeviceIntPtr dev,
+static void reply_XIPassiveGrabDevice_data(ClientPtr client, int len,
+                                           void *data);
+
+static int
+override_GrabButton(ClientPtr client, DeviceIntPtr dev,
                   DeviceIntPtr modifier_device, int button,
                   GrabParameters *param, enum InputLevel grabtype,
                   GrabMask *mask)
 {
-    if (!enable_GrabButton_wrap)
-        __real_GrabButton(client, dev, modifier_device, button, param, grabtype, mask);
-
     /* Fail every odd modifier */
     if (param->modifiers % 2)
         return BadAccess;
@@ -79,33 +81,37 @@ __wrap_GrabButton(ClientPtr client, DeviceIntPtr dev,
 }
 
 static void
-reply_XIPassiveGrabDevice(ClientPtr client, int len, char *data, void *closure)
+reply_XIPassiveGrabDevice(ClientPtr client, int len, void *data)
 {
-    xXIPassiveGrabDeviceReply *rep = (xXIPassiveGrabDeviceReply *) data;
+    xXIPassiveGrabDeviceReply *repptr = (xXIPassiveGrabDeviceReply *) data;
+    xXIPassiveGrabDeviceReply reply = *repptr; /* copy so swapping doesn't touch the real reply */
+
+    assert(len < 0xffff); /* suspicious size, swapping bug */
 
     if (client->swapped) {
-        swaps(&rep->sequenceNumber);
-        swapl(&rep->length);
-        swaps(&rep->num_modifiers);
+        swaps(&reply.sequenceNumber);
+        swapl(&reply.length);
+        swaps(&reply.num_modifiers);
 
-        testdata.num_modifiers = rep->num_modifiers;
+        testdata.num_modifiers = reply.num_modifiers;
     }
 
-    reply_check_defaults(rep, len, XIPassiveGrabDevice);
+    reply_check_defaults(&reply, len, XIPassiveGrabDevice);
 
     /* ProcXIPassiveGrabDevice sends the data in two batches, let the second
      * handler handle the modifier data */
-    if (rep->num_modifiers > 0)
-        reply_handler = reply_XIPassiveGrabDevice_data;
+    if (reply.num_modifiers > 0)
+        wrapped_dixWriteToClient = reply_XIPassiveGrabDevice_data;
 }
 
 static void
-reply_XIPassiveGrabDevice_data(ClientPtr client, int len, char *data,
-                               void *closure)
+reply_XIPassiveGrabDevice_data(ClientPtr client, int len, void *data)
 {
     int i;
 
     xXIGrabModifierInfo *mods = (xXIGrabModifierInfo *) data;
+
+    assert(len < 0xffff); /* suspicious size, swapping bug */
 
     for (i = 0; i < testdata.num_modifiers; i++, mods++) {
         if (client->swapped)
@@ -121,7 +127,7 @@ reply_XIPassiveGrabDevice_data(ClientPtr client, int len, char *data,
         assert(mods->pad1 == 0);
     }
 
-    reply_handler = reply_XIPassiveGrabDevice;
+    wrapped_dixWriteToClient = reply_XIPassiveGrabDevice;
 }
 
 static void
@@ -133,6 +139,7 @@ request_XIPassiveGrabDevice(ClientPtr client, xXIPassiveGrabDeviceReq * req,
     int mask_len;
 
     client_request.req_len = req->length;
+    client_request.swapped = FALSE;
     rc = ProcXIPassiveGrabDevice(&client_request);
     assert(rc == error);
 
@@ -140,7 +147,17 @@ request_XIPassiveGrabDevice(ClientPtr client, xXIPassiveGrabDeviceReq * req,
         assert(client_request.errorValue == errval);
 
     client_request.swapped = TRUE;
-    swaps(&req->length);
+
+    /* MUST NOT swap req->length here !
+
+       The handler proc's don't use that field anymore, thus also SProc's
+       wont swap it. But this test program uses that field to initialize
+       client->req_len (see above). We previously had to swap it here, so
+       that ProcXIPassiveGrabDevice() will swap it back. Since that's gone
+       now, still swapping itself would break if this function is called
+       again and writing back a erroneously swapped value
+    */
+
     swapl(&req->time);
     swapl(&req->grab_window);
     swapl(&req->cursor);
@@ -157,7 +174,7 @@ request_XIPassiveGrabDevice(ClientPtr client, xXIPassiveGrabDeviceReq * req,
         swapl(mod);
     }
 
-    rc = SProcXIPassiveGrabDevice(&client_request);
+    rc = ProcXIPassiveGrabDevice(&client_request);
     assert(rc == error);
 
     if (rc != Success)
@@ -172,19 +189,23 @@ test_XIPassiveGrabDevice(void)
     xXIPassiveGrabDeviceReq *request = (xXIPassiveGrabDeviceReq *) data;
     unsigned char *mask;
 
+    wrapped_GrabButton = override_GrabButton;
+
+    init_simple();
+
     request_init(request, XIPassiveGrabDevice);
 
     request->grab_window = CLIENT_WINDOW_ID;
 
-    reply_handler = reply_XIPassiveGrabDevice;
+    wrapped_dixWriteToClient = reply_XIPassiveGrabDevice;
     client_request = init_client(request->length, request);
 
-    printf("Testing invalid device\n");
+    dbg("Testing invalid device\n");
     request->deviceid = 12;
     request_XIPassiveGrabDevice(&client_request, request, BadDevice,
                                 request->deviceid);
 
-    printf("Testing invalid length\n");
+    dbg("Testing invalid length\n");
     request->length -= 2;
     request_XIPassiveGrabDevice(&client_request, request, BadLength,
                                 client_request.errorValue);
@@ -193,14 +214,14 @@ test_XIPassiveGrabDevice(void)
     request->grab_window = CLIENT_WINDOW_ID;
     request->deviceid = XIAllMasterDevices;
 
-    printf("Testing invalid grab types\n");
-    for (i = XIGrabtypeTouchBegin + 1; i < 0xFF; i++) {
+    dbg("Testing invalid grab types\n");
+    for (i = XIGrabtypeGestureSwipeBegin + 1; i < 0xFF; i++) {
         request->grab_type = i;
         request_XIPassiveGrabDevice(&client_request, request, BadValue,
                                     request->grab_type);
     }
 
-    printf("Testing invalid grab type + detail combinations\n");
+    dbg("Testing invalid grab type + detail combinations\n");
     request->grab_type = XIGrabtypeEnter;
     request->detail = 1;
     request_XIPassiveGrabDevice(&client_request, request, BadValue,
@@ -212,7 +233,7 @@ test_XIPassiveGrabDevice(void)
 
     request->detail = 0;
 
-    printf("Testing invalid masks\n");
+    dbg("Testing invalid masks\n");
     mask = (unsigned char *) &request[1];
 
     request->mask_len = bytes_to_int32(XI2LASTEVENT + 1);
@@ -244,12 +265,13 @@ test_XIPassiveGrabDevice(void)
     request_XIPassiveGrabDevice(&client_request, request, Success, 0);
 }
 
-int
+const testfunc_t*
 protocol_xipassivegrabdevice_test(void)
 {
-    init_simple();
+    static const testfunc_t testfuncs[] = {
+        test_XIPassiveGrabDevice,
+        NULL,
+    };
 
-    test_XIPassiveGrabDevice();
-
-    return 0;
+    return testfuncs;
 }

@@ -1,7 +1,8 @@
+module_abi_dir = join_paths(module_dir, module_abi_tag)
+
 xorg_inc = include_directories(
     'common',
     'ddc',
-    'dri2',
     'i2c',
     'int10',
     'loader',
@@ -10,13 +11,13 @@ xorg_inc = include_directories(
     'os-support/bus',
     'parser',
     'ramdac',
-    'vbe',
     'vgahw',
 )
 
 xorg_c_args = []
 xorg_c_args += '-DHAVE_XORG_CONFIG_H'
 xorg_c_args += '-DXORG_NO_SDKSYMS'
+xorg_c_args += ('-DXORG_MODULE_ABI_TAG="'+module_abi_tag+'"')
 
 pciaccess_dep = []
 if get_option('pciaccess')
@@ -25,12 +26,10 @@ endif
 
 # subdirs for convenience libraries statically linked into Xorg
 subdir('common')
+subdir('compat')
 subdir('ddc')
 if build_dri1
     subdir('dri')
-endif
-if build_dri2
-    subdir('dri2')
 endif
 subdir('i2c')
 subdir('loader')
@@ -38,10 +37,12 @@ subdir('modes')
 subdir('os-support')
 subdir('parser')
 subdir('ramdac')
+subdir('xext')
 subdir('xkb')
 
 srcs_xorg = [
-    '../../mi/miinitext.c'
+    '../../mi/miinitext.c',
+    '../../mi/miinitext.h',
 ]
 
 # Extract all the objects so that all symbols get brought into the
@@ -53,6 +54,7 @@ xorg_link = [
     libxserver,
     libglxvnd,
     xorg_common,
+    xorg_compat,
     xorg_loader,
     xorg_ddc,
     xorg_xkb,
@@ -61,6 +63,7 @@ xorg_link = [
     xorg_os_support,
     xorg_parser,
     xorg_ramdac,
+    libxserver_fb,
     libxserver_xext_vidmode,
     libxserver_main,
     libxserver_config,
@@ -68,12 +71,11 @@ xorg_link = [
 if build_dri1
     xorg_link += xorg_dri
 endif
-if build_dri2
-    xorg_link += xorg_dri2
-endif
 
-if host_machine.system() == 'cygwin' or host_machine.system() == 'windows'
+if host_machine.system() in ['cygwin', 'windows']
     linker_export_flags = '-Wl,--export-all-symbols'
+elif host_machine.system() in ['sunos', 'darwin']
+    linker_export_flags = []
 else
     linker_export_flags = '-Wl,--export-dynamic'
 endif
@@ -98,7 +100,7 @@ else
     xorg_install_dir = get_option('bindir')
 endif
 
-e = executable(
+xserver_exec = executable(
     'Xorg',
     srcs_xorg,
     include_directories: [inc, xorg_inc],
@@ -115,7 +117,7 @@ e = executable(
 subdir('dixmods')
 subdir('exa')
 subdir('fbdevhw')
-if gbm_dep.found()
+if build_glamor and build_gbm
     subdir('glamor_egl')
 endif
 if int10 != 'false'
@@ -125,15 +127,17 @@ if int10 != 'false'
     subdir('int10')
 endif
 subdir('shadowfb')
-if build_vbe
-    subdir('vbe')
-endif
 if build_vgahw
     subdir('vgahw')
 endif
-if build_modesetting
-   subdir('drivers/modesetting')
-endif
+
+subdir('drivers')
+
+install_symlink(
+    'X',
+    pointing_to: xserver_exec.name(),
+    install_dir: join_paths(get_option('prefix'), get_option('bindir'))
+    )
 
 if get_option('suid_wrapper')
     executable('Xorg.wrap',
@@ -143,24 +147,24 @@ if get_option('suid_wrapper')
         c_args: xorg_c_args,
         install: true,
         install_dir: get_option('libexecdir'),
-        # install_mode: ['r-sr-xr-x', 0, 0],
+        install_mode: ['r-sr-xr-x', 0, 0],
     )
-    configure_file(
+
+    # meson gets confused when there are two targets of the same name
+    # within the same directory, so we use a different intermediate name.
+    xorg_sh = configure_file(
         input: 'Xorg.sh.in',
-        output: 'Xorg',
+        output: 'Xorg.sh',
         configuration: conf_data,
+    )
+
+    install_data(
+        xorg_sh,
+        install_mode: 'rwxr-xr-x',
         install_dir: join_paths(get_option('prefix'), get_option('bindir')),
+        rename: [xserver_exec.name()]
     )
 endif
-
-executable('cvt',
-    ['utils/cvt/cvt.c', 'modes/xf86cvt.c'],
-    include_directories: [inc, xorg_inc],
-    dependencies: xorg_deps,
-    link_with: libxserver_os,
-    c_args: xorg_c_args,
-    install: true,
-)
 
 executable('gtf',
     'utils/gtf/gtf.c',
@@ -217,13 +221,9 @@ install_man(configure_file(
 ))
 
 install_man(configure_file(
-    input: 'utils/man/cvt.man',
-    output: 'cvt.1',
-    configuration: manpage_config,
-))
-
-install_man(configure_file(
     input: 'utils/man/gtf.man',
     output: 'gtf.1',
     configuration: manpage_config,
 ))
+
+subdir('doc')

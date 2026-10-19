@@ -20,16 +20,19 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
 
-#define Cursor Mac_Cursor
-#define BOOL   Mac_BOOL
+/* QuickDraw in ApplicationServices conflicts with the basic X server headers
+ * (e.g. WindowPtr, now pulled in transitively via os.h -> xlibre_ptrtypes.h).
+ * Rename the QuickDraw symbols out of the way, matching sanitizedCarbon.h. */
+#define Cursor    Mac_Cursor
+#define BOOL      Mac_BOOL
+#define WindowPtr QD_WindowPtr
+#define Picture   QD_Picture
 #include <OpenGL/OpenGL.h>
 #include <OpenGL/gl.h>
 #include <OpenGL/glu.h>
@@ -37,6 +40,8 @@
 #include <ApplicationServices/ApplicationServices.h>
 #undef Cursor
 #undef BOOL
+#undef WindowPtr
+#undef Picture
 
 #include "capabilities.h"
 
@@ -323,8 +328,8 @@ handleDepthModes(struct glCapabilitiesConfig *c, GLint dmodes)
 {
     int offset = 0;
 #define DEPTH(flag, value) do { \
-        if (dmodes & flag) { \
-            c->depth_buffers[offset++] = value; \
+        if (dmodes & (flag)) { \
+            c->depth_buffers[offset++] = (value); \
         } \
 } while (0)
 
@@ -551,7 +556,7 @@ getGlCapabilities(struct glCapabilities *cap)
             continue;
         }
 
-        conf = malloc(sizeof(*conf));
+        conf = calloc(1, sizeof(*conf));
         if (NULL == conf) {
             FatalError("Unable to allocate memory for OpenGL capabilities\n");
         }

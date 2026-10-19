@@ -27,10 +27,9 @@
  *
  * Authors:	Harold L Hunt II
  */
-
-#ifdef HAVE_XWIN_CONFIG_H
 #include <xwin-config.h>
-#endif
+
+#include <stdbool.h>
 
 #include <unistd.h>
 #include <pthread.h>
@@ -38,6 +37,7 @@
 #include "win.h"
 #include "winclipboard/winclipboard.h"
 #include "windisplay.h"
+#include "winauth.h"
 
 #define WIN_CLIPBOARD_RETRIES			40
 #define WIN_CLIPBOARD_DELAY			1
@@ -55,16 +55,14 @@ static void *
 winClipboardThreadProc(void *arg)
 {
   char szDisplay[512];
+  xcb_auth_info_t *auth_info;
   int clipboardRestarts = 0;
 
   while (1)
     {
-      Bool fShutdown;
+      bool fShutdown;
 
       ++clipboardRestarts;
-
-      /* Use our generated cookie for authentication */
-      winSetAuthorization();
 
       /* Setup the display connection string */
       /*
@@ -82,7 +80,10 @@ winClipboardThreadProc(void *arg)
       /* Flag that clipboard client has been launched */
       g_fClipboardStarted = TRUE;
 
-      fShutdown = winClipboardProc(g_fUnicodeClipboard, szDisplay);
+      /* Use our generated cookie for authentication */
+      auth_info = winGetXcbAuthInfo();
+
+      fShutdown = winClipboardProc(szDisplay, auth_info);
 
       /* Flag that clipboard client has stopped */
       g_fClipboardStarted = FALSE;
@@ -106,7 +107,7 @@ winClipboardThreadProc(void *arg)
 }
 
 /*
- * Intialize the Clipboard module
+ * Initialize the Clipboard module
  */
 
 Bool

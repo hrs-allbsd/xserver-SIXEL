@@ -1,53 +1,19 @@
 #!/bin/sh
+set -eu
 
-sudo apt install -y libsixel-dev \
-                    libchafa-dev \
-                    libglib2.0-dev \
-                    libpixman-1-dev \
-                    xserver-xorg-dev \
-                    xkb-data \
-                    x11-xkb-utils
-
-# Regenerate autotools files to pick up Makefile.am changes
-autoreconf -fi || exit 1
-
-SIXEL=yes CFLAGS="-Wno-array-bounds -O3" LDFLAGS="-Wl,--no-as-needed" ./configure \
-    --with-xkb-path=/usr/share/X11/xkb \
-    --with-xkb-bin-directory=/usr/bin \
-    --with-default-font-path="built-ins" \
-    --enable-debug \
-    --disable-xorg \
-    --disable-dmx \
-    --disable-xvfb \
-    --disable-xnest \
-    --disable-xquartz \
-    --disable-xwin \
-    --disable-xephyr \
-    --disable-xfake \
-    --disable-xfbdev \
-    --disable-unit-tests \
-    --enable-mitshm \
-    --disable-dri \
-    --disable-dri2 \
-    --disable-dri3 \
-    --disable-present \
-    --disable-glx \
-    --disable-xf86vidmode \
-    --disable-xquartz \
-    --disable-composite \
-    --disable-xv \
-    --disable-dga \
-    --disable-screensaver \
-    --disable-xdmcp \
-    --disable-xdm-auth-1 \
-    --disable-xinerama \
-    --disable-docs \
-    --disable-xtrans-send-fds \
-    --enable-xsixel \
-    --enable-kdrive \
-    --disable-kdrive-kbd \
-    --disable-kdrive-mouse \
-    --disable-kdrive-evdev \
-
-make -j$(nproc)
-#make install
+# Requires Meson, Ninja, libsixel development files and the XLibre build dependencies.
+# Set CHAFA=true to also build the optional Chafa renderer (requires libchafa-dev).
+build_dir=${BUILD_DIR:-build-xsixel}
+meson setup --reconfigure "$build_dir" --buildtype=debugoptimized \
+    -Dxkb_dir=/usr/share/X11/xkb \
+    -Dxkb_bin_dir=/usr/bin \
+    -Ddefault_font_path=built-ins \
+    -Dxsixel=true \
+    -Dchafa="${CHAFA:-false}" \
+    -Dxorg=false -Dxnest=false -Dxvfb=false \
+    -Dxquartz=false -Dxwin=false -Dxephyr=false \
+    -Dxfake=false -Dxfbdev=false -Dxmodesetting=false \
+    -Dglamor=false -Dglx=false -Ddri1=false -Ddri2=false -Ddri3=false \
+    -Dinput_thread=false -Ddocs=false -Ddevel-docs=false \
+    "$@"
+meson compile -C "$build_dir"

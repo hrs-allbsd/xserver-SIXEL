@@ -24,12 +24,11 @@
  *    Eric Anholt <anholt@FreeBSD.org>
  *
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
 #include <string.h>
+
+#include "dix/screen_hooks_priv.h"
 
 #include "exa_priv.h"
 
@@ -37,7 +36,6 @@
 #include "xf86.h"
 
 typedef struct _ExaXorgScreenPrivRec {
-    CloseScreenProcPtr SavedCloseScreen;
     xf86EnableDisableFBAccessProc *SavedEnableDisableFBAccess;
     OptionInfoPtr options;
 } ExaXorgScreenPrivRec, *ExaXorgScreenPrivPtr;
@@ -69,21 +67,22 @@ static const OptionInfoRec EXAOptions[] = {
      OPTV_NONE, {0}, FALSE}
 };
 
-static Bool
-exaXorgCloseScreen(ScreenPtr pScreen)
+static void exaXorgCloseScreen(CallbackListPtr *pcbl, ScreenPtr pScreen, void *unused)
 {
     ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
     ExaXorgScreenPrivPtr pScreenPriv = (ExaXorgScreenPrivPtr)
         dixLookupPrivate(&pScreen->devPrivates, exaXorgScreenPrivateKey);
 
-    pScreen->CloseScreen = pScreenPriv->SavedCloseScreen;
+    dixScreenUnhookClose(pScreen, exaXorgCloseScreen);
+
+    if (!pScrn)
+        return;
 
     pScrn->EnableDisableFBAccess = pScreenPriv->SavedEnableDisableFBAccess;
 
     free(pScreenPriv->options);
     free(pScreenPriv);
-
-    return pScreen->CloseScreen(pScreen);
+    dixSetPrivate(&pScreen->devPrivates, exaXorgScreenPrivateKey, NULL);
 }
 
 static void
@@ -121,7 +120,7 @@ exaDDXDriverInit(ScreenPtr pScreen)
     if (pScreenPriv == NULL)
         return;
 
-    pScreenPriv->options = xnfalloc(sizeof(EXAOptions));
+    pScreenPriv->options = XNFalloc(sizeof(EXAOptions));
     memcpy(pScreenPriv->options, EXAOptions, sizeof(EXAOptions));
     xf86ProcessOptions(pScrn->scrnIndex, pScrn->options, pScreenPriv->options);
 
@@ -176,22 +175,22 @@ exaDDXDriverInit(ScreenPtr pScreen)
     pScreenPriv->SavedEnableDisableFBAccess = pScrn->EnableDisableFBAccess;
     pScrn->EnableDisableFBAccess = exaXorgEnableDisableFBAccess;
 
-    pScreenPriv->SavedCloseScreen = pScreen->CloseScreen;
-    pScreen->CloseScreen = exaXorgCloseScreen;
-
+    dixScreenHookClose(pScreen, exaXorgCloseScreen);
 }
 
 static XF86ModuleVersionInfo exaVersRec = {
-    "exa",
-    MODULEVENDORSTRING,
-    MODINFOSTRING1,
-    MODINFOSTRING2,
-    XORG_VERSION_CURRENT,
-    EXA_VERSION_MAJOR, EXA_VERSION_MINOR, EXA_VERSION_RELEASE,
-    ABI_CLASS_VIDEODRV,         /* requires the video driver ABI */
-    ABI_VIDEODRV_VERSION,
-    MOD_CLASS_NONE,
-    {0, 0, 0, 0}
+    .modname      = "exa",
+    .vendor       = MODULEVENDORSTRING,
+    ._modinfo1_   = MODINFOSTRING1,
+    ._modinfo2_   = MODINFOSTRING2,
+    .xf86version  = XORG_VERSION_CURRENT,
+    .majorversion = EXA_VERSION_MAJOR,
+    .minorversion = EXA_VERSION_MINOR,
+    .patchlevel   = EXA_VERSION_RELEASE,
+    .abiclass     = ABI_CLASS_VIDEODRV,
+    .abiversion   = ABI_VIDEODRV_VERSION,
 };
 
-_X_EXPORT XF86ModuleData exaModuleData = { &exaVersRec, NULL, NULL };
+_X_EXPORT XF86ModuleData exaModuleData = {
+    .vers = &exaVersRec
+};

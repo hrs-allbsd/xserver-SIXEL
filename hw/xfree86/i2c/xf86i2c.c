@@ -5,21 +5,21 @@
  * the I2C driver from the Linux kernel.
  *      (c) 1998 Gerd Knorr <kraxel@cs.tu-berlin.de>
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
+#include <stdbool.h>
 #include <sys/time.h>
 #include <string.h>
-
-#include "misc.h"
-#include "xf86.h"
-#include "xf86_OSproc.h"
-
 #include <X11/X.h>
 #include <X11/Xos.h>
 #include <X11/Xproto.h>
+
+#include "include/misc.h"
+#include "os/osdep.h"
+
+#include "xf86.h"
+#include "xf86_OSproc.h"
+
 #include "scrnintstr.h"
 #include "regionstr.h"
 #include "windowstr.h"
@@ -69,7 +69,7 @@ I2CUDelay(I2CBusPtr b, int usec)
  * ================================================================
  *
  * It is assumed that there is just one master on the I2C bus, therefore
- * there is no explicit test for conflits.
+ * there is no explicit test for conflicts.
  */
 
 #define RISEFALLTIME 2          /* usec, actually 300 to 1000 ns according to the i2c specs */
@@ -172,7 +172,7 @@ I2CStop(I2CDevPtr d)
 static Bool
 I2CWriteBit(I2CBusPtr b, int sda, int timeout)
 {
-    Bool r;
+    bool r;
 
     b->I2CPutBits(b, 0, sda);
     b->I2CUDelay(b, b->RiseFallTime);
@@ -189,7 +189,7 @@ I2CWriteBit(I2CBusPtr b, int sda, int timeout)
 static Bool
 I2CReadBit(I2CBusPtr b, int *psda, int timeout)
 {
-    Bool r;
+    bool r;
     int scl;
 
     r = I2CRaiseSCL(b, 1, timeout);
@@ -222,7 +222,7 @@ I2CReadBit(I2CBusPtr b, int *psda, int timeout)
 static Bool
 I2CPutByte(I2CDevPtr d, I2CByte data)
 {
-    Bool r;
+    bool r;
     int i, scl, sda;
     I2CBusPtr b = d->pI2CBus;
 
@@ -401,8 +401,8 @@ xf86I2CProbeAddress(I2CBusPtr b, I2CSlaveAddr addr)
  * 3rd, if a Start condition has been successfully sent,
  *   Send a Stop condition.
  *
- * The functions exits immediately when an error occures,
- * not proceeding any data left. However, step 3 will
+ * The function exits immediately when an error occurs,
+ * not processing any data left. However, step 3 will
  * be executed anyway to leave the bus in clean idle state.
  */
 
@@ -410,7 +410,7 @@ static Bool
 I2CWriteRead(I2CDevPtr d,
              I2CByte * WriteBuffer, int nWrite, I2CByte * ReadBuffer, int nRead)
 {
-    Bool r = TRUE;
+    bool r = TRUE;
     I2CBusPtr b = d->pI2CBus;
     int s = 0;
 
@@ -440,7 +440,7 @@ I2CWriteRead(I2CDevPtr d,
     return r;
 }
 
-/* wrapper - for compatibility and convinience */
+/* wrapper - for compatibility and convenience */
 
 Bool
 xf86I2CWriteRead(I2CDevPtr d,
@@ -450,15 +450,6 @@ xf86I2CWriteRead(I2CDevPtr d,
     I2CBusPtr b = d->pI2CBus;
 
     return b->I2CWriteRead(d, WriteBuffer, nWrite, ReadBuffer, nRead);
-}
-
-/* Read a byte, the only readable register of a device.
- */
-
-Bool
-xf86I2CReadStatus(I2CDevPtr d, I2CByte * pbyte)
-{
-    return xf86I2CWriteRead(d, NULL, 0, pbyte, 1);
 }
 
 /* Read a byte from one of the registers determined by its sub-address.
@@ -480,23 +471,6 @@ xf86I2CReadBytes(I2CDevPtr d, I2CByte subaddr, I2CByte * pbyte, int n)
     return xf86I2CWriteRead(d, &subaddr, 1, pbyte, n);
 }
 
-/* Read a word (high byte, then low byte) from one of the registers
- * determined by its sub-address.
- */
-
-Bool
-xf86I2CReadWord(I2CDevPtr d, I2CByte subaddr, unsigned short *pword)
-{
-    I2CByte rb[2];
-
-    if (!xf86I2CWriteRead(d, &subaddr, 1, rb, 2))
-        return FALSE;
-
-    *pword = (rb[0] << 8) | rb[1];
-
-    return TRUE;
-}
-
 /* Write a byte to one of the registers determined by its sub-address.
  */
 
@@ -511,48 +485,6 @@ xf86I2CWriteByte(I2CDevPtr d, I2CByte subaddr, I2CByte byte)
     return xf86I2CWriteRead(d, wb, 2, NULL, 0);
 }
 
-/* Write bytes to subsequent registers determined by the
- * sub-address of the first register.
- */
-
-Bool
-xf86I2CWriteBytes(I2CDevPtr d, I2CByte subaddr,
-                  I2CByte * WriteBuffer, int nWrite)
-{
-    I2CBusPtr b = d->pI2CBus;
-    Bool r = TRUE;
-
-    if (nWrite > 0) {
-        r = b->I2CAddress(d, d->SlaveAddr & ~1);
-        if (r) {
-            if ((r = b->I2CPutByte(d, subaddr)))
-                for (; nWrite > 0; WriteBuffer++, nWrite--)
-                    if (!(r = b->I2CPutByte(d, *WriteBuffer)))
-                        break;
-
-            b->I2CStop(d);
-        }
-    }
-
-    return r;
-}
-
-/* Write a word (high byte, then low byte) to one of the registers
- * determined by its sub-address.
- */
-
-Bool
-xf86I2CWriteWord(I2CDevPtr d, I2CByte subaddr, unsigned short word)
-{
-    I2CByte wb[3];
-
-    wb[0] = subaddr;
-    wb[1] = word >> 8;
-    wb[2] = word & 0xFF;
-
-    return xf86I2CWriteRead(d, wb, 3, NULL, 0);
-}
-
 /* Write a vector of bytes to not adjacent registers. This vector is,
  * 1st byte sub-address, 2nd byte value, 3rd byte sub-address asf.
  * This function is intended to initialize devices. Note this function
@@ -564,7 +496,7 @@ Bool
 xf86I2CWriteVec(I2CDevPtr d, I2CByte * vec, int nValues)
 {
     I2CBusPtr b = d->pI2CBus;
-    Bool r = TRUE;
+    bool r = TRUE;
     int s = 0;
 
     if (nValues > 0) {
@@ -592,7 +524,7 @@ xf86I2CWriteVec(I2CDevPtr d, I2CByte * vec, int nValues)
  * =========================
  */
 
-/* Allocates an I2CDevRec for you and initializes with propper defaults
+/* Allocates an I2CDevRec for you and initializes with proper defaults
  * you may modify before calling xf86I2CDevInit. Your I2CDevRec must
  * contain at least a SlaveAddr, and a pI2CBus pointer to the bus this
  * device shall be linked to.
@@ -692,7 +624,7 @@ xf86I2CFindDev(I2CBusPtr b, I2CSlaveAddr addr)
 
 static I2CBusPtr I2CBusList;
 
-/* Allocates an I2CBusRec for you and initializes with propper defaults
+/* Allocates an I2CBusRec for you and initializes with proper defaults
  * you may modify before calling xf86I2CBusInit. Your I2CBusRec must
  * contain at least a BusName, a scrnIndex (or -1), and a complete set
  * of either high or low level I2C function pointers. You may pass
@@ -752,9 +684,9 @@ xf86DestroyI2CBusRec(I2CBusPtr b, Bool unalloc, Bool devs_too)
             }
             else {
                 if (unalloc) {
-                    xf86Msg(X_ERROR,
-                            "i2c bug: Attempt to remove I2C bus \"%s\", "
-                            "but device list is not empty.\n", b->BusName);
+                    LogMessageVerb(X_ERROR, 1,
+                                   "i2c bug: Attempt to remove I2C bus \"%s\", "
+                                   "but device list is not empty.\n", b->BusName);
                     return;
                 }
             }
@@ -837,7 +769,7 @@ xf86I2CBusInit(I2CBusPtr b)
 }
 
 I2CBusPtr
-xf86I2CFindBus(int scrnIndex, char *name)
+xf86I2CFindBus(int scrnIndex, const char *name)
 {
     I2CBusPtr p;
 
@@ -872,7 +804,7 @@ xf86I2CGetScreenBuses(int scrnIndex, I2CBusPtr ** pppI2CBus)
         if (!pppI2CBus)
             continue;
 
-        *pppI2CBus = xnfreallocarray(*pppI2CBus, n, sizeof(I2CBusPtr));
+        *pppI2CBus = XNFreallocarray(*pppI2CBus, n, sizeof(I2CBusPtr));
         (*pppI2CBus)[n - 1] = pI2CBus;
     }
 

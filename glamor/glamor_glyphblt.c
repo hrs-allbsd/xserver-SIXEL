@@ -25,6 +25,11 @@
  *    Zhigang Gong <zhigang.gong@gmail.com>
  *
  */
+#include <dix-config.h>
+
+#include <stdbool.h>
+
+#include "os/bug_priv.h"
 
 #include "glamor_priv.h"
 #include <dixfontstr.h>
@@ -32,8 +37,9 @@
 
 static const glamor_facet glamor_facet_poly_glyph_blt = {
     .name = "poly_glyph_blt",
-    .vs_vars = "attribute vec2 primitive;\n",
+    .vs_vars = "in vec2 primitive;\n",
     .vs_exec = ("       vec2 pos = vec2(0,0);\n"
+                GLAMOR_DEFAULT_POINT_SIZE
                 GLAMOR_POS(gl_Position, primitive)),
 };
 
@@ -49,7 +55,7 @@ glamor_poly_glyph_blt_gl(DrawablePtr drawable, GCPtr gc,
     glamor_program *prog;
     RegionPtr clip = gc->pCompositeClip;
     int box_index;
-    Bool ret = FALSE;
+    bool ret = FALSE;
 
     pixmap_priv = glamor_get_pixmap_private(pixmap);
     if (!GLAMOR_PIXMAP_PRIV_HAS_FBO(pixmap_priv))
@@ -57,7 +63,7 @@ glamor_poly_glyph_blt_gl(DrawablePtr drawable, GCPtr gc,
 
     glamor_make_current(glamor_priv);
 
-    prog = glamor_use_program_fill(pixmap, gc,
+    prog = glamor_use_program_fill(drawable, gc,
                                    &glamor_priv->poly_glyph_blt_progs,
                                    &glamor_facet_poly_glyph_blt);
     if (!prog)
@@ -67,6 +73,8 @@ glamor_poly_glyph_blt_gl(DrawablePtr drawable, GCPtr gc,
 
     start_x += drawable->x;
     y += drawable->y;
+
+    BUG_RETURN_VAL(!pixmap_priv, FALSE);
 
     glamor_pixmap_loop(pixmap_priv, box_index) {
         int x;
@@ -89,7 +97,7 @@ glamor_poly_glyph_blt_gl(DrawablePtr drawable, GCPtr gc,
             int h = GLYPHHEIGHTPIXELS(charinfo);
             uint8_t *glyphbits = FONTGLYPHBITS(NULL, charinfo);
 
-            if (w && h) {
+            if (w > 0 && h > 0) {
                 int glyph_x = x + charinfo->metrics.leftSideBearing;
                 int glyph_y = y - charinfo->metrics.ascent;
                 int glyph_stride = GLYPHWIDTHBYTESPADDED(charinfo);
@@ -101,7 +109,11 @@ glamor_poly_glyph_blt_gl(DrawablePtr drawable, GCPtr gc,
                         int pt_x_i = glyph_x + xx;
                         int pt_y_i = glyph_y + yy;
 
+#if BITMAP_BIT_ORDER == MSBFirst
+                        if (!(*glyph & (128 >> (xx & 7))))
+#else
                         if (!(*glyph & (1 << (xx & 7))))
+#endif
                             continue;
 
                         if (!RegionContainsPoint(clip, pt_x_i, pt_y_i, NULL))
@@ -177,7 +189,7 @@ glamor_push_pixels_gl(GCPtr gc, PixmapPtr bitmap,
     int num_points;
     INT16 *points = NULL;
     char *vbo_offset;
-    Bool ret = FALSE;
+    bool ret = FALSE;
 
     if (w * h > MAXINT / (2 * sizeof(float)))
         goto bail;
@@ -188,7 +200,7 @@ glamor_push_pixels_gl(GCPtr gc, PixmapPtr bitmap,
 
     glamor_make_current(glamor_priv);
 
-    prog = glamor_use_program_fill(pixmap, gc,
+    prog = glamor_use_program_fill(drawable, gc,
                                    &glamor_priv->poly_glyph_blt_progs,
                                    &glamor_facet_poly_glyph_blt);
     if (!prog)
@@ -208,7 +220,11 @@ glamor_push_pixels_gl(GCPtr gc, PixmapPtr bitmap,
     for (yy = 0; yy < h; yy++) {
         uint8_t *bitmap_row = bitmap_data + yy * bitmap_stride;
         for (xx = 0; xx < w; xx++) {
+#if BITMAP_BIT_ORDER == MSBFirst
+            if (bitmap_row[xx / 8] & (128 >> xx % 8) &&
+#else
             if (bitmap_row[xx / 8] & (1 << xx % 8) &&
+#endif
                 RegionContainsPoint(clip,
                                     x + xx,
                                     y + yy,
@@ -223,6 +239,8 @@ glamor_push_pixels_gl(GCPtr gc, PixmapPtr bitmap,
                           GL_FALSE, 0, vbo_offset);
 
     glamor_put_vbo_space(screen);
+
+    BUG_RETURN_VAL(!pixmap_priv, FALSE);
 
     glamor_pixmap_loop(pixmap_priv, box_index) {
         if (!glamor_set_destination_drawable(drawable, box_index, FALSE, TRUE,

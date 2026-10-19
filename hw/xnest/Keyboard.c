@@ -1,6 +1,7 @@
 /*
 
 Copyright 1993 by Davor Matic
+Copyright 2026 by Enrico Weigelt, metux IT consult
 
 Permission to use, copy, modify, distribute, and sell this software
 and its documentation for any purpose is hereby granted without fee,
@@ -11,67 +12,52 @@ the suitability of this software for any purpose.  It is provided "as
 is" without express or implied warranty.
 
 */
-
-#ifdef HAVE_XNEST_CONFIG_H
-#include <xnest-config.h>
-#endif
+#include <dix-config.h>
 
 #ifdef WIN32
+#include <X11/Xwinsock.h>
 #include <X11/Xwindows.h>
 #endif
 
 #include <X11/X.h>
+#include <X11/Xdefs.h>
 #include <X11/Xproto.h>
 #include <X11/keysym.h>
+#include <X11/extensions/XKB.h>
+#include <xcb/xkb.h>
+
+#include "include/misc.h"
+#include "dix/screenint_priv.h"
+#include "os/osdep.h"
+
 #include "screenint.h"
 #include "inputstr.h"
-#include "misc.h"
 #include "scrnintstr.h"
 #include "servermd.h"
 
-#include "Xnest.h"
+#include "xnest-eventmask.h"
+#include "xnest-screen_priv.h"
+#include "xnest-xcb.h"
 
-#include "Display.h"
+#include "Events.h"
 #include "Screen.h"
 #include "Keyboard.h"
 #include "Args.h"
 #include "Events.h"
-
-#include <X11/extensions/XKB.h>
 #include "xkbsrv.h"
-#include <X11/extensions/XKBconfig.h>
-
-extern Bool
- XkbQueryExtension(Display * /* dpy */ ,
-                   int * /* opcodeReturn */ ,
-                   int * /* eventBaseReturn */ ,
-                   int * /* errorBaseReturn */ ,
-                   int * /* majorRtrn */ ,
-                   int *        /* minorRtrn */
-    );
-
-extern XkbDescPtr XkbGetKeyboard(Display * /* dpy */ ,
-                                 unsigned int /* which */ ,
-                                 unsigned int   /* deviceSpec */
-    );
-
-extern Status XkbGetControls(Display * /* dpy */ ,
-                             unsigned long /* which */ ,
-                             XkbDescPtr /* desc */
-    );
 
 DeviceIntPtr xnestKeyboardDevice = NULL;
 
 void
 xnestBell(int volume, DeviceIntPtr pDev, void *ctrl, int cls)
 {
-    XBell(xnestDisplay, volume);
+    xcb_bell(xnestUpstreamInfo.conn, volume);
 }
 
 void
 DDXRingBell(int volume, int pitch, int duration)
 {
-    XBell(xnestDisplay, volume);
+    xcb_bell(xnestUpstreamInfo.conn, volume);
 }
 
 void
@@ -79,21 +65,20 @@ xnestChangeKeyboardControl(DeviceIntPtr pDev, KeybdCtrl * ctrl)
 {
 #if 0
     unsigned long value_mask;
-    XKeyboardControl values;
     int i;
 
     value_mask = KBKeyClickPercent |
         KBBellPercent | KBBellPitch | KBBellDuration | KBAutoRepeatMode;
 
-    values.key_click_percent = ctrl->click;
-    values.bell_percent = ctrl->bell;
-    values.bell_pitch = ctrl->bell_pitch;
-    values.bell_duration = ctrl->bell_duration;
-    values.auto_repeat_mode = ctrl->autoRepeat ?
-        AutoRepeatModeOn : AutoRepeatModeOff;
+    xcb_params_keyboard_t values = {
+        .key_click_percent = ctrl->click,
+        .bell_percent = ctrl->bell,
+        .bell_pitch = ctrl->bell_pitch,
+        .bell_duration = ctrl->bell_duration,
+        .auto_repeat_mode = ctrl->autoRepeat ? AutoRepeatModeOn : AutoRepeatModeOff,
+    };
 
-    XChangeKeyboardControl(xnestDisplay, value_mask, &values);
-
+    xcb_aux_change_keyboard_control(xnestUpstreamInfo.conn, value_mask, &values);
     /*
        value_mask = KBKey | KBAutoRepeatMode;
        At this point, we need to walk through the vector and compare it
@@ -105,81 +90,74 @@ xnestChangeKeyboardControl(DeviceIntPtr pDev, KeybdCtrl * ctrl)
         values.led = i;
         values.led_mode =
             (ctrl->leds & (1 << (i - 1))) ? LedModeOn : LedModeOff;
-        XChangeKeyboardControl(xnestDisplay, value_mask, &values);
+
+        xcb_aux_change_keyboard_control(xnestUpstreamInfo.conn, value_mask, &values);
     }
 #endif
 }
 
+/* make sure that KeySym and xcb_keysym_t are both 32 bit */
+__SIZE_ASSERT(KeySym, 4);
+__SIZE_ASSERT(xcb_keysym_t, 4);
+
 int
 xnestKeyboardProc(DeviceIntPtr pDev, int onoff)
 {
-    XModifierKeymap *modifier_keymap;
-    KeySym *keymap;
-    int mapWidth;
-    int min_keycode, max_keycode;
-    KeySymsRec keySyms;
-    CARD8 modmap[MAP_LENGTH];
     int i, j;
-    XKeyboardState values;
-    XkbDescPtr xkb;
-    int op, event, error, major, minor;
 
     switch (onoff) {
     case DEVICE_INIT:
-        XDisplayKeycodes(xnestDisplay, &min_keycode, &max_keycode);
-#ifdef _XSERVER64
-        {
-            KeySym64 *keymap64;
-            int len;
+    {
+        const int min_keycode = xnestUpstreamInfo.setup->min_keycode;
+        const int max_keycode = xnestUpstreamInfo.setup->max_keycode;
+        const int num_keycode = max_keycode - min_keycode + 1;
 
-            keymap64 = XGetKeyboardMapping(xnestDisplay,
-                                           min_keycode,
-                                           max_keycode - min_keycode + 1,
-                                           &mapWidth);
-            len = (max_keycode - min_keycode + 1) * mapWidth;
-            keymap = xallocarray(len, sizeof(KeySym));
-            for (i = 0; i < len; ++i)
-                keymap[i] = keymap64[i];
-            XFree(keymap64);
+        xcb_get_keyboard_mapping_reply_t * keymap_reply = xnest_get_keyboard_mapping(
+            xnestUpstreamInfo.conn,
+            min_keycode,
+            num_keycode);
+
+        if (!keymap_reply) {
+            ErrorF("Couldn't get keyboard mappings: no reply");
+            goto XkbError;
         }
-#else
-        keymap = XGetKeyboardMapping(xnestDisplay,
-                                     min_keycode,
-                                     max_keycode - min_keycode + 1, &mapWidth);
-#endif
 
-        memset(modmap, 0, sizeof(modmap));
-        modifier_keymap = XGetModifierMapping(xnestDisplay);
+        KeySymsRec keySyms = {
+            .minKeyCode = min_keycode,
+            .maxKeyCode = max_keycode,
+            .mapWidth = keymap_reply->keysyms_per_keycode,
+            /* mingw32 complains on type mismatch, but we already made sure they're both 32bit */
+            .map = (KeySym*)xcb_get_keyboard_mapping_keysyms(keymap_reply),
+        };
+
+        xcb_generic_error_t *mod_err = NULL;
+        xcb_get_modifier_mapping_reply_t *mod_reply = xcb_get_modifier_mapping_reply(
+            xnestUpstreamInfo.conn,
+            xcb_get_modifier_mapping(xnestUpstreamInfo.conn),
+            &mod_err);
+
+        if (mod_err) {
+            free(keymap_reply);
+            ErrorF("Couldn't get keyboard modifier mapping: %d\n", mod_err->error_code);
+            goto XkbError;
+        }
+
+        if (!mod_reply) {
+            free(keymap_reply);
+            ErrorF("Couldn't get keyboard modifier mapping: no reply\n");
+            goto XkbError;
+        }
+
+        xcb_keycode_t *mod_keycodes = xcb_get_modifier_mapping_keycodes(mod_reply);
+        CARD8 modmap[MAP_LENGTH] = { 0 };
         for (j = 0; j < 8; j++)
-            for (i = 0; i < modifier_keymap->max_keypermod; i++) {
+            for (i = 0; i < mod_reply->keycodes_per_modifier; i++) {
                 CARD8 keycode;
 
                 if ((keycode =
-                     modifier_keymap->modifiermap[j *
-                                                  modifier_keymap->
-                                                  max_keypermod + i]))
+                     mod_keycodes[j * mod_reply->keycodes_per_modifier + i]))
                     modmap[keycode] |= 1 << j;
             }
-        XFreeModifiermap(modifier_keymap);
-
-        keySyms.minKeyCode = min_keycode;
-        keySyms.maxKeyCode = max_keycode;
-        keySyms.mapWidth = mapWidth;
-        keySyms.map = keymap;
-
-        if (XkbQueryExtension(xnestDisplay, &op, &event, &error, &major, &minor)
-            == 0) {
-            ErrorF("Unable to initialize XKEYBOARD extension.\n");
-            goto XkbError;
-        }
-        xkb =
-            XkbGetKeyboard(xnestDisplay, XkbGBN_AllComponentsMask,
-                           XkbUseCoreKbd);
-        if (xkb == NULL || xkb->geom == NULL) {
-            ErrorF("Couldn't get keyboard.\n");
-            goto XkbError;
-        }
-        XkbGetControls(xnestDisplay, XkbAllControlsMask, xkb);
 
         InitKeyboardDeviceStruct(pDev, NULL,
                                  xnestBell, xnestChangeKeyboardControl);
@@ -188,39 +166,102 @@ xnestKeyboardProc(DeviceIntPtr pDev, int onoff)
                               keySyms.maxKeyCode - keySyms.minKeyCode + 1,
                               modmap, serverClient);
 
-        XkbDDXChangeControls(pDev, xkb->ctrls, xkb->ctrls);
-        XkbFreeKeyboard(xkb, 0, False);
-        free(keymap);
+        free(keymap_reply);
+
+        xnest_xkb_init(xnestUpstreamInfo.conn);
+
+        int device_id = xnest_xkb_device_id(xnestUpstreamInfo.conn);
+
+        xcb_generic_error_t *err = NULL;
+        xcb_xkb_get_controls_reply_t *reply = xcb_xkb_get_controls_reply(
+            xnestUpstreamInfo.conn,
+            xcb_xkb_get_controls(xnestUpstreamInfo.conn, device_id),
+            &err);
+
+        if (err) {
+            ErrorF("Couldn't get keyboard controls for %d: error %d\n", device_id, err->error_code);
+            free(err);
+            goto XkbError;
+        }
+
+        if (!reply) {
+            ErrorF("Couldn't get keyboard controls for %d: no reply", device_id);
+            goto XkbError;
+        }
+
+        XkbControlsRec ctrls = {
+            .mk_dflt_btn = reply->mouseKeysDfltBtn,
+            .num_groups = reply->numGroups,
+            .groups_wrap = reply->groupsWrap,
+            .internal = (XkbModsRec) {
+                .mask = reply->internalModsMask,
+                .real_mods = reply->internalModsRealMods,
+                .vmods = reply->internalModsVmods,
+            },
+            .ignore_lock = (XkbModsRec) {
+                .mask = reply->ignoreLockModsMask,
+                .real_mods = reply->ignoreLockModsRealMods,
+                .vmods = reply->ignoreLockModsVmods,
+            },
+            .enabled_ctrls = reply->enabledControls,
+            .repeat_delay = reply->repeatDelay,
+            .repeat_interval = reply->repeatInterval,
+            .slow_keys_delay = reply->slowKeysDelay,
+            .debounce_delay = reply->debounceDelay,
+            .mk_delay = reply->mouseKeysDelay,
+            .mk_interval = reply->mouseKeysInterval,
+            .mk_time_to_max = reply->mouseKeysTimeToMax,
+            .mk_max_speed = reply->mouseKeysMaxSpeed,
+            .mk_curve = reply->mouseKeysCurve,
+            .ax_options = reply->accessXOption,
+            .ax_timeout = reply->accessXTimeout,
+            .axt_opts_mask = reply->accessXTimeoutOptionsMask,
+            .axt_opts_values = reply->accessXTimeoutOptionsValues,
+            .axt_ctrls_mask = reply->accessXTimeoutMask,
+            .axt_ctrls_values = reply->accessXTimeoutValues,
+        };
+        memcpy(&ctrls.per_key_repeat, reply->perKeyRepeat, sizeof(ctrls.per_key_repeat));
+
+        XkbDDXChangeControls(pDev, &ctrls, &ctrls);
         break;
+    }
     case DEVICE_ON:
         xnestEventMask |= XNEST_KEYBOARD_EVENT_MASK;
-        for (i = 0; i < xnestNumScreens; i++)
-            XSelectInput(xnestDisplay, xnestDefaultWindows[i], xnestEventMask);
+        xnestUpdateEventMask();
         break;
     case DEVICE_OFF:
         xnestEventMask &= ~XNEST_KEYBOARD_EVENT_MASK;
-        for (i = 0; i < xnestNumScreens; i++)
-            XSelectInput(xnestDisplay, xnestDefaultWindows[i], xnestEventMask);
+        xnestUpdateEventMask();
         break;
     case DEVICE_CLOSE:
         break;
     }
     return Success;
 
- XkbError:
-    XGetKeyboardControl(xnestDisplay, &values);
-    memmove((char *) defaultKeyboardControl.autoRepeats,
-            (char *) values.auto_repeats, sizeof(values.auto_repeats));
+XkbError:
+    {
+        xcb_generic_error_t *ctrl_err = NULL;
+        xcb_get_keyboard_control_reply_t *ctrl_reply =
+            xcb_get_keyboard_control_reply(xnestUpstreamInfo.conn,
+                                           xcb_get_keyboard_control(xnestUpstreamInfo.conn),
+                                           &ctrl_err);
+        if (ctrl_err) {
+            ErrorF("failed retrieving keyboard control: %d\n", ctrl_err->error_code);
+            free(ctrl_err);
+        }
+        else if (!ctrl_reply) {
+            ErrorF("failed retrieving keyboard control: no reply\n");
+        }
+        else {
+            memcpy(defaultKeyboardControl.autoRepeats,
+                   ctrl_reply->auto_repeats,
+                   sizeof(ctrl_reply->auto_repeats));
+            free(ctrl_reply);
+        }
+    }
 
     InitKeyboardDeviceStruct(pDev, NULL, xnestBell, xnestChangeKeyboardControl);
-    free(keymap);
     return Success;
-}
-
-Bool
-LegalModifier(unsigned int key, DeviceIntPtr pDev)
-{
-    return TRUE;
 }
 
 void
@@ -244,8 +285,7 @@ xnestUpdateModifierState(unsigned int state)
     for (i = 0, mask = 1; i < 8; i++, mask <<= 1) {
         int key;
 
-        /* Modifier is down, but shouldn't be
-         */
+        /* Modifier is down, but shouldn't be */
         if ((xkb_state & mask) && !(state & mask)) {
             int count = keyc->modifierKeyCount[i];
 
@@ -263,8 +303,7 @@ xnestUpdateModifierState(unsigned int state)
                 }
         }
 
-        /* Modifier shoud be down, but isn't
-         */
+        /* Modifier should be down, but isn't */
         if (!(xkb_state & mask) && (state & mask))
             for (key = 0; key < MAP_LENGTH; key++)
                 if (keyc->xkbInfo->desc->map->modmap[key] & mask) {

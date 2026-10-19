@@ -19,19 +19,19 @@
  * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
  * OF THIS SOFTWARE.
  */
+#include <dix-config.h>
 
 #include "glamor_priv.h"
 
 void
-glamor_solid_boxes(PixmapPtr pixmap,
+glamor_solid_boxes(DrawablePtr drawable,
                    BoxPtr box, int nbox, unsigned long fg_pixel)
 {
-    DrawablePtr drawable = &pixmap->drawable;
     GCPtr gc;
     xRectangle *rect;
     int n;
 
-    rect = xallocarray(nbox, sizeof(xRectangle));
+    rect = calloc(nbox, sizeof(xRectangle));
     if (!rect)
         return;
     for (n = 0; n < nbox; n++) {
@@ -46,7 +46,7 @@ glamor_solid_boxes(PixmapPtr pixmap,
         ChangeGCVal vals[1];
 
         vals[0].val = fg_pixel;
-        ChangeGC(NullClient, gc, GCForeground, vals);
+        ChangeGC(NULL, gc, GCForeground, vals);
         ValidateGC(drawable, gc);
         gc->ops->PolyFillRect(drawable, gc, nbox, rect);
         FreeScratchGC(gc);
@@ -67,7 +67,7 @@ glamor_solid(PixmapPtr pixmap, int x, int y, int width, int height,
     gc = GetScratchGC(drawable->depth, drawable->pScreen);
     if (!gc)
         return;
-    ChangeGC(NullClient, gc, GCForeground, vals);
+    ChangeGC(NULL, gc, GCForeground, vals);
     ValidateGC(drawable, gc);
     rect.x = x;
     rect.y = y;

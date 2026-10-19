@@ -20,15 +20,13 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
 
 #include <stdlib.h>
 
-#include "fb.h"
+#include "fb/fb_priv.h"
 
-const GCFuncs fbGCFuncs = {
+static const GCFuncs fbGCFuncs = {
     fbValidateGC,
     miChangeGC,
     miCopyGC,
@@ -38,7 +36,7 @@ const GCFuncs fbGCFuncs = {
     miCopyClip,
 };
 
-const GCOps fbGCOps = {
+static const GCOps fbGCOps = {
     fbFillSpans,
     fbSetSpans,
     fbPutImage,
@@ -47,11 +45,11 @@ const GCOps fbGCOps = {
     fbPolyPoint,
     fbPolyLine,
     fbPolySegment,
-    fbPolyRectangle,
+    miPolyRectangle,
     fbPolyArc,
     miFillPolygon,
     fbPolyFillRect,
-    fbPolyFillArc,
+    miPolyFillArc,
     miPolyText8,
     miPolyText16,
     miImageText8,
@@ -154,7 +152,24 @@ fbValidateGC(GCPtr pGC, unsigned long changes, DrawablePtr pDrawable)
         pPriv->fg = pGC->fgPixel & mask;
         pPriv->bg = pGC->bgPixel & mask;
 
+        /*
+         * Widening the planemask to cover the padding bits lets the blit and
+         * fill paths take their "all ones" shortcuts, but it also makes them
+         * write those bits. A rootless server keeps the alpha channel of its
+         * on screen windows opaque by clearing the alpha bits from the
+         * planemask (see miext/rootless/rootlessGC.c), and it can only do so
+         * from its own ValidateGC. mi revalidates the GC in the middle of a
+         * drawing operation for dashed lines, dashed arcs and opaque text,
+         * and by then the rootless funcs have been unwrapped by the damage
+         * layer, so that reassertion never happens. Leave the padding bits
+         * alone when they aren't part of the depth.
+         */
+#ifdef ROOTLESS_SAFEALPHA
+        if (pDrawable->depth == pDrawable->bitsPerPixel &&
+            (pGC->planemask & depthMask) == depthMask)
+#else
         if ((pGC->planemask & depthMask) == depthMask)
+#endif
             pPriv->pm = mask;
         else
             pPriv->pm = pGC->planemask & mask;

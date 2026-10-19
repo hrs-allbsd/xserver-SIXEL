@@ -21,30 +21,35 @@
  *  DEALINGS IN THE SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
+/* Test relies on assert() */
+#undef NDEBUG
+
 #include <dix-config.h>
-#endif
 
 /*
  * Protocol testing for XIQueryPointer request.
  */
+#include <assert.h>
 #include <stdint.h>
 #include <X11/X.h>
 #include <X11/Xproto.h>
 #include <X11/extensions/XI2proto.h>
+
+#include "Xext/xinput/handlers.h"
+
 #include "inputstr.h"
 #include "windowstr.h"
 #include "scrnintstr.h"
-#include "xiquerypointer.h"
 #include "exevents.h"
-#include "exglobals.h"
+#include "Xext/xinput/exglobals.h"
 
 #include "protocol-common.h"
 
+DECLARE_WRAP_FUNCTION(dixWriteToClient, void, ClientPtr client, int len, void *data);
+
 extern ClientRec client_window;
 static ClientRec client_request;
-static void reply_XIQueryPointer_data(ClientPtr client, int len,
-                                      char *data, void *closure);
+static void reply_XIQueryPointer_data(ClientPtr client, int len, void *data);
 
 static struct {
     DeviceIntPtr dev;
@@ -52,39 +57,42 @@ static struct {
 } test_data;
 
 static void
-reply_XIQueryPointer(ClientPtr client, int len, char *data, void *closure)
+reply_XIQueryPointer(ClientPtr client, int len, void *data)
 {
-    xXIQueryPointerReply *rep = (xXIQueryPointerReply *) data;
+    xXIQueryPointerReply *repptr = (xXIQueryPointerReply *) data;
+    xXIQueryPointerReply reply = *repptr; /* copy so swapping doesn't touch the real reply */
     SpritePtr sprite;
 
-    if (!rep->repType)
+    assert(len < 0xffff); /* suspicious size, swapping bug */
+
+    if (!reply.repType)
         return;
 
     if (client->swapped) {
-        swapl(&rep->length);
-        swaps(&rep->sequenceNumber);
-        swapl(&rep->root);
-        swapl(&rep->child);
-        swapl(&rep->root_x);
-        swapl(&rep->root_y);
-        swapl(&rep->win_x);
-        swapl(&rep->win_y);
-        swaps(&rep->buttons_len);
+        swapl(&reply.length);
+        swaps(&reply.sequenceNumber);
+        swapl(&reply.root);
+        swapl(&reply.child);
+        swapl(&reply.root_x);
+        swapl(&reply.root_y);
+        swapl(&reply.win_x);
+        swapl(&reply.win_y);
+        swaps(&reply.buttons_len);
     }
 
-    reply_check_defaults(rep, len, XIQueryPointer);
+    reply_check_defaults(&reply, len, XIQueryPointer);
 
-    assert(rep->root == root.drawable.id);
-    assert(rep->same_screen == xTrue);
+    assert(reply.root == root.drawable.id);
+    assert(reply.same_screen == xTrue);
 
     sprite = test_data.dev->spriteInfo->sprite;
-    assert((rep->root_x >> 16) == sprite->hot.x);
-    assert((rep->root_y >> 16) == sprite->hot.y);
+    assert((reply.root_x >> 16) == sprite->hot.x);
+    assert((reply.root_y >> 16) == sprite->hot.y);
 
     if (test_data.win == &root) {
-        assert(rep->root_x == rep->win_x);
-        assert(rep->root_y == rep->win_y);
-        assert(rep->child == window.drawable.id);
+        assert(reply.root_x == reply.win_x);
+        assert(reply.root_y == reply.win_y);
+        assert(reply.child == window.drawable.id);
     }
     else {
         int x, y;
@@ -92,20 +100,22 @@ reply_XIQueryPointer(ClientPtr client, int len, char *data, void *closure)
         x = sprite->hot.x - window.drawable.x;
         y = sprite->hot.y - window.drawable.y;
 
-        assert((rep->win_x >> 16) == x);
-        assert((rep->win_y >> 16) == y);
-        assert(rep->child == None);
+        assert((reply.win_x >> 16) == x);
+        assert((reply.win_y >> 16) == y);
+        assert(reply.child == None);
     }
 
-    assert(rep->same_screen == xTrue);
+    assert(reply.same_screen == xTrue);
 
-    reply_handler = reply_XIQueryPointer_data;
+    wrapped_dixWriteToClient = reply_XIQueryPointer_data;
 }
 
 static void
-reply_XIQueryPointer_data(ClientPtr client, int len, char *data, void *closure)
+reply_XIQueryPointer_data(ClientPtr client, int len, void *data)
 {
-    reply_handler = reply_XIQueryPointer;
+    wrapped_dixWriteToClient = reply_XIQueryPointer;
+
+    assert(len < 0xffff); /* suspicious size, swapping bug */
 }
 
 static void
@@ -113,6 +123,7 @@ request_XIQueryPointer(ClientPtr client, xXIQueryPointerReq * req, int error)
 {
     int rc;
 
+    client_request.swapped = FALSE;
     rc = ProcXIQueryPointer(&client_request);
     assert(rc == error);
 
@@ -123,7 +134,7 @@ request_XIQueryPointer(ClientPtr client, xXIQueryPointerReq * req, int error)
     swaps(&req->deviceid);
     swapl(&req->win);
     swaps(&req->length);
-    rc = SProcXIQueryPointer(&client_request);
+    rc = ProcXIQueryPointer(&client_request);
     assert(rc == error);
 
     if (rc == BadDevice)
@@ -136,11 +147,13 @@ test_XIQueryPointer(void)
     int i;
     xXIQueryPointerReq request;
 
+    init_simple();
+
     memset(&request, 0, sizeof(request));
 
     request_init(&request, XIQueryPointer);
 
-    reply_handler = reply_XIQueryPointer;
+    wrapped_dixWriteToClient = reply_XIQueryPointer;
 
     client_request = init_client(request.length, &request);
 
@@ -189,12 +202,12 @@ test_XIQueryPointer(void)
     request_XIQueryPointer(&client_request, &request, BadLength);
 }
 
-int
+const testfunc_t*
 protocol_xiquerypointer_test(void)
 {
-    init_simple();
-
-    test_XIQueryPointer();
-
-    return 0;
+    static const testfunc_t testfuncs[] = {
+        test_XIQueryPointer,
+        NULL,
+    };
+    return testfuncs;
 }

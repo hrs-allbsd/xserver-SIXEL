@@ -21,9 +21,10 @@
  *  DEALINGS IN THE SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
+/* Test relies on assert() */
+#undef NDEBUG
+
 #include <dix-config.h>
-#endif
 
 /*
  * Protocol testing for XISelectEvents request.
@@ -39,7 +40,7 @@
  * BadValue for num_masks < 0
  * BadWindow for invalid windows
  * BadDevice for non-existing devices
- * BadImplemenation for devices >= 0xFF
+ * BadImplementation for devices >= 0xFF
  * BadValue if HierarchyChanged bit is set for devices other than
  *          XIAllDevices
  * BadValue for invalid mask bits
@@ -47,34 +48,35 @@
  *
  */
 
+#include <assert.h>
 #include <stdint.h>
 #include <X11/X.h>
 #include <X11/Xproto.h>
 #include <X11/extensions/XI2proto.h>
+
+#include "miext/extinit_priv.h"            /* for XInputExtensionInit */
+#include "Xext/xinput/handlers.h"
+
 #include "inputstr.h"
 #include "windowstr.h"
-#include "extinit.h"            /* for XInputExtensionInit */
 #include "scrnintstr.h"
-#include "exglobals.h"
-#include "xiselectev.h"
+#include "Xext/xinput/exglobals.h"
 
 #include "protocol-common.h"
+
+DECLARE_WRAP_FUNCTION(XISetEventMask, int, DeviceIntPtr dev,
+                      WindowPtr win, ClientPtr client,
+                      int len, unsigned char *mask);
+
 
 static unsigned char *data[4096 * 20];  /* the request data buffer */
 
 extern ClientRec client_window;
 
-int
-__real_XISetEventMask(DeviceIntPtr dev, WindowPtr win, ClientPtr client,
-                      int len, unsigned char *mask);
-
-int
-__wrap_XISetEventMask(DeviceIntPtr dev, WindowPtr win, ClientPtr client,
-                      int len, unsigned char *mask)
+static int
+override_XISetEventMask(DeviceIntPtr dev, WindowPtr win, ClientPtr client,
+                        int len, unsigned char *mask)
 {
-    if (!enable_XISetEventMask_wrap)
-        return __real_XISetEventMask(dev, win, client, len, mask);
-
     return Success;
 }
 
@@ -108,10 +110,19 @@ request_XISelectEvent(xXISelectEventsReq * req, int error)
         mask = next;
     }
 
+    /* MUST NOT swap req->length here !
+
+       The handler proc's don't use that field anymore, thus also SProc's
+       wont swap it. But this test program uses that field to initialize
+       client->req_len (see above). We previously had to swap it here, so
+       that ProcXIPassiveGrabDevice() will swap it back. Since that's gone
+       now, still swapping itself would break if this function is called
+       again and writing back a erroneously swapped value
+    */
+
     swapl(&req->win);
-    swaps(&req->length);
     swaps(&req->num_masks);
-    rc = SProcXISelectEvents(&client);
+    rc = ProcXISelectEvents(&client);
     assert(rc == error);
 }
 
@@ -124,6 +135,16 @@ _set_bit(unsigned char *bits, int bit)
         SetBit(bits, XI_TouchUpdate);
         SetBit(bits, XI_TouchEnd);
     }
+    if (bit >= XI_GesturePinchBegin && bit <= XI_GesturePinchEnd) {
+        SetBit(bits, XI_GesturePinchBegin);
+        SetBit(bits, XI_GesturePinchUpdate);
+        SetBit(bits, XI_GesturePinchEnd);
+    }
+    if (bit >= XI_GestureSwipeBegin && bit <= XI_GestureSwipeEnd) {
+        SetBit(bits, XI_GestureSwipeBegin);
+        SetBit(bits, XI_GestureSwipeUpdate);
+        SetBit(bits, XI_GestureSwipeEnd);
+    }
 }
 
 static void
@@ -135,6 +156,16 @@ _clear_bit(unsigned char *bits, int bit)
         ClearBit(bits, XI_TouchUpdate);
         ClearBit(bits, XI_TouchEnd);
     }
+    if (bit >= XI_GesturePinchBegin && bit <= XI_GesturePinchEnd) {
+        ClearBit(bits, XI_GesturePinchBegin);
+        ClearBit(bits, XI_GesturePinchUpdate);
+        ClearBit(bits, XI_GesturePinchEnd);
+    }
+    if (bit >= XI_GestureSwipeBegin && bit <= XI_GestureSwipeEnd) {
+        ClearBit(bits, XI_GestureSwipeBegin);
+        ClearBit(bits, XI_GestureSwipeUpdate);
+        ClearBit(bits, XI_GestureSwipeEnd);
+    }
 }
 
 static void
@@ -142,14 +173,14 @@ request_XISelectEvents_masks(xXISelectEventsReq * req)
 {
     int i, j;
     xXIEventMask *mask;
-    int nmasks = (XI2LASTEVENT + 7) / 8;
+    int nmasks = XI2MASKSIZE;
     unsigned char *bits;
 
     mask = (xXIEventMask *) &req[1];
     req->win = ROOT_WINDOW_ID;
 
     /* if a clients submits more than 100 masks, consider it insane and untested */
-    for (i = 1; i <= 1000; i++) {
+    for (i = 1; i <= 1000; i += 33) {
         req->num_masks = i;
         mask->deviceid = XIAllDevices;
 
@@ -213,6 +244,17 @@ request_XISelectEvents_masks(xXISelectEventsReq * req)
         }
 
         /* Test 5:
+         * Mask len is 1 and XI_GestureSwipeEnd is set outside the mask.
+         * That bit should be ignored -> Success
+         */
+        bits = (unsigned char *) &mask[1];
+        mask->mask_len = 1;
+        memset(bits, 0, 5);
+        SetBit(bits, XI_ButtonPress); // does not matter which one
+        SetBit(bits, XI_GestureSwipeEnd);
+        request_XISelectEvent(req, Success);
+
+        /* Test 6:
          * HierarchyChanged bit is BadValue for devices other than
          * XIAllDevices
          */
@@ -227,7 +269,7 @@ request_XISelectEvents_masks(xXISelectEventsReq * req)
             request_XISelectEvent(req, BadValue);
         }
 
-        /* Test 6:
+        /* Test 7:
          * All bits set minus hierarchy changed bit -> Success
          */
         bits = (unsigned char *) &mask[1];
@@ -254,11 +296,15 @@ test_XISelectEvents(void)
     xXIEventMask *mask;
     xXISelectEventsReq *req;
 
+    wrapped_XISetEventMask = override_XISetEventMask;
+
+    init_simple();
+
     req = (xXISelectEventsReq *) data;
 
     request_init(req, XISelectEvents);
 
-    printf("Testing for BadValue on zero-length masks\n");
+    dbg("Testing for BadValue on zero-length masks\n");
     /* zero masks are BadValue, regardless of the window */
     req->num_masks = 0;
 
@@ -271,7 +317,7 @@ test_XISelectEvents(void)
     req->win = CLIENT_WINDOW_ID;
     request_XISelectEvent(req, BadValue);
 
-    printf("Testing for BadWindow.\n");
+    dbg("Testing for BadWindow.\n");
     /* None window is BadWindow, regardless of the masks.
      * We don't actually need to set the masks here, BadWindow must occur
      * before checking the masks.
@@ -291,7 +337,7 @@ test_XISelectEvents(void)
     req->num_masks = 0xFFFC;
     request_XISelectEvent(req, BadWindow);
 
-    printf("Triggering num_masks/length overflow\n");
+    dbg("Triggering num_masks/length overflow\n");
     req->win = ROOT_WINDOW_ID;
     /* Integer overflow - req->length can't hold that much */
     req->num_masks = 0xFFFF;
@@ -300,14 +346,14 @@ test_XISelectEvents(void)
     req->win = ROOT_WINDOW_ID;
     req->num_masks = 1;
 
-    printf("Triggering bogus mask length error\n");
+    dbg("Triggering bogus mask length error\n");
     mask = (xXIEventMask *) &req[1];
     mask->deviceid = 0;
     mask->mask_len = 0xFFFF;
     request_XISelectEvent(req, BadLength);
 
     /* testing various device ids */
-    printf("Testing existing device ids.\n");
+    dbg("Testing existing device ids.\n");
     for (i = 0; i < 6; i++) {
         mask = (xXIEventMask *) &req[1];
         mask->deviceid = i;
@@ -317,7 +363,7 @@ test_XISelectEvents(void)
         request_XISelectEvent(req, Success);
     }
 
-    printf("Testing non-existing device ids.\n");
+    dbg("Testing non-existing device ids.\n");
     for (i = 6; i <= 0xFFFF; i++) {
         req->win = ROOT_WINDOW_ID;
         req->num_masks = 1;
@@ -330,12 +376,13 @@ test_XISelectEvents(void)
     request_XISelectEvents_masks(req);
 }
 
-int
+const testfunc_t*
 protocol_xiselectevents_test(void)
 {
-    init_simple();
+    static const testfunc_t testfuncs[] = {
+        test_XISelectEvents,
+        NULL,
+    };
 
-    test_XISelectEvents();
-
-    return 0;
+    return testfuncs;
 }

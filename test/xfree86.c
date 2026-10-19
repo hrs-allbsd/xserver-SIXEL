@@ -21,9 +21,10 @@
  *  DEALINGS IN THE SOFTWARE.
  */
 
-#ifdef HAVE_DIX_CONFIG_H
+/* Test relies on assert() */
+#undef NDEBUG
+
 #include <dix-config.h>
-#endif
 
 #include <assert.h>
 
@@ -60,16 +61,24 @@ xfree86_option_list_duplicate(void)
 
     assert(strcmp(val1, v1) == 0);
     assert(strcmp(val1, val2) == 0);
+    free(val1);
+    free(val2);
 
     val1 = xf86CheckStrOption(options, o2, "1");
     val2 = xf86CheckStrOption(duplicate, o2, "2");
 
     assert(strcmp(val1, v2) == 0);
     assert(strcmp(val1, val2) == 0);
+    free(val1);
+    free(val2);
 
     a = xf86FindOption(options, o_null);
     b = xf86FindOption(duplicate, o_null);
-    assert(a && b);
+    assert(a);
+    assert(b);
+
+    xf86OptionListFree(duplicate);
+    xf86OptionListFree(options);
 }
 
 static void
@@ -97,11 +106,13 @@ xfree86_add_comment(void)
     free(current);
 }
 
-int
+const testfunc_t*
 xfree86_test(void)
 {
-    xfree86_option_list_duplicate();
-    xfree86_add_comment();
-
-    return 0;
+    static const testfunc_t testfuncs[] = {
+        xfree86_option_list_duplicate,
+        xfree86_add_comment,
+        NULL,
+    };
+    return testfuncs;
 }

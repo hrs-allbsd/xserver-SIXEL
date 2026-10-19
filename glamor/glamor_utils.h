@@ -25,15 +25,18 @@
  *
  */
 
+#ifndef __GLAMOR_UTILS_H__
+#define __GLAMOR_UTILS_H__
+
 #ifndef GLAMOR_PRIV_H
 #error This file can only be included by glamor_priv.h
 #endif
 
-#ifndef __GLAMOR_UTILS_H__
-#define __GLAMOR_UTILS_H__
+#include "include/mipict.h"
+#include "os/bug_priv.h"
+#include "os/mathx_priv.h"
 
 #include "glamor_prepare.h"
-#include "mipict.h"
 
 #define v_from_x_coord_x(_xscale_, _x_)          ( 2 * (_x_) * (_xscale_) - 1.0)
 #define v_from_x_coord_y(_yscale_, _y_)          (2 * (_y_) * (_yscale_) - 1.0)
@@ -43,7 +46,7 @@
 #define pixmap_priv_get_dest_scale(pixmap, _pixmap_priv_, _pxscale_, _pyscale_) \
   do {                                                                   \
     int _w_,_h_;                                                         \
-    PIXMAP_PRIV_GET_ACTUAL_SIZE(pixmap, _pixmap_priv_, _w_, _h_);        \
+    PIXMAP_PRIV_GET_ACTUAL_SIZE((pixmap), (_pixmap_priv_), _w_, _h_);        \
     *(_pxscale_) = 1.0 / _w_;                                            \
     *(_pyscale_) = 1.0 / _h_;                                            \
    } while(0)
@@ -56,28 +59,28 @@
 
 #define PIXMAP_PRIV_GET_ACTUAL_SIZE(pixmap, priv, w, h)          \
   do {								\
-	if (_X_UNLIKELY(glamor_pixmap_priv_is_large(priv))) {	\
-		w = priv->box.x2 - priv->box.x1;	\
-		h = priv->box.y2 - priv->box.y1;	\
+	if (_X_UNLIKELY(glamor_pixmap_priv_is_large((priv)))) {	\
+		(w) = (priv)->box.x2 - (priv)->box.x1;	\
+		(h) = (priv)->box.y2 - (priv)->box.y1;	\
 	} else {						\
-		w = (pixmap)->drawable.width;		\
-		h = (pixmap)->drawable.height;		\
+		(w) = (pixmap)->drawable.width;		\
+		(h) = (pixmap)->drawable.height;		\
 	}							\
   } while(0)
 
 #define glamor_pixmap_fbo_fix_wh_ratio(wh, pixmap, priv)         \
   do {								\
 	int actual_w, actual_h;					\
-	PIXMAP_PRIV_GET_ACTUAL_SIZE(pixmap, priv, actual_w, actual_h);	\
-	wh[0] = (float)priv->fbo->width / actual_w;	\
-	wh[1] = (float)priv->fbo->height / actual_h;	\
-	wh[2] = 1.0 / priv->fbo->width;			\
-	wh[3] = 1.0 / priv->fbo->height;			\
+	PIXMAP_PRIV_GET_ACTUAL_SIZE((pixmap), (priv), actual_w, actual_h);	\
+	(wh)[0] = (float)(priv)->fbo->width / actual_w;	\
+	(wh)[1] = (float)(priv)->fbo->height / actual_h;	\
+	(wh)[2] = 1.0 / (priv)->fbo->width;			\
+	(wh)[3] = 1.0 / (priv)->fbo->height;			\
   } while(0)
 
 #define pixmap_priv_get_fbo_off(_priv_, _xoff_, _yoff_)		\
    do {								\
-        if (_X_UNLIKELY(_priv_ && glamor_pixmap_priv_is_large(_priv_))) { \
+        if (_X_UNLIKELY((_priv_) && glamor_pixmap_priv_is_large((_priv_)))) { \
 		*(_xoff_) = - (_priv_)->box.x1;	\
 		*(_yoff_) = - (_priv_)->box.y1;	\
 	} else {						\
@@ -86,8 +89,8 @@
 	}							\
    } while(0)
 
-#define xFixedToFloat(_val_) ((float)xFixedToInt(_val_)			\
-			      + ((float)xFixedFrac(_val_) / 65536.0))
+#define xFixedToFloat(_val_) ((float)xFixedToInt((_val_))			\
+			      + ((float)xFixedFrac((_val_)) / 65536.0))
 
 #define glamor_picture_get_matrixf(_picture_, _matrix_)			\
   do {									\
@@ -106,10 +109,10 @@
       }									\
   }  while(0)
 
-#define fmod(x, w)		(x - w * floor((float)x/w))
+#define fmod(x, w)		((x) - (w) * floor((float)(x)/(w)))
 
-#define fmodulus(x, w, c)	do {c = fmod(x, w);		\
-				    c = c >= 0 ? c : c + w;}	\
+#define fmodulus(x, w, c)	do {(c) = fmod((x), (w));		\
+				    (c) = (c) >= 0 ? (c) : (c) + (w);}	\
 				while(0)
 /* @x: is current coord
  * @x2: is the right/bottom edge
@@ -120,13 +123,13 @@
 #define fodd_repeat_mod(x, x2, w, odd, c)	\
   do {						\
 	float shift;				\
-	fmodulus((x), w, c); 			\
+	fmodulus((x), (w), (c)); 			\
 	shift = fabs((x) - (c));		\
-	shift = floor(fabs(round(shift)) / w);	\
-	odd = (int)shift & 1;			\
-	if (odd && (((x2 % w) == 0) &&		\
-	    round(fabs(x)) == x2))		\
-		odd = 0;			\
+	shift = floor(fabs(round(shift)) / (w));	\
+	(odd) = (int)shift & 1;			\
+	if ((odd) && ((((x2) % (w)) == 0) &&		\
+	    round(fabs((x))) == (x2)))		\
+		(odd) = 0;			\
   } while(0)
 
 /* @txy: output value, is the corrected coords.
@@ -303,8 +306,8 @@
       _result_[_i_] = (matrix)[_i_ * 3] * (x) + (matrix)[_i_ * 3 + 1] * (y)	\
 	+ (matrix)[_i_ * 3 + 2];					\
     }									\
-    tx = _result_[0] / _result_[2];					\
-    ty = _result_[1] / _result_[2];					\
+    (tx) = _result_[0] / _result_[2];					\
+    (ty) = _result_[1] / _result_[2];					\
   } while(0)
 
 #define _glamor_set_normalize_tpoint(xscale, yscale, _tx_, _ty_,	\
@@ -562,73 +565,17 @@
         (c)[1] = (float)y;				\
     } while(0)
 
+#ifndef ALIGN /* FreeBSD already has it */
 #define ALIGN(i,m)	(((i) + (m) - 1) & ~((m) - 1))
-#define MIN(a,b)	((a) < (b) ? (a) : (b))
-#define MAX(a,b)	((a) > (b) ? (a) : (b))
+#endif
 
 #define glamor_check_fbo_size(_glamor_,_w_, _h_)    ((_w_) > 0 && (_h_) > 0 \
-                                                    && (_w_) <= _glamor_->max_fbo_size  \
-                                                    && (_h_) <= _glamor_->max_fbo_size)
+                                                    && (_w_) <= (_glamor_)->max_fbo_size  \
+                                                    && (_h_) <= (_glamor_)->max_fbo_size)
 
-/* For 1bpp pixmap, we don't store it as texture. */
-#define glamor_check_pixmap_fbo_depth(_depth_) (			\
-						_depth_ == 8		\
-						|| _depth_ == 15	\
-						|| _depth_ == 16	\
-						|| _depth_ == 24	\
-						|| _depth_ == 30	\
-						|| _depth_ == 32)
-
-#define GLAMOR_PIXMAP_PRIV_HAS_FBO(pixmap_priv)    (pixmap_priv->gl_fbo == GLAMOR_FBO_NORMAL)
-
-/**
- * Borrow from uxa.
- */
-static inline CARD32
-format_for_depth(int depth)
-{
-    switch (depth) {
-    case 1:
-        return PICT_a1;
-    case 4:
-        return PICT_a4;
-    case 8:
-        return PICT_a8;
-    case 15:
-        return PICT_x1r5g5b5;
-    case 16:
-        return PICT_r5g6b5;
-    default:
-    case 24:
-        return PICT_x8r8g8b8;
-    case 30:
-        return PICT_x2r10g10b10;
-    case 32:
-        return PICT_a8r8g8b8;
-    }
-}
-
-static inline GLenum
-gl_iformat_for_pixmap(PixmapPtr pixmap)
-{
-    glamor_screen_private *glamor_priv =
-        glamor_get_screen_private((pixmap)->drawable.pScreen);
-
-    if (glamor_priv->gl_flavor == GLAMOR_GL_DESKTOP &&
-        ((pixmap)->drawable.depth == 1 || (pixmap)->drawable.depth == 8)) {
-        return glamor_priv->one_channel_format;
-    } else if (glamor_priv->gl_flavor == GLAMOR_GL_DESKTOP &&
-               (pixmap)->drawable.depth == 30) {
-        return GL_RGB10_A2;
-    } else {
-        return GL_RGBA;
-    }
-}
-
-static inline CARD32
-format_for_pixmap(PixmapPtr pixmap)
-{
-    return format_for_depth((pixmap)->drawable.depth);
+static inline Bool GLAMOR_PIXMAP_PRIV_HAS_FBO(glamor_pixmap_private *pixmap_priv) {
+    BUG_RETURN_VAL(!pixmap_priv, FALSE);
+    return pixmap_priv->gl_fbo == GLAMOR_FBO_NORMAL;
 }
 
 #define REVERT_NONE       		0
@@ -645,34 +592,33 @@ glamor_get_rgba_from_pixel(CARD32 pixel,
                            float *green,
                            float *blue, float *alpha, CARD32 format)
 {
-    int rbits, bbits, gbits, abits;
     int rshift, bshift, gshift, ashift;
 
-    rbits = PICT_FORMAT_R(format);
-    gbits = PICT_FORMAT_G(format);
-    bbits = PICT_FORMAT_B(format);
-    abits = PICT_FORMAT_A(format);
+    int rbits = PIXMAN_FORMAT_R(format);
+    int gbits = PIXMAN_FORMAT_G(format);
+    int bbits = PIXMAN_FORMAT_B(format);
+    int abits = PIXMAN_FORMAT_A(format);
 
-    if (PICT_FORMAT_TYPE(format) == PICT_TYPE_A) {
+    if (PIXMAN_FORMAT_TYPE(format) == PIXMAN_TYPE_A) {
         rshift = gshift = bshift = ashift = 0;
     }
-    else if (PICT_FORMAT_TYPE(format) == PICT_TYPE_ARGB) {
+    else if (PIXMAN_FORMAT_TYPE(format) == PIXMAN_TYPE_ARGB) {
         bshift = 0;
         gshift = bbits;
         rshift = gshift + gbits;
         ashift = rshift + rbits;
     }
-    else if (PICT_FORMAT_TYPE(format) == PICT_TYPE_ABGR) {
+    else if (PIXMAN_FORMAT_TYPE(format) == PIXMAN_TYPE_ABGR) {
         rshift = 0;
         gshift = rbits;
         bshift = gshift + gbits;
         ashift = bshift + bbits;
     }
-    else if (PICT_FORMAT_TYPE(format) == PICT_TYPE_BGRA) {
+    else if (PIXMAN_FORMAT_TYPE(format) == PIXMAN_TYPE_BGRA) {
         ashift = 0;
         rshift = abits;
         if (abits == 0)
-            rshift = PICT_FORMAT_BPP(format) - (rbits + gbits + bbits);
+            rshift = PIXMAN_FORMAT_BPP(format) - (rbits + gbits + bbits);
         gshift = rshift + rbits;
         bshift = gshift + gbits;
     }
@@ -680,7 +626,7 @@ glamor_get_rgba_from_pixel(CARD32 pixel,
         return FALSE;
     }
 #define COLOR_INT_TO_FLOAT(_fc_, _p_, _s_, _bits_)	\
-  *_fc_ = (((_p_) >> (_s_)) & (( 1 << (_bits_)) - 1))	\
+  *(_fc_) = (((_p_) >> (_s_)) & (( 1 << (_bits_)) - 1))	\
     / (float)((1<<(_bits_)) - 1)
 
     if (rbits)
@@ -731,6 +677,17 @@ glamor_make_current(glamor_screen_private *glamor_priv)
         lastGLContext = glamor_priv->ctx.ctx;
         glamor_priv->ctx.make_current(&glamor_priv->ctx);
     }
+    glamor_priv->dirty = TRUE;
+}
+
+static inline void
+glamor_flush(glamor_screen_private *glamor_priv)
+{
+    if (glamor_priv->dirty) {
+        glamor_make_current(glamor_priv);
+        glFlush();
+        glamor_priv->dirty = FALSE;
+    }
 }
 
 static inline BoxRec
@@ -762,19 +719,19 @@ glamor_start_rendering_bounds(void)
 static inline void
 glamor_bounds_union_rect(BoxPtr bounds, xRectangle *rect)
 {
-    bounds->x1 = min(bounds->x1, rect->x);
-    bounds->y1 = min(bounds->y1, rect->y);
-    bounds->x2 = min(SHRT_MAX, max(bounds->x2, rect->x + rect->width));
-    bounds->y2 = min(SHRT_MAX, max(bounds->y2, rect->y + rect->height));
+    bounds->x1 = MIN(bounds->x1, rect->x);
+    bounds->y1 = MIN(bounds->y1, rect->y);
+    bounds->x2 = MIN(SHRT_MAX, MAX(bounds->x2, rect->x + rect->width));
+    bounds->y2 = MIN(SHRT_MAX, MAX(bounds->y2, rect->y + rect->height));
 }
 
 static inline void
 glamor_bounds_union_box(BoxPtr bounds, BoxPtr box)
 {
-    bounds->x1 = min(bounds->x1, box->x1);
-    bounds->y1 = min(bounds->y1, box->y1);
-    bounds->x2 = max(bounds->x2, box->x2);
-    bounds->y2 = max(bounds->y2, box->y2);
+    bounds->x1 = MIN(bounds->x1, box->x1);
+    bounds->y1 = MIN(bounds->y1, box->y1);
+    bounds->x2 = MAX(bounds->x2, box->x2);
+    bounds->y2 = MAX(bounds->y2, box->y2);
 }
 
 /**
@@ -791,5 +748,9 @@ glamor_glDrawArrays_GL_QUADS(glamor_screen_private *glamor_priv, unsigned count)
     }
 }
 
+static inline Bool
+glamor_glsl_has_ints(glamor_screen_private *glamor_priv) {
+    return glamor_priv->glsl_version >= 130 || glamor_priv->use_gpu_shader4;
+}
 
 #endif

@@ -75,45 +75,52 @@ OR PERFORMANCE OF THIS SOFTWARE.
  * authorization from the copyright holder(s) and author(s).
  */
 
-#ifdef HAVE_DIX_CONFIG_H
+#define _POSIX_THREAD_SAFE_FUNCTIONS // for localtime_r on mingw32
+
 #include <dix-config.h>
-#endif
 
-#include <X11/Xos.h>
-#include <stdio.h>
-#include <time.h>
-#include <sys/stat.h>
-#include <stdarg.h>
-#include <stdlib.h>             /* for malloc() */
 #include <errno.h>
+#include <stdio.h>
+#include <stdarg.h>
+#include <stdlib.h>             /* for calloc() */
+#include <string.h>             /* for strerror*() */
+#include <sys/stat.h>
+#include <time.h>
+#include <X11/Xfuncproto.h>
+#include <X11/Xos.h>
 
-#include "input.h"
-#include "site.h"
+#ifdef CONFIG_SYSLOG
+#include <syslog.h>
+#endif
+
+#include "dix/dix_priv.h"
+#include "dix/input_priv.h"
+#include "os/audit_priv.h"
+#include "os/bug_priv.h"
+#include "os/ddx_priv.h"
+#include "os/fmt.h"
+#include "os/log_priv.h"
+#include "os/osdep.h"
+
 #include "opaque.h"
-
-#ifdef WIN32
-#include <process.h>
-#define getpid(x) _getpid(x)
-#endif
-
-#ifdef XF86BIGFONT
-#include "xf86bigfontsrv.h"
-#endif
 
 #ifdef __clang__
 #pragma clang diagnostic ignored "-Wformat-nonliteral"
 #endif
 
-#ifdef DDXOSVERRORF
-void (*OsVendorVErrorFProc) (const char *, va_list args) = NULL;
-#endif
+/* Default logging parameters. */
+#define DEFAULT_LOG_VERBOSITY		0
+#define DEFAULT_LOG_FILE_VERBOSITY	3
+#define DEFAULT_SYSLOG_VERBOSITY	0
 
-static FILE *logFile = NULL;
 static int logFileFd = -1;
-static Bool logFlush = FALSE;
-static Bool logSync = FALSE;
-static int logVerbosity = DEFAULT_LOG_VERBOSITY;
-static int logFileVerbosity = DEFAULT_LOG_FILE_VERBOSITY;
+Bool xorgLogSync = FALSE;
+int xorgLogVerbosity = DEFAULT_LOG_VERBOSITY;
+int xorgLogFileVerbosity = DEFAULT_LOG_FILE_VERBOSITY;
+#ifdef CONFIG_SYSLOG
+int xorgSyslogVerbosity = DEFAULT_SYSLOG_VERBOSITY;
+const char *xorgSyslogIdent = "X";
+#endif
 
 /* Buffer to information logged before the log file is opened. */
 static char *saveBuffer = NULL;
@@ -125,46 +132,24 @@ static char __crashreporter_info_buff__[4096] = { 0 };
 
 static const char *__crashreporter_info__ __attribute__ ((__used__)) =
     &__crashreporter_info_buff__[0];
+/* NOLINTBEGIN(hicpp-no-assembler) */
 asm(".desc ___crashreporter_info__, 0x10");
+/* NOLINTEND(hicpp-no-assembler) */
 #endif
 
 /* Prefix strings for log messages. */
-#ifndef X_UNKNOWN_STRING
 #define X_UNKNOWN_STRING		"(\?\?)"
-#endif
-#ifndef X_PROBE_STRING
 #define X_PROBE_STRING			"(--)"
-#endif
-#ifndef X_CONFIG_STRING
 #define X_CONFIG_STRING			"(**)"
-#endif
-#ifndef X_DEFAULT_STRING
 #define X_DEFAULT_STRING		"(==)"
-#endif
-#ifndef X_CMDLINE_STRING
 #define X_CMDLINE_STRING		"(++)"
-#endif
-#ifndef X_NOTICE_STRING
 #define X_NOTICE_STRING			"(!!)"
-#endif
-#ifndef X_ERROR_STRING
 #define X_ERROR_STRING			"(EE)"
-#endif
-#ifndef X_WARNING_STRING
 #define X_WARNING_STRING		"(WW)"
-#endif
-#ifndef X_INFO_STRING
 #define X_INFO_STRING			"(II)"
-#endif
-#ifndef X_NOT_IMPLEMENTED_STRING
 #define X_NOT_IMPLEMENTED_STRING	"(NI)"
-#endif
-#ifndef X_DEBUG_STRING
 #define X_DEBUG_STRING			"(DB)"
-#endif
-#ifndef X_NONE_STRING
 #define X_NONE_STRING			""
-#endif
 
 static size_t
 strlen_sigsafe(const char *s)
@@ -223,6 +208,91 @@ LogFilePrep(const char *fname, const char *backup, const char *idstring)
 }
 #pragma GCC diagnostic pop
 
+static inline void doLogSync(void) {
+#ifndef WIN32
+    fsync(logFileFd);
+#endif
+}
+
+static void initSyslog(void) {
+#ifdef CONFIG_SYSLOG
+    static char buffer[4096];
+    strcpy(buffer, xorgSyslogIdent);
+
+    snprintf(buffer, sizeof(buffer), "%s :%s", xorgSyslogIdent, (display ? display : "<>"));
+
+    /* initialize syslog */
+    openlog(buffer, LOG_PID, LOG_LOCAL1);
+#endif
+}
+
+static void
+LogFailedWriteStdout(const void * buf, size_t len)
+{
+        if (write(STDOUT_FILENO, buf, len)==-1)
+        {
+	    /* We can't write to the logfile, stderr, and stdout; something
+	     * bad is probably happening, but we can't really do anything */
+            return;
+        }
+}
+static void
+LogFailedWrite(const void * buf, size_t len)
+{
+    if (write(STDERR_FILENO, buf, len)==-1)
+    {
+	/* We can't even write to stderr, let's try stdout as a last resort. */
+        {
+            char error[]="Can't write to stderr: ";
+            LogFailedWriteStdout(error,sizeof(error));
+        }
+#ifndef __MINGW32__
+        char dsc[256]={0};
+        (void) !strerror_r(errno,dsc,sizeof(dsc));
+#else
+        char * dsc;
+        dsc=strerror(errno);
+#endif
+        LogFailedWriteStdout(dsc,strlen(dsc));
+        LogFailedWriteStdout("\n",1);
+        {
+	    char error[]="Intended to write the following to stderr:\n";
+            LogFailedWriteStdout(error,sizeof(error));
+        }
+        LogFailedWriteStdout(buf,len);
+    }
+}
+
+static void
+LogWrite(int fd, const void * buf, size_t len)
+{
+    if (write(fd, buf, len)==-1)
+    {
+	/* If the write() call fails, we can not log this event to the log file,
+	 * but we still have the stderr.
+         */
+        {
+            char error[]="Can't write to log file: ";
+            LogFailedWrite(error,sizeof(error));
+        }
+#ifndef __MINGW32__
+        char dsc[256]={0};
+        (void) !strerror_r(errno,dsc,sizeof(dsc));
+#else
+        char * dsc;
+        dsc=strerror(errno);
+#endif
+        LogFailedWrite(dsc,strlen(dsc));
+        LogFailedWrite("\n",1);
+        {
+            char error[]="Intended to write the following to log file:\n";
+            LogFailedWrite(error,sizeof(error));
+        }
+        LogFailedWrite(buf,len);
+    }
+
+}
+
 /*
  * LogInit is called to start logging to a file.  It is also called (with
  * NULL arguments) when logging to a file is not wanted.  It must always be
@@ -258,19 +328,14 @@ LogInit(const char *fname, const char *backup)
                 saved_log_backup = strdup(backup);
         } else
             logFileName = LogFilePrep(fname, backup, display);
-        if ((logFile = fopen(logFileName, "w")) == NULL)
-            FatalError("Cannot open log file \"%s\"\n", logFileName);
-        setvbuf(logFile, NULL, _IONBF, 0);
 
-        logFileFd = fileno(logFile);
+        if ((logFileFd = open(logFileName, O_WRONLY | O_CREAT, S_IRUSR|S_IWUSR|S_IRGRP)) == -1)
+            FatalError("Cannot open log file \"%s\": %s\n", logFileName, strerror(errno));
 
         /* Flush saved log information. */
         if (saveBuffer && bufferSize > 0) {
-            fwrite(saveBuffer, bufferPos, 1, logFile);
-            fflush(logFile);
-#ifndef WIN32
-            fsync(fileno(logFile));
-#endif
+            LogWrite(logFileFd, saveBuffer, bufferPos);
+            doLogSync();
         }
     }
 
@@ -285,6 +350,7 @@ LogInit(const char *fname, const char *backup)
     }
     needBuffer = FALSE;
 
+    initSyslog();
     return logFileName;
 }
 
@@ -316,41 +382,20 @@ LogSetDisplay(void)
         free(saved_log_fname);
         free(saved_log_backup);
     }
+    initSyslog();
 }
 
 void
 LogClose(enum ExitCode error)
 {
-    if (logFile) {
+    if (logFileFd != -1) {
         int msgtype = (error == EXIT_NO_ERROR) ? X_INFO : X_ERROR;
-        LogMessageVerbSigSafe(msgtype, -1,
+        LogMessageVerb(msgtype, -1,
                 "Server terminated %s (%d). Closing log file.\n",
                 (error == EXIT_NO_ERROR) ? "successfully" : "with error",
                 error);
-        fclose(logFile);
-        logFile = NULL;
+        close(logFileFd);
         logFileFd = -1;
-    }
-}
-
-Bool
-LogSetParameter(LogParameter param, int value)
-{
-    switch (param) {
-    case XLOG_FLUSH:
-        logFlush = value ? TRUE : FALSE;
-        return TRUE;
-    case XLOG_SYNC:
-        logSync = value ? TRUE : FALSE;
-        return TRUE;
-    case XLOG_VERBOSITY:
-        logVerbosity = value;
-        return TRUE;
-    case XLOG_FILE_VERBOSITY:
-        logFileVerbosity = value;
-        return TRUE;
-    default:
-        return FALSE;
     }
 }
 
@@ -413,7 +458,7 @@ vpnprintf(char *string, int size_in, const char *f, va_list args)
     int f_idx = 0;
     int s_idx = 0;
     int f_len = strlen_sigsafe(f);
-    char *string_arg;
+    const char *string_arg;
     char number[21];
     int p_len;
     int i;
@@ -430,6 +475,14 @@ vpnprintf(char *string, int size_in, const char *f, va_list args)
         }
 
         f_idx++;
+
+        if (f[f_idx] == '#')
+        /* silently ignore alternate form */
+            f_idx++;
+
+        /* silently ignore reverse justification */
+        if (f[f_idx] == '-')
+            f_idx++;
 
         /* silently swallow minimum field width */
         if (f[f_idx] == '*') {
@@ -469,6 +522,8 @@ vpnprintf(char *string, int size_in, const char *f, va_list args)
         switch (f[f_idx]) {
         case 's':
             string_arg = va_arg(args, char*);
+            if (!string_arg)
+                string_arg = "(null)";
 
             for (i = 0; string_arg[i] != 0 && s_idx < size - 1 && s_idx < precision; i++)
                 string[s_idx++] = string_arg[i];
@@ -521,6 +576,7 @@ vpnprintf(char *string, int size_in, const char *f, va_list args)
             break;
 
         case 'x':
+        case 'X': // not actually upper case, but at least accepting '%X'
             if (length_modifier & LMOD_LONGLONG)
                 ui = va_arg(args, unsigned long long);
             else if (length_modifier & LMOD_LONG)
@@ -571,17 +627,17 @@ vpnprintf(char *string, int size_in, const char *f, va_list args)
     return s_idx;
 }
 
-static int
-pnprintf(char *string, int size, const char *f, ...)
-{
-    int rc;
-    va_list args;
+static void
+LogSyslogWrite(int verb, const char *buf, size_t len, Bool end_line) {
+#ifdef CONFIG_SYSLOG
+    if (inSignalContext) // syslog() ins't signal-safe yet :(
+        return;          // shall we try syslog(2) syscall instead ?
 
-    va_start(args, f);
-    rc = vpnprintf(string, size, f, args);
-    va_end(args);
+    if (verb >= 0 && xorgSyslogVerbosity < verb)
+        return;
 
-    return rc;
+    syslog(LOG_PID, "%.*s", (int)len, buf);
+#endif
 }
 
 /* This function does the actual log message writes. It must be signal safe.
@@ -591,30 +647,39 @@ static void
 LogSWrite(int verb, const char *buf, size_t len, Bool end_line)
 {
     static Bool newline = TRUE;
-    int ret;
 
-    if (verb < 0 || logVerbosity >= verb)
-        ret = write(2, buf, len);
+    LogSyslogWrite(verb, buf, len, end_line);
 
-    if (verb < 0 || logFileVerbosity >= verb) {
+    if (verb < 0 || xorgLogVerbosity >= verb) {
+        LogWrite(2, buf, len);
+    }
+
+    if (verb < 0 || xorgLogFileVerbosity >= verb) {
         if (inSignalContext && logFileFd >= 0) {
-            ret = write(logFileFd, buf, len);
-#ifndef WIN32
-            if (logFlush && logSync)
-                fsync(logFileFd);
-#endif
+            LogWrite(logFileFd, buf, len);
+            if (xorgLogSync){
+                doLogSync();
+            }
         }
-        else if (!inSignalContext && logFile) {
-            if (newline)
-                fprintf(logFile, "[%10.3f] ", GetTimeInMillis() / 1000.0);
+        else if (!inSignalContext && logFileFd != -1) {
+            if (newline) {
+                time_t t = time(NULL);
+                struct tm tm;
+                char fmt_tm[32];
+                size_t fmt_len;
+
+                localtime_r(&t, &tm);
+                fmt_len = strftime(
+                                fmt_tm,
+                                sizeof(fmt_tm),
+                                "[%Y-%m-%d %H:%M:%S] ",
+                                &tm);
+                LogWrite(logFileFd, fmt_tm, fmt_len);
+            }
             newline = end_line;
-            fwrite(buf, len, 1, logFile);
-            if (logFlush) {
-                fflush(logFile);
-#ifndef WIN32
-                if (logSync)
-                    fsync(fileno(logFile));
-#endif
+            LogWrite(logFileFd, buf, len);
+            if (xorgLogSync) {
+                doLogSync();
             }
         }
         else if (!inSignalContext && needBuffer) {
@@ -622,35 +687,15 @@ LogSWrite(int verb, const char *buf, size_t len, Bool end_line)
                 bufferSize += 1024;
                 bufferUnused += 1024;
                 saveBuffer = realloc(saveBuffer, bufferSize);
-                if (!saveBuffer)
+                if (!saveBuffer) {
                     FatalError("realloc() failed while saving log messages\n");
+                }
             }
             bufferUnused -= len;
             memcpy(saveBuffer + bufferPos, buf, len);
             bufferPos += len;
         }
     }
-
-    /* There's no place to log an error message if the log write
-     * fails...
-     */
-    (void) ret;
-}
-
-void
-LogVWrite(int verb, const char *f, va_list args)
-{
-    return LogVMessageVerb(X_NONE, verb, f, args);
-}
-
-void
-LogWrite(int verb, const char *f, ...)
-{
-    va_list args;
-
-    va_start(args, f);
-    LogVWrite(verb, f, args);
-    va_end(args);
 }
 
 /* Returns the Message Type string to prepend to a logging message, or NULL
@@ -661,7 +706,7 @@ LogMessageTypeVerbString(MessageType type, int verb)
     if (type == X_ERROR)
         verb = 0;
 
-    if (logVerbosity < verb && logFileVerbosity < verb)
+    if (xorgLogVerbosity < verb && xorgLogFileVerbosity < verb)
         return NULL;
 
     switch (type) {
@@ -694,40 +739,49 @@ LogMessageTypeVerbString(MessageType type, int verb)
     }
 }
 
+#define LOG_MSG_BUF_SIZE 1024
+
+static ssize_t prepMsgHdr(MessageType type, int verb, char *buf)
+{
+    const char *type_str = LogMessageTypeVerbString(type, verb);
+    if (!type_str)
+        return -1;
+
+    size_t prefixLen = strlen_sigsafe(type_str);
+    if (prefixLen) {
+        memcpy(buf, type_str, prefixLen + 1); // rely on buffer being big enough
+        buf[prefixLen] = ' ';
+        prefixLen++;
+    }
+    buf[prefixLen] = 0;
+    return prefixLen;
+}
+
+static inline void writeLog(int verb, char *buf, int len)
+{
+    /* Force '\n' at end of truncated line */
+    if (LOG_MSG_BUF_SIZE  - len == 1)
+        buf[len - 1] = '\n';
+
+    LogSWrite(verb, buf, len, (buf[len - 1] == '\n'));
+}
+
+/* signal safe */
 void
 LogVMessageVerb(MessageType type, int verb, const char *format, va_list args)
 {
-    const char *type_str;
-    char buf[1024];
-    const size_t size = sizeof(buf);
-    Bool newline;
-    size_t len = 0;
+    char buf[LOG_MSG_BUF_SIZE];
 
-    if (inSignalContext) {
-        LogVMessageVerbSigSafe(type, verb, format, args);
-        return;
-    }
-
-    type_str = LogMessageTypeVerbString(type, verb);
-    if (!type_str)
+    size_t len = prepMsgHdr(type, verb, buf);
+    if (len == -1)
         return;
 
-    /* if type_str is not "", prepend it and ' ', to message */
-    if (type_str[0] != '\0')
-        len += Xscnprintf(&buf[len], size - len, "%s ", type_str);
+    len += vpnprintf(&buf[len], sizeof(buf) - len, format, args);
 
-    if (size - len > 1)
-        len += Xvscnprintf(&buf[len], size - len, format, args);
-
-    /* Force '\n' at end of truncated line */
-    if (size - len == 1)
-        buf[len - 1] = '\n';
-
-    newline = (buf[len - 1] == '\n');
-    LogSWrite(verb, buf, len, newline);
+    writeLog(verb, buf, len);
 }
 
-/* Log message with verbosity level specified. */
+/* Log message with verbosity level specified. -- signal safe */
 void
 LogMessageVerb(MessageType type, int verb, const char *format, ...)
 {
@@ -749,86 +803,30 @@ LogMessage(MessageType type, const char *format, ...)
     va_end(ap);
 }
 
-/* Log a message using only signal safe functions. */
-void
-LogMessageVerbSigSafe(MessageType type, int verb, const char *format, ...)
-{
-    va_list ap;
-    va_start(ap, format);
-    LogVMessageVerbSigSafe(type, verb, format, ap);
-    va_end(ap);
-}
+static void
+LogVHdrMessageVerb(MessageType type, int verb,
+                   const char *msg_format, va_list msg_args,
+                   const char *hdr_format, va_list hdr_args)
+_X_ATTRIBUTE_PRINTF(3, 0)
+_X_ATTRIBUTE_PRINTF(5, 0);
 
-void
-LogVMessageVerbSigSafe(MessageType type, int verb, const char *format, va_list args)
-{
-    const char *type_str;
-    char buf[1024];
-    int len;
-    Bool newline;
-
-    type_str = LogMessageTypeVerbString(type, verb);
-    if (!type_str)
-        return;
-
-    /* if type_str is not "", prepend it and ' ', to message */
-    if (type_str[0] != '\0') {
-        LogSWrite(verb, type_str, strlen_sigsafe(type_str), FALSE);
-        LogSWrite(verb, " ", 1, FALSE);
-    }
-
-    len = vpnprintf(buf, sizeof(buf), format, args);
-
-    /* Force '\n' at end of truncated line */
-    if (sizeof(buf) - len == 1)
-        buf[len - 1] = '\n';
-
-    newline = (len > 0 && buf[len - 1] == '\n');
-    LogSWrite(verb, buf, len, newline);
-}
-
-void
+static void
 LogVHdrMessageVerb(MessageType type, int verb, const char *msg_format,
                    va_list msg_args, const char *hdr_format, va_list hdr_args)
 {
-    const char *type_str;
-    char buf[1024];
-    const size_t size = sizeof(buf);
-    Bool newline;
-    size_t len = 0;
-    int (*vprintf_func)(char *, int, const char* _X_RESTRICT_KYWD f, va_list args)
-            _X_ATTRIBUTE_PRINTF(3, 0);
-    int (*printf_func)(char *, int, const char* _X_RESTRICT_KYWD f, ...)
-            _X_ATTRIBUTE_PRINTF(3, 4);
+    char buf[LOG_MSG_BUF_SIZE];
 
-    type_str = LogMessageTypeVerbString(type, verb);
-    if (!type_str)
+    size_t len = prepMsgHdr(type, verb, buf);
+    if (len == -1)
         return;
 
-    if (inSignalContext) {
-        vprintf_func = vpnprintf;
-        printf_func = pnprintf;
-    } else {
-        vprintf_func = Xvscnprintf;
-        printf_func = Xscnprintf;
-    }
+    if (hdr_format && sizeof(buf) - len > 1)
+        len += vpnprintf(&buf[len], sizeof(buf) - len, hdr_format, hdr_args);
 
-    /* if type_str is not "", prepend it and ' ', to message */
-    if (type_str[0] != '\0')
-        len += printf_func(&buf[len], size - len, "%s ", type_str);
+    if (msg_format && sizeof(buf) - len > 1)
+        len += vpnprintf(&buf[len], sizeof(buf) - len, msg_format, msg_args);
 
-    if (hdr_format && size - len > 1)
-        len += vprintf_func(&buf[len], size - len, hdr_format, hdr_args);
-
-    if (msg_format && size - len > 1)
-        len += vprintf_func(&buf[len], size - len, msg_format, msg_args);
-
-    /* Force '\n' at end of truncated line */
-    if (size - len == 1)
-        buf[len - 1] = '\n';
-
-    newline = (buf[len - 1] == '\n');
-    LogSWrite(verb, buf, len, newline);
+    writeLog(verb, buf, len);
 }
 
 void
@@ -842,37 +840,6 @@ LogHdrMessageVerb(MessageType type, int verb, const char *msg_format,
     va_end(hdr_args);
 }
 
-void
-LogHdrMessage(MessageType type, const char *msg_format, va_list msg_args,
-              const char *hdr_format, ...)
-{
-    va_list hdr_args;
-
-    va_start(hdr_args, hdr_format);
-    LogVHdrMessageVerb(type, 1, msg_format, msg_args, hdr_format, hdr_args);
-    va_end(hdr_args);
-}
-
-void
-AbortServer(void)
-    _X_NORETURN;
-
-void
-AbortServer(void)
-{
-#ifdef XF86BIGFONT
-    XF86BigfontCleanup();
-#endif
-    CloseWellKnownConnections();
-    OsCleanup(TRUE);
-    AbortDevices();
-    AbortDDX(EXIT_ERR_ABORT);
-    fflush(stderr);
-    if (CoreDump)
-        OsAbort();
-    exit(1);
-}
-
 #define AUDIT_PREFIX "AUDIT: %s: %ld: "
 #ifndef AUDIT_TIMEOUT
 #define AUDIT_TIMEOUT ((CARD32)(120 * 1000))    /* 2 mn */
@@ -881,6 +848,8 @@ AbortServer(void)
 static int nrepeat = 0;
 static int oldlen = -1;
 static OsTimerPtr auditTimer = NULL;
+
+int auditTrailLevel = 1;
 
 void
 FreeAuditTimer(void)
@@ -898,7 +867,6 @@ AuditPrefix(void)
 {
     time_t tm;
     char *autime, *s;
-    char *tmpBuf;
     int len;
 
     time(&tm);
@@ -906,7 +874,7 @@ AuditPrefix(void)
     if ((s = strchr(autime, '\n')))
         *s = '\0';
     len = strlen(AUDIT_PREFIX) + strlen(autime) + 10 + 1;
-    tmpBuf = malloc(len);
+    char *tmpBuf = calloc(1, len);
     if (!tmpBuf)
         return NULL;
     snprintf(tmpBuf, len, AUDIT_PREFIX, autime, (unsigned long) getpid());
@@ -980,13 +948,13 @@ FatalError(const char *f, ...)
     static Bool beenhere = FALSE;
 
     if (beenhere)
-        ErrorFSigSafe("\nFatalError re-entered, aborting\n");
+        ErrorF("\nFatalError re-entered, aborting\n");
     else
-        ErrorFSigSafe("\nFatal server error:\n");
+        ErrorF("\nFatal server error:\n");
 
     va_start(args, f);
 
-    /* Make a copy for OsVendorFatalError */
+    /* Make a copy for ddxFatalError */
     va_copy(args2, args);
 
 #ifdef __APPLE__
@@ -999,11 +967,11 @@ FatalError(const char *f, ...)
         va_end(apple_args);
     }
 #endif
-    VErrorFSigSafe(f, args);
+    LogVMessageVerb(X_NONE, -1, f, args);
     va_end(args);
-    ErrorFSigSafe("\n");
+    ErrorF("\n");
     if (!beenhere)
-        OsVendorFatalError(f, args2);
+        ddxFatalError(f, args2);
     va_end(args2);
     if (!beenhere) {
         beenhere = TRUE;
@@ -1014,41 +982,12 @@ FatalError(const char *f, ...)
  /*NOTREACHED*/}
 
 void
-VErrorF(const char *f, va_list args)
-{
-#ifdef DDXOSVERRORF
-    if (OsVendorVErrorFProc)
-        OsVendorVErrorFProc(f, args);
-    else
-        LogVWrite(-1, f, args);
-#else
-    LogVWrite(-1, f, args);
-#endif
-}
-
-void
 ErrorF(const char *f, ...)
 {
     va_list args;
 
     va_start(args, f);
-    VErrorF(f, args);
-    va_end(args);
-}
-
-void
-VErrorFSigSafe(const char *f, va_list args)
-{
-    LogVMessageVerbSigSafe(X_ERROR, -1, f, args);
-}
-
-void
-ErrorFSigSafe(const char *f, ...)
-{
-    va_list args;
-
-    va_start(args, f);
-    VErrorFSigSafe(f, args);
+    LogVMessageVerb(X_NONE, -1, f, args);
     va_end(args);
 }
 
@@ -1056,7 +995,7 @@ void
 LogPrintMarkers(void)
 {
     /* Show what the message marker symbols mean. */
-    LogWrite(0, "Markers: ");
+    LogMessageVerb(X_NONE, 0, "Markers: ");
     LogMessageVerb(X_PROBED, 0, "probed, ");
     LogMessageVerb(X_CONFIG, 0, "from config file, ");
     LogMessageVerb(X_DEFAULT, 0, "default setting,\n\t");

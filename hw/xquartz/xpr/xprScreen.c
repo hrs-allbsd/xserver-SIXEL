@@ -29,19 +29,20 @@
 
 #include "sanitizedCarbon.h"
 
-#ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
-#endif
+
+#include "dix/screenint_priv.h"
+#include "miext/extinit_priv.h"
+#include "Xext/pseudoramiX/pseudoramiX.h"
 
 #include "inputstr.h"
 #include "quartz.h"
 #include "quartzRandR.h"
 #include "xpr.h"
 #include "xprEvent.h"
-#include "pseudoramiX.h"
 #include "darwinEvents.h"
 #include "rootless.h"
-#include "dri.h"
+#include "xpr_dri.h"
 #include "globals.h"
 #include <Xplugin.h>
 #include "applewmExt.h"
@@ -49,11 +50,7 @@
 
 #include "rootlessCommon.h"
 
-#ifdef DAMAGE
 #include "damage.h"
-#endif
-
-#include "nonsdk_extinit.h"
 
 /* 10.4's deferred update makes X slower.. have to live with the tearing
  * for now.. */
@@ -200,7 +197,6 @@ xprAddPseudoramiXScreens(int *x, int *y, int *width, int *height,
                          ScreenPtr pScreen)
 {
     CGDisplayCount i, displayCount;
-    CGDirectDisplayID *displayList = NULL;
     CGRect unionRect = CGRectNull, frame;
 
     // Find all the CoreGraphics displays
@@ -225,7 +221,7 @@ xprAddPseudoramiXScreens(int *x, int *y, int *width, int *height,
     if (CGDisplayIsCaptured(kCGDirectMainDisplay))
         displayCount = 1;
 
-    displayList = malloc(displayCount * sizeof(CGDirectDisplayID));
+    CGDirectDisplayID *displayList = calloc(displayCount, sizeof(CGDirectDisplayID));
     if (!displayList)
         FatalError("Unable to allocate memory for list of displays.\n");
     CGGetActiveDisplayList(displayCount, displayList, &displayCount);
@@ -281,10 +277,12 @@ xprDisplayInit(void)
     /* With PseudoramiX, the X server only sees one screen; only PseudoramiX
        itself knows about all of the screens. */
 
-    if (noPseudoramiXExtension)
+    if (noPseudoramiXExtension) {
         darwinScreensFound = displayCount;
-    else
+    } else {
+        PseudoramiXExtensionInit();
         darwinScreensFound = 1;
+    }
 
     if (xp_init(XP_BACKGROUND_EVENTS | XP_NO_DEFERRED_UPDATES) != Success)
         FatalError("Could not initialize the Xplugin library.");
@@ -320,6 +318,11 @@ xprAddScreen(int index, ScreenPtr pScreen)
     DEBUG_LOG("index=%d depth=%d\n", index, depth);
 
     if (depth == -1) {
+/* Modern CG APIs may not work on 10.6 ppc */
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1060 || defined(__ppc__)
+        depth = CGDisplaySamplesPerPixel(kCGDirectMainDisplay) *
+                CGDisplayBitsPerSample(kCGDirectMainDisplay);
+#else
         CGDisplayModeRef modeRef;
         CFStringRef encStrRef;
 
@@ -349,9 +352,12 @@ xprAddScreen(int index, ScreenPtr pScreen)
         }
 
         CFRelease(encStrRef);
+#endif
     }
 
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1060 && !defined(__ppc__)
 have_depth:
+#endif
     switch (depth) {
     case 8:     // pseudo-working
         dfb->visuals = PseudoColorMask;
@@ -473,13 +479,12 @@ xprUpdateScreen(ScreenPtr pScreen)
 static void
 xprInitInput(int argc, char **argv)
 {
-    int i;
-
     rootlessGlobalOffsetX = darwinMainScreenX;
     rootlessGlobalOffsetY = darwinMainScreenY;
 
-    for (i = 0; i < screenInfo.numScreens; i++)
-        AppleWMSetScreenOrigin(screenInfo.screens[i]->root);
+    DIX_FOR_EACH_SCREEN({
+        AppleWMSetScreenOrigin(walkScreen->root);
+    });
 }
 
 /*

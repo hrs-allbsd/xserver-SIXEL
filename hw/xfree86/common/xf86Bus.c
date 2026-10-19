@@ -28,28 +28,31 @@
 /*
  * This file contains the interfaces to the bus-specific code
  */
-
-#ifdef HAVE_XORG_CONFIG_H
 #include <xorg-config.h>
-#endif
 
+#include <assert.h>
 #include <ctype.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <X11/X.h>
+
+#include "config/hotplug_priv.h"
+#include "os/osdep.h"
+
 #include "os.h"
-#include "xf86.h"
+#include "xf86_priv.h"
 #include "xf86Priv.h"
 
 /* Bus-specific headers */
 
 #include "xf86Bus.h"
+#include "xf86sbusBus_priv.h"
+#include "xf86platformBus_priv.h"
 
-#define XF86_OS_PRIVS
 #include "xf86_OSproc.h"
-#ifdef XSERVER_LIBPCIACCESS
-#include "xf86VGAarbiter.h"
-#endif
+#include "xf86VGAarbiter_priv.h"
+
 /* Entity data */
 EntityPtr *xf86Entities = NULL; /* Bus slots claimed by drivers */
 int xf86NumEntities = 0;
@@ -75,7 +78,7 @@ BusRec primaryBus = { BUS_NONE, {0} };
 Bool
 xf86CallDriverProbe(DriverPtr drv, Bool detect_only)
 {
-    Bool foundScreen = FALSE;
+    bool foundScreen = FALSE;
 
 #ifdef XSERVER_PLATFORM_BUS
     /* xf86platformBus.c does not support Xorg -configure */
@@ -97,7 +100,7 @@ xf86CallDriverProbe(DriverPtr drv, Bool detect_only)
     }
 #endif
     if (!foundScreen && (drv->Probe != NULL)) {
-        xf86Msg(X_WARNING, "Falling back to old probe method for %s\n",
+        LogMessageVerb(X_WARNING, 1, "Falling back to old probe method for %s\n",
                 drv->driverName);
         foundScreen = (*drv->Probe) (drv, (detect_only) ? PROBE_DETECT
                                      : PROBE_DEFAULT);
@@ -106,15 +109,49 @@ xf86CallDriverProbe(DriverPtr drv, Bool detect_only)
     return foundScreen;
 }
 
+static screenLayoutPtr
+xf86BusConfigMatch(ScrnInfoPtr scrnInfo, Bool is_gpu) {
+    screenLayoutPtr layout;
+    int i, j;
+
+    for (layout = xf86ConfigLayout.screens; layout->screen != NULL;
+         layout++) {
+        for (i = 0; i < scrnInfo->numEntities; i++) {
+            GDevPtr dev =
+                xf86GetDevFromEntity(scrnInfo->entityList[i],
+                                     scrnInfo->entityInstanceList[i]);
+
+            if (is_gpu) {
+                for (j = 0; j < layout->screen->num_gpu_devices; j++) {
+                    if (dev == layout->screen->gpu_devices[j]) {
+                        /* A match has been found */
+                        return layout;
+                    }
+                }
+            } else {
+                if (dev == layout->screen->device) {
+                    /* A match has been found */
+                    return layout;
+                }
+            }
+        }
+    }
+
+    return NULL;
+}
+
 /**
  * @return TRUE if all buses are configured and set up correctly and FALSE
  * otherwise.
+ *
+ * If singleDriver is TRUE, then only the first successfully probed driver adds screens to xf86Screens,
+ * others may add GPU secondary screens only
  */
 Bool
-xf86BusConfig(void)
+xf86BusConfig(Bool singleDriver)
 {
     screenLayoutPtr layout;
-    int i, j;
+    int i;
 
     /*
      * 3 step probe to (hopefully) ensure that we always find at least 1
@@ -125,18 +162,22 @@ xf86BusConfig(void)
      *    xf86Screens[] list for each instance of the hardware found.
      */
     for (i = 0; i < xf86NumDrivers; i++) {
-        xf86CallDriverProbe(xf86DriverList[i], FALSE);
+        /* The order of the && operands below is essential! */
+        if (xf86CallDriverProbe(xf86DriverList[i], FALSE) && singleDriver)
+            break;
     }
 
     /*
      * 2. If no Screens were found, call each drivers probe function with
      *    ignorePrimary = TRUE, to ensure that we do actually get a
-     *    Screen if there is atleast one supported video card.
+     *    Screen if there is at least one supported video card.
      */
     if (xf86NumScreens == 0) {
         xf86ProbeIgnorePrimary = TRUE;
         for (i = 0; i < xf86NumDrivers && xf86NumScreens == 0; i++) {
-            xf86CallDriverProbe(xf86DriverList[i], FALSE);
+            /* The order of the && operands below is essential! */
+            if (xf86CallDriverProbe(xf86DriverList[i], FALSE) && singleDriver)
+                break;
         }
         xf86ProbeIgnorePrimary = FALSE;
     }
@@ -151,7 +192,7 @@ xf86BusConfig(void)
 
     /* If nothing was detected, return now */
     if (xf86NumScreens == 0) {
-        xf86Msg(X_ERROR, "No devices detected.\n");
+        LogMessageVerb(X_ERROR, 1, "No devices detected.\n");
         return FALSE;
     }
 
@@ -170,43 +211,29 @@ xf86BusConfig(void)
      *
      */
     for (i = 0; i < xf86NumScreens; i++) {
-        for (layout = xf86ConfigLayout.screens; layout->screen != NULL;
-             layout++) {
-            Bool found = FALSE;
-
-            for (j = 0; j < xf86Screens[i]->numEntities; j++) {
-
-                GDevPtr dev =
-                    xf86GetDevFromEntity(xf86Screens[i]->entityList[j],
-                                         xf86Screens[i]->entityInstanceList[j]);
-
-                if (dev == layout->screen->device) {
-                    /* A match has been found */
-                    xf86Screens[i]->confScreen = layout->screen;
-                    found = TRUE;
-                    break;
-                }
-            }
-            if (found)
-                break;
-        }
-        if (layout->screen == NULL) {
+        layout = xf86BusConfigMatch(xf86Screens[i], FALSE);
+        if (layout && layout->screen)
+            xf86Screens[i]->confScreen = layout->screen;
+        else {
             /* No match found */
-            xf86Msg(X_ERROR,
-                    "Screen %d deleted because of no matching config section.\n",
-                    i);
+            LogMessageVerb(X_ERROR, 1,
+                           "Screen %d deleted because of no matching config section.\n",
+                           i);
             xf86DeleteScreen(xf86Screens[i--]);
         }
     }
 
-    /* bind GPU conf screen to protocol screen 0 */
-    for (i = 0; i < xf86NumGPUScreens; i++)
-        xf86GPUScreens[i]->confScreen = xf86Screens[0]->confScreen;
+    /* bind GPU conf screen to the configured protocol screen, or 0 if not configured */
+    for (i = 0; i < xf86NumGPUScreens; i++) {
+        layout = xf86BusConfigMatch(xf86GPUScreens[i], TRUE);
+        int scrnum = (layout && layout->screen) ? layout->screen->screennum : 0;
+        xf86GPUScreens[i]->confScreen = xf86Screens[scrnum]->confScreen;
+    }
 
     /* If no screens left, return now.  */
     if (xf86NumScreens == 0) {
-        xf86Msg(X_ERROR,
-                "Device(s) detected, but none match those in the config file.\n");
+        LogMessageVerb(X_ERROR, 1,
+                       "Device(s) detected, but none match those in the config file.\n");
         return FALSE;
     }
 
@@ -250,13 +277,13 @@ StringToBusType(const char *busID, const char **retID)
     BusType ret = BUS_NONE;
 
     /* If no type field, Default to PCI */
-    if (isdigit(busID[0])) {
+    if (isdigit((unsigned char)busID[0])) {
         if (retID)
             *retID = busID;
         return BUS_PCI;
     }
 
-    s = xstrdup(busID);
+    s = Xstrdup(busID);
     p = strtok(s, ":");
     if (p == NULL || *p == 0) {
         free(s);
@@ -268,9 +295,16 @@ StringToBusType(const char *busID, const char **retID)
         ret = BUS_SBUS;
     if (!xf86NameCmp(p, "platform"))
         ret = BUS_PLATFORM;
+    if (!xf86NameCmp(p, "usb"))
+        ret = BUS_USB;
     if (ret != BUS_NONE)
-        if (retID)
-            *retID = busID + strlen(p) + 1;
+        if (retID) {
+            size_t len = strlen(p);
+            if (busID[len] == ':')
+                *retID = busID + len + 1;
+            else
+                *retID = busID + len; /* Points to the terminating null byte */
+        }
     free(s);
     return ret;
 }
@@ -279,11 +313,11 @@ int
 xf86AllocateEntity(void)
 {
     xf86NumEntities++;
-    xf86Entities = xnfreallocarray(xf86Entities,
+    xf86Entities = XNFreallocarray(xf86Entities,
                                    xf86NumEntities, sizeof(EntityPtr));
-    xf86Entities[xf86NumEntities - 1] = xnfcalloc(1, sizeof(EntityRec));
+    xf86Entities[xf86NumEntities - 1] = XNFcallocarray(1, sizeof(EntityRec));
     xf86Entities[xf86NumEntities - 1]->entityPrivates =
-        xnfcalloc(xf86EntityPrivateCount, sizeof(DevUnion));
+        XNFcallocarray(xf86EntityPrivateCount, sizeof(DevUnion));
     return xf86NumEntities - 1;
 }
 
@@ -294,7 +328,8 @@ xf86IsEntityPrimary(int entityIndex)
 
 #ifdef XSERVER_LIBPCIACCESS
     if (primaryBus.type == BUS_PLATFORM && pEnt->bus.type == BUS_PCI)
-	return MATCH_PCI_DEVICES(pEnt->bus.id.pci, primaryBus.id.plat->pdev);
+        if (primaryBus.id.plat->pdev)
+            return MATCH_PCI_DEVICES(pEnt->bus.id.pci, primaryBus.id.plat->pdev);
 #endif
 
     if (primaryBus.type != pEnt->bus.type)
@@ -336,11 +371,11 @@ xf86AddEntityToScreen(ScrnInfoPtr pScrn, int entityIndex)
     }
 
     pScrn->numEntities++;
-    pScrn->entityList = xnfreallocarray(pScrn->entityList,
+    pScrn->entityList = XNFreallocarray(pScrn->entityList,
                                         pScrn->numEntities, sizeof(int));
     pScrn->entityList[pScrn->numEntities - 1] = entityIndex;
     xf86Entities[entityIndex]->inUse = TRUE;
-    pScrn->entityInstanceList = xnfreallocarray(pScrn->entityInstanceList,
+    pScrn->entityInstanceList = XNFreallocarray(pScrn->entityInstanceList,
                                                 pScrn->numEntities,
                                                 sizeof(int));
     pScrn->entityInstanceList[pScrn->numEntities - 1] = 0;
@@ -403,7 +438,7 @@ xf86RemoveEntityFromScreen(ScrnInfoPtr pScrn, int entityIndex)
 
 /*
  * xf86ClearEntityListForScreen() - called when a screen is deleted
- * to mark it's entities unused. Called by xf86DeleteScreen().
+ * to mark its entities unused. Called by xf86DeleteScreen().
  */
 void
 xf86ClearEntityListForScreen(ScrnInfoPtr pScrn)
@@ -438,7 +473,7 @@ xf86AddDevToEntity(int entityIndex, GDevPtr dev)
 
     pEnt = xf86Entities[entityIndex];
     pEnt->numInstances++;
-    pEnt->devices = xnfreallocarray(pEnt->devices,
+    pEnt->devices = XNFreallocarray(pEnt->devices,
                                     pEnt->numInstances, sizeof(GDevPtr));
     pEnt->devices[pEnt->numInstances - 1] = dev;
     dev->claimed = TRUE;
@@ -481,7 +516,7 @@ xf86GetEntityInfo(int entityIndex)
     if (entityIndex >= xf86NumEntities)
         return NULL;
 
-    pEnt = xnfcalloc(1, sizeof(EntityInfoRec));
+    pEnt = XNFcallocarray(1, sizeof(EntityInfoRec));
     pEnt->index = entityIndex;
     pEnt->location = xf86Entities[entityIndex]->bus;
     pEnt->active = xf86Entities[entityIndex]->active;
@@ -527,49 +562,6 @@ xf86GetDevFromEntity(int entityIndex, int instance)
         if (xf86Entities[entityIndex]->devices[i]->screen == instance)
             return xf86Entities[entityIndex]->devices[i];
     return NULL;
-}
-
-/*
- * xf86PostProbe() -- Allocate all non conflicting resources
- * This function gets called by xf86Init().
- */
-void
-xf86PostProbe(void)
-{
-    if (fbSlotClaimed && (
-#if (defined(__sparc__) || defined(__sparc)) && !defined(__OpenBSD__)
-                             sbusSlotClaimed ||
-#endif
-#ifdef XSERVER_PLATFORM_BUS
-                             platformSlotClaimed ||
-#endif
-#ifdef XSERVER_LIBPCIACCESS
-                             pciSlotClaimed
-#else
-                             TRUE
-#endif
-        ))
-        FatalError("Cannot run in framebuffer mode. Please specify busIDs "
-                   "       for all framebuffer devices\n");
-}
-
-int
-xf86GetLastScrnFlag(int entityIndex)
-{
-    if (entityIndex < xf86NumEntities) {
-        return xf86Entities[entityIndex]->lastScrnFlag;
-    }
-    else {
-        return -1;
-    }
-}
-
-void
-xf86SetLastScrnFlag(int entityIndex, int scrnIndex)
-{
-    if (entityIndex < xf86NumEntities) {
-        xf86Entities[entityIndex]->lastScrnFlag = scrnIndex;
-    }
 }
 
 Bool
@@ -651,7 +643,7 @@ xf86AllocateEntityPrivateIndex(void)
     idx = xf86EntityPrivateCount++;
     for (i = 0; i < xf86NumEntities; i++) {
         pEnt = xf86Entities[i];
-        nprivs = xnfreallocarray(pEnt->entityPrivates,
+        nprivs = XNFreallocarray(pEnt->entityPrivates,
                                  xf86EntityPrivateCount, sizeof(DevUnion));
         /* Zero the new private */
         memset(&nprivs[idx], 0, sizeof(DevUnion));
@@ -667,4 +659,228 @@ xf86GetEntityPrivate(int entityIndex, int privIndex)
         return NULL;
 
     return &(xf86Entities[entityIndex]->entityPrivates[privIndex]);
+}
+
+/*
+ * Check if the slot requested is free.  If it is already in use, return FALSE.
+ */
+
+Bool
+xf86CheckSlot(const void *ptr, BusType type)
+{
+    int i;
+
+#ifdef XSERVER_LIBPCIACCESS
+    const struct pci_device *pci_ptr = (type == BUS_PCI ?
+             (const struct pci_device *)ptr : NULL);
+#endif
+
+#ifdef XSERVER_PLATFORM_BUS
+    const struct xf86_platform_device *plat_ptr = (type == BUS_PLATFORM ?
+             (const struct xf86_platform_device *)ptr : NULL);
+#endif
+
+    GDevPtr fb_ptr = (type == BUS_NONE ?
+             (GDevPtr)ptr : NULL);
+    const char *msPath = NULL;
+    const char *fbPath = NULL;
+
+    if (ptr == NULL) {
+        return FALSE;
+    }
+
+#ifdef XSERVER_PLATFORM_BUS
+    /* XSERVER_PLATFORM_BUS assumes XSERVER_LIBPCIACCESS */
+    if (plat_ptr) {
+        pci_ptr = plat_ptr->pdev;
+        msPath = plat_ptr->attribs->path;
+    }
+#endif
+
+    if (type == BUS_NONE) {
+        if (!strcasecmp(fb_ptr->driver, "modesetting")) {
+   /*
+    * If xf86ClaimFbSlot() is called by modesetting driver,
+    * busID has not been set and the device name was not specified
+    * via "kmsdev" option, the default "/dev/dri/card0" is used.
+    *
+    * We have to check whether a platform device has previously
+    * grabbed the device we are going to claim.
+    */
+            msPath = xf86FindOptionValue(fb_ptr->options, "kmsdev");
+            if (msPath == NULL) {
+                /* Autoconfigured */
+                msPath = "/dev/dri/card0";
+            }
+        }
+        else
+        if (!strcasecmp(fb_ptr->driver, "fbdev")) {
+   /*
+    * fbdev driver can also call xf86ClaimFbSlot() for
+    * an autoconfigured device, or the device name can be set
+    * via "fbdev" option.
+    */
+            fbPath = xf86FindOptionValue(fb_ptr->options, "fbdev");
+            if (fbPath == NULL) {
+                /* Autoconfigured */
+                fbPath = "";
+            }
+        }
+    }
+
+   /*
+    * Having prepared all data about a candidate, we walk
+    * through all previous entities to check for a collision.
+    */
+
+    for (i = 0; i < xf86NumEntities; i++) {
+        const EntityPtr pent = xf86Entities[i];
+#ifdef XSERVER_LIBPCIACCESS
+        struct pci_device *pci_other;
+#endif
+        const char *msOther = NULL;
+        const char *fbOther = NULL;
+
+        if (pent->numInstances <= 0) {
+        /* All devices are unclaimed, ignore this entity */
+            continue;
+        }
+
+        if ((fbPath != NULL) && (*fbPath == '\0')) {
+            /* Autoconfigured fbdev device is incompatible with anything */
+            LogMessageVerb(X_INFO, 1,
+                "\"%s\" must be the only device, but \"%s\" is present.\n",
+                fb_ptr->identifier, pent->devices[0]->identifier);
+            return FALSE;
+        }
+
+#ifdef XSERVER_LIBPCIACCESS 
+        pci_other = xf86GetPciInfoForEntity(i);
+        /* First compare PCI addresses */
+        if (pci_ptr && pci_other) {
+            if (MATCH_PCI_DEVICES(pci_other, pci_ptr)) {
+            /* This PCI slot has been claimed, fail */
+                if (msPath) {
+                    LogMessageVerb(X_INFO, 1,
+                        " Platform device \"%s\" skipped because\n",
+                        msPath);
+                }
+                else {
+                    LogMessageVerb(X_INFO, 1,
+                        " PCI device skipped because\n");
+                }
+                LogMessageVerb(X_INFO, 1,
+                    "  PCI bus id %u@%u:%u:%u has already been claimed by \"%s\".\n",
+                    pci_ptr->domain, pci_ptr->bus, pci_ptr->dev, pci_ptr->func, 
+                    pent->devices[0]->identifier);
+                return FALSE;
+            }
+            else
+            /* This is another device, skip */
+                continue;
+        }
+
+        if (pent->bus.type == BUS_PCI) {
+            /* No other means to compare, accept */
+            continue;
+        }
+#endif
+
+        if (pent->bus.type == BUS_NONE) {
+            if (!strcasecmp(pent->driver->driverName, "fbdev")) {
+                if ((type != BUS_NONE) || (fbPath == NULL)) {
+                    /* fbdev without busID is incompatible with other types */
+                    LogMessageVerb(X_INFO, 1,
+                        " Only fbdev without PCI bus id can be claimed after \"%s\".\n",
+                        pent->devices[0]->identifier);
+                    return FALSE;
+                }
+                /* Examine the first device only */
+                fbOther = xf86FindOptionValue(pent->devices[0]->options, "fbdev");
+                if (fbOther == NULL) {
+                    /* Autoconfigured, reject */
+                    LogMessageVerb(X_INFO, 1,
+                        " Can\'t claim anything after \"%s\".\n",
+                        pent->devices[0]->identifier);
+                    return FALSE;
+                }
+                if (strcmp(fbPath, fbOther)) {
+                    /* No conflict */
+                    continue;
+                }
+                else {
+                    /* This framebuffer device has been claimed already */
+                    LogMessageVerb(X_INFO, 1,
+                        " Framebuffer device \"%s\" has already been claimed by \"%s\".\n",
+                        fbPath, pent->devices[0]->identifier);
+                    return FALSE;
+                }
+            }
+        }
+
+#ifdef XSERVER_PLATFORM_BUS
+        if (pent->bus.type == BUS_PLATFORM) {
+            msOther = pent->bus.id.plat->attribs->path;
+        } else
+#endif
+        if (pent->bus.type == BUS_NONE) {
+            if (!strcasecmp(pent->driver->driverName, "modesetting")) {
+                /* Examine the first device only */
+                msOther = xf86FindOptionValue(pent->devices[0]->options, "kmsdev");
+                if (msOther == NULL)
+#ifdef XSERVER_LIBPCIACCESS
+                    if (pci_other == NULL)
+#endif
+                    /* Autoconfigured */
+                    msOther = "/dev/dri/card0";
+            }
+        }
+
+        if ((msPath != NULL) && (msOther != NULL) && !strcmp(msPath, msOther)) {
+            /* This DRI device has been claimed already */
+                    LogMessageVerb(X_INFO, 1,
+                        " DRI device \"%s\" has already been claimed by \"%s\".\n",
+                        msPath, pent->devices[0]->identifier);
+            return FALSE;
+        }
+    }
+
+#ifdef XSERVER_PLATFORM_BUS
+    if (type == BUS_PLATFORM) {
+        if (pci_ptr)
+            LogMessageVerb(X_INFO, 1,
+                " Platform device \"%s\" at %u@%u:%u:%u can be claimed.\n",
+                msPath, pci_ptr->domain, pci_ptr->bus, pci_ptr->dev, pci_ptr->func);
+        else
+            LogMessageVerb(X_INFO, 1,
+                " Platform device \"%s\" can be claimed.\n",
+                 msPath);
+    }
+    else
+#endif
+#ifdef XSERVER_LIBPCIACCESS 
+    if (type == BUS_PCI) {
+        LogMessageVerb(X_INFO, 1,
+            " PCI device %u@%u:%u:%u can be claimed.\n",
+            pci_ptr->domain, pci_ptr->bus, pci_ptr->dev, pci_ptr->func);
+    }
+    else
+#endif
+    if (type == BUS_NONE) {
+        if (msPath)
+            LogMessageVerb(X_INFO, 1,
+                "\"%s\" can be claimed by modesetting driver as \"%s\".\n",
+                msPath, fb_ptr->identifier);
+        else
+        if (fbPath)
+            LogMessageVerb(X_INFO, 1,
+                "\"%s\" can be claimed by fbdev driver as \"%s\".\n",
+                fbPath, fb_ptr->identifier);
+        else
+            LogMessageVerb(X_INFO, 1,
+                "\"%s\" can be claimed.\n",
+                 fb_ptr->identifier);
+    }
+
+    return TRUE;
 }

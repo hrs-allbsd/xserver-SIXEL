@@ -27,11 +27,6 @@
  * holders shall not be used in advertising or otherwise to promote the sale,
  * use or other dealings in this Software without prior written authorization.
  */
-
-#ifdef HAVE_DIX_CONFIG_H
-#include <dix-config.h>
-#endif
-
 #ifndef _ROOTLESS_H
 #define _ROOTLESS_H
 
@@ -41,7 +36,7 @@
 
 /*
    Each top-level rootless window has a one-to-one correspondence to a physical
-   on-screen window. The physical window is refered to as a "frame".
+   on-screen window. The physical window is referred to as a "frame".
  */
 
 typedef void *RootlessFrameID;
@@ -140,8 +135,7 @@ typedef void (*RootlessMoveFrameProc)
  *  pScreen     Screen to move the new frame to
  *  newX, newY  New position of the frame
  *  newW, newH  New size of the frame
- *  gravity     Gravity for window contents (rl_gravity_enum). This is always
- *              RL_GRAVITY_NONE unless ROOTLESS_RESIZE_GRAVITY is set.
+ *  gravity     Gravity for window contents (rl_gravity_enum).
  */
 typedef void (*RootlessResizeFrameProc)
  (RootlessFrameID wid, ScreenPtr pScreen,
@@ -206,7 +200,7 @@ typedef void (*RootlessStopDrawingProc)
  *  Drawing is stopped before this is called.
  *
  *  wid         Frame id
- *  pDamage     Region containing all the changed pixels in frame-lcoal
+ *  pDamage     Region containing all the changed pixels in frame-local
  *              coordinates. This is clipped to the window's clip.
  */
 typedef void (*RootlessUpdateRegionProc)
@@ -345,7 +339,7 @@ void RootlessStartDrawing(WindowPtr pWindow);
 void RootlessStopDrawing(WindowPtr pWindow, Bool flush);
 
 /*
- * Alocate a new screen pixmap.
+ * Allocate a new screen pixmap.
  *  miCreateScreenResources does not do this properly with a null
  *  framebuffer pointer.
  */

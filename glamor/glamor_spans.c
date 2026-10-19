@@ -19,6 +19,9 @@
  * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
  * OF THIS SOFTWARE.
  */
+#include <dix-config.h>
+
+#include <stdbool.h>
 
 #include "glamor_priv.h"
 #include "glamor_transform.h"
@@ -29,7 +32,7 @@ glamor_program  fill_spans_progs[4];
 static const glamor_facet glamor_facet_fillspans_130 = {
     .name = "fill_spans",
     .version = 130,
-    .vs_vars =  "attribute vec3 primitive;\n",
+    .vs_vars =  "in vec3 primitive;\n",
     .vs_exec = ("       vec2 pos = vec2(primitive.z,1) * vec2(gl_VertexID&1, (gl_VertexID&2)>>1);\n"
                 GLAMOR_POS(gl_Position, (primitive.xy + pos))),
 };
@@ -56,7 +59,7 @@ glamor_fill_spans_gl(DrawablePtr drawable,
     char *vbo_offset;
     int c;
     int box_index;
-    Bool ret = FALSE;
+    bool ret = FALSE;
 
     pixmap_priv = glamor_get_pixmap_private(pixmap);
     if (!GLAMOR_PIXMAP_PRIV_HAS_FBO(pixmap_priv))
@@ -64,8 +67,8 @@ glamor_fill_spans_gl(DrawablePtr drawable,
 
     glamor_make_current(glamor_priv);
 
-    if (glamor_priv->glsl_version >= 130) {
-        prog = glamor_use_program_fill(pixmap, gc, &glamor_priv->fill_spans_program,
+    if (glamor_glsl_has_ints(glamor_priv)) {
+        prog = glamor_use_program_fill(drawable, gc, &glamor_priv->fill_spans_program,
                                        &glamor_facet_fillspans_130);
 
         if (!prog)
@@ -90,7 +93,7 @@ glamor_fill_spans_gl(DrawablePtr drawable,
 
         glamor_put_vbo_space(screen);
     } else {
-        prog = glamor_use_program_fill(pixmap, gc, &glamor_priv->fill_spans_program,
+        prog = glamor_use_program_fill(drawable, gc, &glamor_priv->fill_spans_program,
                                        &glamor_facet_fillspans_120);
 
         if (!prog)
@@ -134,7 +137,7 @@ glamor_fill_spans_gl(DrawablePtr drawable,
                       box->x2 - box->x1,
                       box->y2 - box->y1);
             box++;
-            if (glamor_priv->glsl_version >= 130)
+            if (glamor_glsl_has_ints(glamor_priv))
                 glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, n);
             else {
                 glamor_glDrawArrays_GL_QUADS(glamor_priv, n);
@@ -146,7 +149,7 @@ glamor_fill_spans_gl(DrawablePtr drawable,
 
 bail:
     glDisable(GL_SCISSOR_TEST);
-    if (glamor_priv->glsl_version >= 130)
+    if (glamor_glsl_has_ints(glamor_priv))
         glVertexAttribDivisor(GLAMOR_VERTEX_POS, 0);
     glDisableVertexAttribArray(GLAMOR_VERTEX_POS);
 
@@ -187,17 +190,14 @@ glamor_get_spans_gl(DrawablePtr drawable, int wmax,
     int box_index;
     int n;
     char *d;
-    GLenum type;
-    GLenum format;
     int off_x, off_y;
+    const struct glamor_format *f = glamor_format_for_pixmap(pixmap);
 
     pixmap_priv = glamor_get_pixmap_private(pixmap);
     if (!GLAMOR_PIXMAP_PRIV_HAS_FBO(pixmap_priv))
         goto bail;
 
     glamor_get_drawable_deltas(drawable, pixmap, &off_x, &off_y);
-
-    glamor_format_for_pixmap(pixmap, &format, &type);
 
     glamor_make_current(glamor_priv);
 
@@ -234,7 +234,8 @@ glamor_get_spans_gl(DrawablePtr drawable, int wmax,
             if (y >= box->y2)
                 continue;
 
-            glReadPixels(x1 - box->x1, y - box->y1, x2 - x1, 1, format, type, l);
+            glReadPixels(x1 - box->x1, y - box->y1, x2 - x1, 1,
+                         f->format, f->type, l);
         }
     }
 
@@ -269,11 +270,10 @@ glamor_set_spans_gl(DrawablePtr drawable, GCPtr gc, char *src,
     glamor_screen_private *glamor_priv = glamor_get_screen_private(screen);
     PixmapPtr pixmap = glamor_get_drawable_pixmap(drawable);
     glamor_pixmap_private *pixmap_priv;
+    const struct glamor_format *f = glamor_format_for_pixmap(pixmap);
     int box_index;
     int n;
     char *s;
-    GLenum type;
-    GLenum format;
     int off_x, off_y;
 
     pixmap_priv = glamor_get_pixmap_private(pixmap);
@@ -287,7 +287,6 @@ glamor_set_spans_gl(DrawablePtr drawable, GCPtr gc, char *src,
         goto bail;
 
     glamor_get_drawable_deltas(drawable, pixmap, &off_x, &off_y);
-    glamor_format_for_pixmap(pixmap, &format, &type);
 
     glamor_make_current(glamor_priv);
 
@@ -348,7 +347,7 @@ glamor_set_spans_gl(DrawablePtr drawable, GCPtr gc, char *src,
 
                 glTexSubImage2D(GL_TEXTURE_2D, 0,
                                 x1 - box->x1, y1 - box->y1, x2 - x1, 1,
-                                format, type,
+                                f->format, f->type,
                                 l);
             }
             s += PixmapBytePad(w, drawable->depth);
