@@ -57,8 +57,7 @@
 #include <errno.h>
 #include <fcntl.h>
 
-#define USE_DECMOUSE 1
-#define USE_FILTER_RECTANGLE 1
+static Bool sixelDecMouse = FALSE;
 
 char *kdExecuteCommand = NULL;
 void KdExecuteChildCommand(void);
@@ -1086,7 +1085,8 @@ static void sixelKeyboardBell(KdKeyboardInfo *ki, int volume, int frequency, int
 static Status sixelMouseInit(KdPointerInfo *pi)
 {
     pi->nButtons = 7;
-    pi->name = strdup("Android touchscreen and stylus");
+    free(pi->name);
+    pi->name = strdup("SIXEL terminal pointer");
     sixelPointer = pi;
     TRACE1("sixelMouseInit() %p\n", pi);
     return Success;
@@ -1162,11 +1162,21 @@ void ddxUseMsg(void)
 {
     KdUseMsg();
     ErrorF("-exec command    Execute command after server started\n");
+    ErrorF("-mouse-protocol {sgr|dec}  Select terminal mouse reporting (default: sgr pixels)\n");
     ErrorF("-backend {chafa|libsixel}  Choose renderer backend (default: libsixel if built)\n");
 }
 
 int ddxProcessArgument(int argc, char **argv, int i)
 {
+    if (!strcmp(argv[i], "-mouse-protocol")) {
+        if (i + 1 >= argc ||
+            (strcmp(argv[i + 1], "sgr") && strcmp(argv[i + 1], "dec"))) {
+            UseMsg();
+            return 0;
+        }
+        sixelDecMouse = !strcmp(argv[i + 1], "dec");
+        return 2;
+    }
     if (!strcmp(argv[i], "-exec")) {
         if (i + 1 >= argc) {
             UseMsg();
@@ -1342,13 +1352,74 @@ sixelStopResizeMonitor(void)
     sigprocmask(SIG_SETMASK, &previous, NULL);
 }
 
+static void
+sixelEnableMouse(void)
+{
+    if (sixelDecMouse)
+        printf("\033[1;1'z\033[1;3'{\033['w");
+    else
+        printf("\033[?1006h\033[?1016h\033[?1003h");
+    fflush(stdout);
+}
+
+static void
+sixelMouseReport(sixel_key_t *key)
+{
+    int x, y, button, flags;
+    Bool release = key->value == SIXEL_MOUSE_SGR_RELEASE;
+
+    if (!sixelPointer)
+        return;
+    if (key->value == SIXEL_MOUSE_DEC) {
+        if (!sixelDecMouse || key->nparams < 4 ||
+            key->params[0] < 1 || key->params[0] > 10 ||
+            key->params[1] > 15 ||
+            !sixelValidSize(key->params[3], key->params[2]))
+            return;
+        x = key->params[3] - 1;
+        y = key->params[2] - 1;
+        /* DEC button bits are right, middle, left, fourth. */
+        flags = key->params[1];
+        mouseState = ((flags & 4) ? KD_BUTTON_1 : 0) |
+                     ((flags & 2) ? KD_BUTTON_2 : 0) |
+                     ((flags & 1) ? KD_BUTTON_3 : 0) |
+                     ((flags & 8) ? KD_BUTTON_4 : 0);
+        KdEnqueuePointerEvent(sixelPointer, mouseState, x, y, 0);
+        /* The DEC motion filter is one-shot and must be armed again. */
+        sixelEnableMouse();
+        return;
+    }
+    if (sixelDecMouse || key->nparams != 3 || key->params[0] > 127 ||
+        !sixelValidSize(key->params[1], key->params[2]))
+        return;
+    flags = key->params[0];
+    x = key->params[1] - 1;
+    y = key->params[2] - 1;
+    button = flags & 3;
+    if (flags & 64) {
+        if (!release) {
+            int wheel = KD_BUTTON_4 << button;
+            KdEnqueuePointerEvent(sixelPointer, mouseState | wheel, x, y, 0);
+            KdEnqueuePointerEvent(sixelPointer, mouseState, x, y, 0);
+        }
+        return;
+    }
+    if (button < 3) {
+        if (release)
+            mouseState &= ~(KD_BUTTON_1 << button);
+        else
+            mouseState |= KD_BUTTON_1 << button;
+    } else if (!(flags & 32)) {
+        mouseState = 0;
+    }
+    /* Queue motion at the new position before any button transition. */
+    KdEnqueuePointerEvent(sixelPointer, mouseState, x, y, 0);
+}
+
 static void sixelPollInput(void)
 {
     int posted = 0;
     Bool size_changed = FALSE;
-    static int prev_x = -1, prev_y = -1;
-    static int mouse_x = -1, mouse_y = -1;
-    static int mouse_button = 0;
 #if SIXEL_DEBUG
     static int events = 0;
 #endif
@@ -1396,72 +1467,9 @@ static void sixelPollInput(void)
                 break;
 
             case SIXEL_MOUSE_DEC:
-                if (key->nparams >= 4) {
-                    mouse_y = key->params[2];
-                    mouse_x = key->params[3];
-                    switch (key->params[0]) {
-                    case 1:
-                        break;
-                    case 2:
-                        if (!(mouse_button & 1)) {
-                            mouseState |= KD_BUTTON_1;
-                            mouse_button |= 1;
-                            KdEnqueuePointerEvent(sixelPointer, mouseState|KD_MOUSE_DELTA, 0, 0, 0);
-                        }
-                        break;
-                    case 3:
-                        //if (mouse_button & 1) {
-                            mouseState &= ~KD_BUTTON_1;
-                            mouse_button = 0;
-                            KdEnqueuePointerEvent(sixelPointer, mouseState|KD_MOUSE_DELTA, 0, 0, 1);
-                        //}
-                        break;
-                    case 4:
-                        if (!(mouse_button & 2)) {
-                            mouseState |= KD_BUTTON_2;
-                            mouse_button |= 2;
-                            KdEnqueuePointerEvent(sixelPointer, mouseState|KD_MOUSE_DELTA, 0, 0, 0);
-                        }
-                        break;
-                    case 5:
-                        //if (mouse_button & 2) {
-                            mouseState &= ~KD_BUTTON_2;
-                            mouse_button = 0;
-                            KdEnqueuePointerEvent(sixelPointer, mouseState|KD_MOUSE_DELTA, 0, 0, 1);
-                        //}
-                        break;
-                    case 6:
-                        if (!(mouse_button & 4)) {
-                            mouseState |= KD_BUTTON_3;
-                            mouse_button |= 4;
-                            KdEnqueuePointerEvent(sixelPointer, mouseState|KD_MOUSE_DELTA, 0, 0, 0);
-                        }
-                        break;
-                    case 7:
-                        //if (mouse_button & 4) {
-                            mouseState &= ~KD_BUTTON_3;
-                            mouse_button = 0;
-                            KdEnqueuePointerEvent(sixelPointer, mouseState|KD_MOUSE_DELTA, 0, 0, 1);
-                        //}
-                        break;
-                    case 10:
-                        break;
-                    case 8:
-                    case 9:
-                    case 32:
-                    case 64:
-                    default:
-                        break;
-                    }
-                    mouse_button = key->params[1];
-                }
-#if USE_FILTER_RECTANGLE
-                printf("\033[1;1'z" "\033[3'{" "\033[1'{");
-                printf("\033['w");
-#else
-                printf("\033['|");
-#endif
-                fflush(stdout);
+            case SIXEL_MOUSE_SGR:
+            case SIXEL_MOUSE_SGR_RELEASE:
+                sixelMouseReport(key);
                 break;
 
             case SIXEL_FKEYS:
@@ -1557,11 +1565,7 @@ static void sixelPollInput(void)
     }
     if (g_driver && size_changed)
         sixelApplyTerminalSize(g_driver);
-    if (prev_x != mouse_x || prev_y != mouse_y) {
-        KdEnqueuePointerEvent(sixelPointer, mouseState, mouse_x, mouse_y, 0);
-        prev_x = mouse_x;
-        prev_y = mouse_y;
-    }
+
 }
 
 static int sixelInit(void)
@@ -1571,18 +1575,8 @@ static int sixelInit(void)
     printf("\033[?1004h");
     printf("\033[?25l");
     printf("\033[>2p");
-#if USE_DECMOUSE
-    printf("\033[1;1'z" "\033[3'{" "\033[1'{");
-#if USE_FILTER_RECTANGLE
-    printf("\033['w");
-#else
-    printf("\033['|");
-#endif
-
-#else
-    printf("\033[?1003h");
-    printf("\033[?1006h");
-#endif
+    mouseState = 0;
+    sixelEnableMouse();
 
     return 0;
 }
@@ -1597,12 +1591,10 @@ static void sixelFini(void)
     sixelStopResizeMonitor();
     printf("\033\\");
     fflush(stdout);
-#if USE_DECMOUSE
-    printf("\033[0'z" "\033[2'{" "\033[4'{");
-#else
-    printf("\033[?1006l");
-    printf("\033[?1003l");
-#endif
+    if (sixelDecMouse)
+        printf("\033[0'z\033[2;4'{");
+    else
+        printf("\033[?1003l\033[?1016l\033[?1006l");
     printf("\033[>0p");
     printf("\033[?25h");
     printf("\033[?1004l");
