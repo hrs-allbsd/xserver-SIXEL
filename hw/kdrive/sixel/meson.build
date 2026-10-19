@@ -5,7 +5,7 @@ sixel_config.set('HAVE_LIBSIXEL', 1)
 sixel_config.set('HAVE_CHAFA', get_option('chafa') ? 1 : false)
 configure_file(output: 'sixel-config.h', configuration: sixel_config)
 
-executable(
+xsixel_server = executable(
     'Xsixel',
     ['sixel.c', 'sixelinit.c', '../src/kexeccmd.c', '../../stubs/ddxBeforeReset.c'],
     include_directories: [inc, include_directories('../src')],

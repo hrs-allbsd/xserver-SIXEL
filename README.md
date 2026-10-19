@@ -112,3 +112,20 @@ Chafa development files and `-Dchafa=true`; select it at runtime with
 The Debian and macOS helper scripts use the same Meson build. Set `BUILD_DIR`
 to change their build directory, or `CHAFA=true` to enable Chafa. They expect
 build dependencies to be installed beforehand and do not install packages.
+
+Without `-screen`, Xsixel uses the terminal's pixel dimensions. If the terminal
+only reports rows and columns, Xsixel also asks for its pixel dimensions and
+character-cell size. It starts at 640x480 if those dimensions are unavailable,
+then resizes through RandR when a valid reply arrives. Explicit dimensions such
+as `-screen 1024x768` remain fixed. Terminal replies do not block startup.
+Automatic tracking of subsequent terminal window changes via SIGWINCH is not
+implemented yet.
+
+The PTY integration tests cover sizing, delayed and fragmented replies, RandR
+notifications, drawing, pointer bounds, and allocation failure recovery:
+
+```sh
+meson test -C build-xsixel --suite xsixel --print-errorlogs
+```
+
+The suite requires Python 3, libX11, libXrandr, `xdpyinfo`, and `xsetroot`.

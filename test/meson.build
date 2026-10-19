@@ -259,3 +259,22 @@ if build_xorg
 
     test('unit', unit)
 endif
+
+# This suite launches its own Xsixel server inside a pseudo-terminal.
+if build_xsixel and not meson.is_cross_build()
+    xsixel_python = import('python').find_installation('python3', required: false)
+    xsixel_xdpyinfo = find_program('xdpyinfo', required: false)
+    xsixel_xsetroot = find_program('xsetroot', required: false)
+    xsixel_x11 = dependency('x11', required: false)
+    xsixel_xrandr = dependency('xrandr', required: false)
+    if xsixel_python.found() and xsixel_xdpyinfo.found() and xsixel_xsetroot.found() and xsixel_x11.found() and xsixel_xrandr.found()
+        xsixel_test_env = environment()
+        xsixel_test_env.set('XSIXEL', xsixel_server.full_path())
+        test('autosize', xsixel_python,
+             args: files('xsixel-autosize.py'),
+             env: xsixel_test_env,
+             depends: xsixel_server,
+             suite: 'xsixel',
+             timeout: 60)
+    endif
+endif

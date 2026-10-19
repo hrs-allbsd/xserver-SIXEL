@@ -53,6 +53,7 @@
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include <limits.h>
 
 #define USE_DECMOUSE 1
 #define USE_FILTER_RECTANGLE 1
@@ -139,6 +140,10 @@ typedef struct
     int pitch;
     int pixel_w, pixel_h;
     int cell_w, cell_h;
+    int cell_pixel_w, cell_pixel_h;
+    Bool auto_size;
+    Bool pixel_size_reported;
+    KdScreenInfo *screen;
     Rotation randr;
     Bool shadow;
     unsigned char *buffer;
@@ -157,6 +162,58 @@ typedef struct
 } SIXEL_Driver;
 
 static SIXEL_Driver *g_driver = NULL;
+
+/* Screen coordinates and damage rectangles use signed 16-bit coordinates. */
+static Bool
+sixelValidSize(int width, int height)
+{
+    return width > 0 && height > 0 && width <= SHRT_MAX && height <= SHRT_MAX;
+}
+
+static void
+sixelReadTerminalSize(SIXEL_Driver *driver)
+{
+    struct winsize ws = {0};
+
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
+        if (sixelValidSize(ws.ws_xpixel, ws.ws_ypixel)) {
+            driver->pixel_size_reported = TRUE;
+            driver->pixel_w = ws.ws_xpixel;
+            driver->pixel_h = ws.ws_ypixel;
+        }
+        if (sixelValidSize(ws.ws_col, ws.ws_row)) {
+            driver->cell_w = ws.ws_col;
+            driver->cell_h = ws.ws_row;
+        }
+    }
+    if (!driver->cell_w || !driver->cell_h)
+        printf("\033[18t");
+    if (!driver->pixel_w || !driver->pixel_h)
+        printf("\033[14t\033[16t");
+    fflush(stdout);
+}
+
+static Bool
+sixelAllocateBuffers(SIXEL_Driver *driver, int width, int height)
+{
+    size_t pixels;
+
+    if (!sixelValidSize(width, height))
+        return FALSE;
+    pixels = (size_t) width * height;
+    driver->buffer = calloc(pixels, 4);
+    driver->bitmap = calloc(pixels, 3);
+    if (!driver->buffer || !driver->bitmap) {
+        free(driver->buffer);
+        free(driver->bitmap);
+        driver->buffer = driver->bitmap = NULL;
+        return FALSE;
+    }
+    driver->w = width;
+    driver->h = height;
+    driver->pitch = width * 4;
+    return TRUE;
+}
 
 typedef enum {
     RENDERER_DEFAULT = 0,
@@ -218,6 +275,7 @@ static int getkeys(char *buf, int nread, sixel_key_t *keys)
     static int state = STATE_GROUND;
     static int ibytes = 0;
     static int pbytes = 0;
+    static sixel_key_t pending;
 
     for (i = 0; i < nread; i++) {
         c = buf[i];
@@ -229,6 +287,7 @@ restart:
                 state = STATE_ESC;
                 break;
             default:
+                keys[size].nparams = 0;
                 keys[size++].value = c;
                 break;
             }
@@ -237,11 +296,12 @@ restart:
             switch (c) {
             case 'O':
             case '[':
-                keys[size].nparams = 0;
+                pending.nparams = 0;
                 pbytes = 0;
                 state = STATE_CSI;
                 break;
             default:
+                keys[size].nparams = 0;
                 keys[size++].value = 0x1b;
                 state = STATE_GROUND;
                 goto restart;
@@ -264,17 +324,18 @@ restart:
             case '0'...'9':
                 ibytes = 0;
                 pbytes = c - '0';
-                keys[size].nparams = 0;
+                pending.nparams = 0;
                 state = STATE_CSI_PARAM;
                 break;
             case '<'...'?':
                 ibytes = (c - ';') << 4;
-                keys[size].nparams = 0;
+                pending.nparams = 0;
                 state = STATE_CSI_PARAM;
                 break;
             case '@'...'~':
-                keys[size].nparams = 0;
-                keys[size++].value = 1 << 12 | (c - '@');
+                pending.nparams = 0;
+                pending.value = 1 << 12 | (c - '@');
+                keys[size++] = pending;
                 state = STATE_GROUND;
                 break;
             default:
@@ -296,19 +357,21 @@ restart:
                 state = STATE_CSI_PARAM;
                 break;
             case '0'...'9':
-                pbytes = pbytes * 10 + c - '0';
+                pbytes = pbytes > (INT_MAX - (c - '0')) / 10 ? INT_MAX :
+                         pbytes * 10 + c - '0';
                 state = STATE_CSI_PARAM;
                 break;
             case ':'...';':
-                if (keys[size].nparams < sizeof(keys[size].params) / sizeof(*keys[size].params)) {
-                    keys[size].params[keys[size].nparams++] = pbytes;
+                if (pending.nparams < sizeof(pending.params) / sizeof(*pending.params)) {
+                    pending.params[pending.nparams++] = pbytes;
                     pbytes = 0;
                 }
                 break;
             case '@'...'~':
-                if (keys[size].nparams < sizeof(keys[size].params) / sizeof(*keys[size].params)) {
-                    keys[size].params[keys[size].nparams++] = pbytes;
-                    keys[size++].value = 1 << 12 | ibytes << 6  | (c - '@');
+                if (pending.nparams < sizeof(pending.params) / sizeof(*pending.params)) {
+                    pending.params[pending.nparams++] = pbytes;
+                    pending.value = 1 << 12 | ibytes << 6 | (c - '@');
+                    keys[size++] = pending;
                 }
                 state = STATE_GROUND;
                 break;
@@ -422,6 +485,12 @@ static void tty_restore(void)
 
 static int SIXEL_Flip(SIXEL_Driver *driver)
 {
+#ifdef HAVE_CHAFA
+    if (g_renderer == RENDERER_CHAFA &&
+        (driver->cell_w <= 0 || driver->cell_h <= 0 ||
+         driver->pixel_w < driver->cell_w || driver->pixel_h < driver->cell_h))
+        return 0;
+#endif
     int start_row = 1;
     int start_col = 1;
 
@@ -508,12 +577,16 @@ static void SIXEL_UpdateRects(SIXEL_Driver *driver, int numrects, pixman_box16_t
 #endif
     pixman_box16_t box;
 
-    box.x1 = 65535;
-    box.y1 = 65535;
+    box.x1 = SHRT_MAX;
+    box.y1 = SHRT_MAX;
     box.x2 = 0;
     box.y2 = 0;
 
-    if (driver->cell_h != 0 && driver->pixel_h != 0) {
+    if (numrects <= 0)
+        return;
+    if (driver->cell_w > 0 && driver->cell_h > 0 &&
+        driver->pixel_w >= driver->cell_w &&
+        driver->pixel_h >= driver->cell_h) {
 #if USE_MUTEX
         pthread_mutex_lock(&sixel_mutex);
 #endif
@@ -631,12 +704,10 @@ static Bool sixelMapFramebuffer(KdScreenInfo *screen)
      * We convert to RGB for SIXEL in the update path. */
     driver->shadow = TRUE;
 
-    KdComputePointerMatrix (&m, driver->randr, screen->width, screen->height);
-
-    KdSetPointerMatrix (&m);
-
     screen->width = driver->w;
     screen->height = driver->h;
+    KdComputePointerMatrix(&m, driver->randr, screen->width, screen->height);
+    KdSetPointerMatrix(&m);
 
     TRACE2("%s: shadow %d\n", __func__, driver->shadow);
 
@@ -670,13 +741,6 @@ sixelSetScreenSizes(ScreenPtr pScreen)
     }
 }
 
-static Bool
-sixelUnmapFramebuffer(KdScreenInfo *screen)
-{
-    KdShadowFbFree (screen);
-    return TRUE;
-}
-
 static int sixel_write(char *data, int size, void *priv)
 {
     return fwrite(data, 1, size, (FILE *)priv);
@@ -685,15 +749,27 @@ static int sixel_write(char *data, int size, void *priv)
 static Bool sixelScreenInit(KdScreenInfo *screen)
 {
     SIXEL_Driver *driver;
-    struct winsize ws;
-
     TRACE1("%s\n", __func__);
 
-    if (!screen->width || !screen->height)
-    {
+    driver = calloc(1, sizeof(*driver));
+    if (!driver)
+        return FALSE;
+    driver->screen = screen;
+    driver->auto_size = !screen->width && !screen->height;
+    sixelReadTerminalSize(driver);
+    if (driver->auto_size && sixelValidSize(driver->pixel_w, driver->pixel_h)) {
+        screen->width = driver->pixel_w;
+        screen->height = driver->pixel_h;
+    }
+    if (!screen->width || !screen->height) {
         screen->width = 640;
         screen->height = 480;
     }
+    if (!sixelAllocateBuffers(driver, screen->width, screen->height)) {
+        free(driver);
+        return FALSE;
+    }
+    g_driver = driver;
     /* Force a sane default pixel format (depth 24, bpp 32, XRGB8888). */
     screen->fb.depth = 24;
     screen->fb.bitsPerPixel = 32;
@@ -701,34 +777,6 @@ static Bool sixelScreenInit(KdScreenInfo *screen)
     screen->fb.redMask   = 0x00ff0000;
     screen->fb.greenMask = 0x0000ff00;
     screen->fb.blueMask  = 0x000000ff;
-
-    driver = g_driver = calloc(1, sizeof(SIXEL_Driver));
-
-    TRACE3("Attempting for %dx%d/%dbpp mode\n",
-           screen->width, screen->height, screen->fb.depth);
-
-    /* Set up the new mode framebuffer */
-    driver->w = screen->width;
-    driver->h = screen->height;
-    driver->pixel_w = 0;
-    driver->pixel_h = 0;
-    driver->cell_w = 0;
-    driver->cell_h = 0;
-    /* driver->pitch used by shadow window refers to 32bpp buffer stride */
-
-    ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws);
-    driver->pixel_w = ws.ws_xpixel;
-    driver->pixel_h = ws.ws_ypixel;
-    driver->cell_w = ws.ws_col;
-    driver->cell_h = ws.ws_row;
-
-    /* require dtterm response (SIXEL_DTTERM_SEQS) */
-    if (driver->cell_w <= 0 || driver->cell_h <= 0) {
-        printf("\033[18t");
-    }
-    if (driver->pixel_w <= 0 || driver->pixel_h <= 0) {
-        printf("\033[14t");
-    }
 
     /* Select default renderer if not set explicitly */
 #if defined(HAVE_LIBSIXEL)
@@ -754,20 +802,6 @@ static Bool sixelScreenInit(KdScreenInfo *screen)
         driver->dither = sixel_dither_get(BUILTIN_XTERM256);
     }
 #endif
-
-    /* 32bpp shadow destination buffer for shadowUpdatePacked */
-    driver->pitch = screen->width * 4;
-    driver->buffer = calloc(1, driver->pitch * screen->height);
-    if (!driver->buffer) {
-        printf("Couldn't allocate buffer for requested mode\n");
-        return FALSE;
-    }
-    /* 3-bytes-per-pixel RGB staging buffer for SIXEL encoder */
-    driver->bitmap = calloc(1, 3 * screen->width * screen->height);
-    if (!driver->bitmap) {
-        printf("Couldn't allocate buffer for requested mode\n");
-        return FALSE;
-    }
 
     driver->randr = screen->randr;
     screen->driver = driver;
@@ -855,9 +889,7 @@ static Bool sixelCreateRes(ScreenPtr pScreen)
      * and does not call update callback if shadow flag is not set.
      */
     screen->fb.shadow = TRUE;
-    KdShadowSet(pScreen, driver->randr, sixelShadowUpdate, sixelShadowWindow);
-
-    return TRUE;
+    return KdShadowSet(pScreen, driver->randr, sixelShadowUpdate, sixelShadowWindow);
 }
 
 
@@ -903,79 +935,77 @@ static Bool sixelRandRSetConfig(ScreenPtr pScreen,
     KdScreenPriv(pScreen);
     KdScreenInfo *screen = pScreenPriv->screen;
     SIXEL_Driver *driver = screen->driver;
+    SIXEL_Driver oldDriver = *driver, next = *driver;
+    KdScreenInfo oldScreen = *screen, candidate = *screen;
     Bool wasEnabled = pScreenPriv->enabled;
-    SIXEL_Driver oldDriver;
-    int oldwidth;
-    int oldheight;
-    int oldmmwidth;
-    int oldmmheight;
+    PixmapPtr pixmap = pScreen->GetScreenPixmap(pScreen);
+    int width = pSize->width, height = pSize->height;
+    int oldmmwidth = pScreen->mmWidth, oldmmheight = pScreen->mmHeight;
+    KdPointerMatrix matrix;
 
-    if (wasEnabled) {
-        KdDisableScreen (pScreen);
+    if (screen->randr & (RR_Rotate_90 | RR_Rotate_270)) {
+        width = pSize->height;
+        height = pSize->width;
+    }
+    next.randr = KdAddRotation(screen->randr, randr);
+    if (!sixelAllocateBuffers(&next, width, height))
+        return FALSE;
+
+    /* Allocate everything before detaching the live framebuffer. */
+    candidate.width = width;
+    candidate.height = height;
+    candidate.fb.frameBuffer = NULL;
+    candidate.fb.shadow = FALSE;
+    candidate.width_mm = max(1, (int)((double) oldScreen.width_mm * width / oldScreen.width));
+    candidate.height_mm = max(1, (int)((double) oldScreen.height_mm * height / oldScreen.height));
+    if (!KdShadowFbAlloc(&candidate, next.randr & (RR_Rotate_90 | RR_Rotate_270))) {
+        free(next.buffer);
+        free(next.bitmap);
+        return FALSE;
+    }
+    if (wasEnabled)
+        KdDisableScreen(pScreen);
+    KdShadowUnset(pScreen);
+    *driver = next;
+    *screen = candidate;
+    sixelSetScreenSizes(pScreen);
+    if (!pScreen->ModifyPixmapHeader(pixmap, pScreen->width, pScreen->height,
+                                    screen->fb.depth, screen->fb.bitsPerPixel,
+                                    screen->fb.byteStride, screen->fb.frameBuffer) ||
+        !sixelCreateRes(pScreen)) {
+        KdShadowUnset(pScreen);
+        KdShadowFbFree(&candidate);
+        free(next.buffer);
+        free(next.bitmap);
+        *driver = oldDriver;
+        *screen = oldScreen;
+        sixelSetScreenSizes(pScreen);
+        pScreen->mmWidth = oldmmwidth;
+        pScreen->mmHeight = oldmmheight;
+        pScreen->ModifyPixmapHeader(pixmap, pScreen->width, pScreen->height,
+                                   screen->fb.depth, screen->fb.bitsPerPixel,
+                                   screen->fb.byteStride, screen->fb.frameBuffer);
+        if (!sixelCreateRes(pScreen))
+            FatalError("Xsixel: could not restore shadow framebuffer\n");
+        if (wasEnabled)
+            KdEnableScreen(pScreen);
+        return FALSE;
     }
 
-    oldDriver = *driver;
-
-    oldwidth = screen->width;
-    oldheight = screen->height;
-    oldmmwidth = pScreen->mmWidth;
-    oldmmheight = pScreen->mmHeight;
-
-    /*
-     * Set new configuration
-     */
-
-    driver->randr = KdAddRotation(screen->randr, randr);
-
-    TRACE2("%s driver->randr %d", __func__, driver->randr);
-
-    sixelUnmapFramebuffer(screen);
-
-    if (!sixelMapFramebuffer(screen)) {
-        goto bail4;
-    }
-
-    KdShadowUnset(screen->pScreen);
-
-    if (!sixelCreateRes(screen->pScreen)) {
-        goto bail4;
-    }
-
-    sixelSetScreenSizes(screen->pScreen);
-
-    /*
-     * Set frame buffer mapping
-     */
-    (*pScreen->ModifyPixmapHeader)(pScreen->GetScreenPixmap(pScreen),
-                                   pScreen->width,
-                                   pScreen->height,
-                                   screen->fb.depth,
-                                   screen->fb.bitsPerPixel,
-                                   screen->fb.byteStride,
-                                   screen->fb.frameBuffer);
-
-    /* set the subpixel order */
-
+    KdShadowFbFree(&oldScreen);
+    free(oldDriver.buffer);
+    free(oldDriver.bitmap);
+    KdComputePointerMatrix(&matrix, driver->randr, screen->width, screen->height);
+    KdSetPointerMatrix(&matrix);
     KdSetSubpixelOrder(pScreen, driver->randr);
-    if (wasEnabled) {
+    if (wasEnabled)
         KdEnableScreen(pScreen);
-    }
-
+    RRGetInfo(pScreen, TRUE);
+    RRScreenSizeNotify(pScreen);
+    printf("\033[H\033[2J");
+    SIXEL_Flip(driver);
+    fflush(stdout);
     return TRUE;
-
-bail4:
-    sixelUnmapFramebuffer(screen);
-    *driver = oldDriver;
-    (void) sixelMapFramebuffer(screen);
-    pScreen->width = oldwidth;
-    pScreen->height = oldheight;
-    pScreen->mmWidth = oldmmwidth;
-    pScreen->mmHeight = oldmmheight;
-
-    if (wasEnabled) {
-        KdEnableScreen (pScreen);
-    }
-    return FALSE;
 }
 
 static Bool sixelRandRInit(ScreenPtr pScreen)
@@ -1166,9 +1196,38 @@ int ddxProcessArgument(int argc, char **argv, int i)
     return KdProcessArgument(argc, argv, i);
 }
 
+static void
+sixelApplyTerminalSize(SIXEL_Driver *driver)
+{
+    if (!driver->pixel_size_reported &&
+        driver->cell_pixel_w > 0 && driver->cell_pixel_h > 0 &&
+        driver->cell_w > 0 && driver->cell_h > 0 &&
+        driver->cell_pixel_w <= SHRT_MAX / driver->cell_w &&
+        driver->cell_pixel_h <= SHRT_MAX / driver->cell_h) {
+        driver->pixel_w = driver->cell_pixel_w * driver->cell_w;
+        driver->pixel_h = driver->cell_pixel_h * driver->cell_h;
+    }
+#ifdef RANDR
+    if (driver->auto_size && driver->screen->pScreen &&
+        sixelValidSize(driver->pixel_w, driver->pixel_h) &&
+        (driver->w != driver->pixel_w || driver->h != driver->pixel_h)) {
+        RRScreenSize size = {0};
+        size.width = driver->pixel_w;
+        size.height = driver->pixel_h;
+        if (!sixelRandRSetConfig(driver->screen->pScreen, RR_Rotate_0, 0, &size))
+            ErrorF("Xsixel: could not resize to terminal dimensions %dx%d\n",
+                   size.width, size.height);
+        return;
+    }
+#endif
+    SIXEL_Flip(driver);
+    fflush(stdout);
+}
+
 static void sixelPollInput(void)
 {
     int posted = 0;
+    Bool size_changed = FALSE;
     static int prev_x = -1, prev_y = -1;
     static int mouse_x = -1, mouse_y = -1;
     static int mouse_button = 0;
@@ -1176,7 +1235,7 @@ static void sixelPollInput(void)
     static int events = 0;
 #endif
     char buf[4096];
-    static sixel_key_t keys[4096];
+    static sixel_key_t keys[4097];
     int scancode;
     sixel_key_t *key;
     int nread, nkeys;
@@ -1193,15 +1252,24 @@ static void sixelPollInput(void)
             key = keys + i;
             switch (key->value) {
             case SIXEL_DTTERM_SEQS:
-                if (g_driver) {
+                if (g_driver && key->nparams == 3 &&
+                    sixelValidSize(key->params[2], key->params[1])) {
                     switch (key->params[0]) {
                     case 4:
+                        g_driver->pixel_size_reported = TRUE;
                         g_driver->pixel_h = key->params[1];
                         g_driver->pixel_w = key->params[2];
+                        size_changed = TRUE;
+                        break;
+                    case 6:
+                        g_driver->cell_pixel_h = key->params[1];
+                        g_driver->cell_pixel_w = key->params[2];
+                        size_changed = TRUE;
                         break;
                     case 8:
                         g_driver->cell_h = key->params[1];
                         g_driver->cell_w = key->params[2];
+                        size_changed = TRUE;
                         break;
                     default:
                         break;
@@ -1369,6 +1437,8 @@ static void sixelPollInput(void)
             }
         }
     }
+    if (g_driver && size_changed)
+        sixelApplyTerminalSize(g_driver);
     if (prev_x != mouse_x || prev_y != mouse_y) {
         KdEnqueuePointerEvent(sixelPointer, mouseState, mouse_x, mouse_y, 0);
         prev_x = mouse_x;
@@ -1445,9 +1515,10 @@ static void sixelFini(void)
         if (g_driver->output)
             sixel_output_unref(g_driver->output);
 #endif
-        /* We intentionally skip unref for chafa objects to avoid
-           requiring newer API; process exit will reclaim memory. */
+        free(g_driver->buffer);
+        free(g_driver->bitmap);
         free(g_driver);
+        g_driver = NULL;
     }
 }
 
