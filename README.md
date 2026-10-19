@@ -109,6 +109,25 @@ Run Xsixel in a SIXEL-capable terminal. The optional Chafa renderer requires
 Chafa development files and `-Dchafa=true`; select it at runtime with
 `-backend chafa`. The default renderer is libsixel.
 
+Mouse input defaults to SGR pixel reporting (terminal modes 1003, 1006, and
+1016), so xterm does not need DEC locator support. Motion, dragging, the first
+three buttons, and vertical/horizontal wheel events are supported. For terminals
+using DEC locator reports, start Xsixel with `-mouse-protocol dec`. Mouse reporting
+modes are disabled when Xsixel exits.
+
+If xterm suppresses mouse reports, clear its `disallowedMouseOps` list when
+starting the outer terminal:
+
+```sh
+xterm -xrm 'XTerm*decTerminalID: vt340' \
+    -xrm 'XTerm*numColorRegisters: 256' \
+    -xrm 'XTerm*disallowedMouseOps:'
+```
+
+Inside that terminal, run `Xsixel :9 -exec twm`, then connect X clients to `:9`.
+
+
+
 The Debian and macOS helper scripts use the same Meson build. Set `BUILD_DIR`
 to change their build directory, or `CHAFA=true` to enable Chafa. They expect
 build dependencies to be installed beforehand and do not install packages.

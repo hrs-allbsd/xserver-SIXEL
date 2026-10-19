@@ -32,6 +32,14 @@ class ScreenChange(C.Structure):
                 ("mwidth", C.c_int), ("mheight", C.c_int)]
 
 
+class KeyEvent(C.Structure):
+    _fields_ = [("type", C.c_int), ("serial", C.c_ulong), ("send_event", C.c_int),
+                ("display", C.c_void_p), ("window", C.c_ulong), ("root", C.c_ulong),
+                ("subwindow", C.c_ulong), ("time", C.c_ulong),
+                ("x", C.c_int), ("y", C.c_int), ("x_root", C.c_int), ("y_root", C.c_int),
+                ("state", C.c_uint), ("keycode", C.c_uint), ("same_screen", C.c_int)]
+
+
 def library(name, functions):
     lib = C.CDLL(ctypes.util.find_library(name))
     for func, result, args in functions:
@@ -67,6 +75,13 @@ class Server:
             self.name = ':' + number
             self.x11 = library('X11', [
                 ('XOpenDisplay', C.c_void_p, [C.c_char_p]),
+                ('XCreateSimpleWindow', C.c_ulong, [C.c_void_p, C.c_ulong, C.c_int, C.c_int,
+                                                    C.c_uint, C.c_uint, C.c_uint, C.c_ulong, C.c_ulong]),
+                ('XMapWindow', C.c_int, [C.c_void_p, C.c_ulong]),
+                ('XSelectInput', C.c_int, [C.c_void_p, C.c_ulong, C.c_long]),
+                ('XSetInputFocus', C.c_int, [C.c_void_p, C.c_ulong, C.c_int, C.c_ulong]),
+                ('XLookupString', C.c_int, [C.POINTER(KeyEvent), C.c_void_p, C.c_int,
+                                          C.POINTER(C.c_ulong), C.c_void_p]),
                 ('XDefaultRootWindow', C.c_ulong, [C.c_void_p]),
                 ('XCloseDisplay', C.c_int, [C.c_void_p]),
                 ('XSync', C.c_int, [C.c_void_p, C.c_int]),
@@ -206,6 +221,85 @@ class Autosize(unittest.TestCase):
         server = Server(**kwargs)
         self.addCleanup(server.close)
         return server
+
+    def mouse_events(self, server, reports, expected_buttons):
+        server.x11.XSelectInput(server.display, server.root, 4 | 8 | 64)
+        server.x11.XSync(server.display, False)
+        server.events()
+        for report in reports:
+            server.reply(report)
+            time.sleep(0.02)
+        received = []
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            while server.x11.XPending(server.display):
+                event = (C.c_long * 24)()
+                server.x11.XNextEvent(server.display, C.byref(event))
+                mouse = C.cast(C.byref(event), C.POINTER(KeyEvent)).contents
+                if mouse.type in (4, 5):
+                    received.append((mouse.type, mouse.keycode, mouse.x_root, mouse.y_root))
+            if len(received) >= len(expected_buttons):
+                break
+            time.sleep(0.01)
+        self.assertEqual(received, expected_buttons)
+
+    def test_sgr_mouse_click_drag_and_scroll(self):
+        server = self.server(pixels=(800, 600))
+        server.wait_output(b'\x1b[?1016h\x1b[?1003h')
+        self.mouse_events(server,
+            [b'\x1b[<35;121;81M', b'\x1b[<0;201;151M',
+             b'\x1b[<32;221;171M', b'\x1b[<0;221;171m',
+             b'\x1b[<64;221;171M', b'\x1b[<65;221;171M'],
+            [(4, 1, 200, 150), (5, 1, 220, 170),
+             (4, 4, 220, 170), (5, 4, 220, 170),
+             (4, 5, 220, 170), (5, 5, 220, 170)])
+
+    def test_sgr_mouse_fragmented_and_multiple_buttons(self):
+        server = self.server(pixels=(800, 600))
+        self.mouse_events(server,
+            [b'\x1b[<0;20', b'1;151M', b'\x1b[<2;201;151M',
+             b'\x1b[<0;201;151m', b'\x1b[<2;201;151m'],
+            [(4, 1, 200, 150), (4, 3, 200, 150),
+             (5, 1, 200, 150), (5, 3, 200, 150)])
+
+    def test_dec_mouse_compatibility(self):
+        server = self.server(pixels=(800, 600), args=('-mouse-protocol', 'dec'))
+        server.wait_output(b"\x1b[1;1'z")
+        self.mouse_events(server,
+            [b'\x1b[10;0;81;121;0&w', b'\x1b[2;4;151;201;0&w',
+             b'\x1b[6;5;151;201;0&w', b'\x1b[3;1;151;201;0&w',
+             b'\x1b[7;0;151;201;0&w'],
+            [(4, 1, 200, 150), (4, 3, 200, 150),
+             (5, 1, 200, 150), (5, 3, 200, 150)])
+
+    def test_terminal_keyboard_reaches_focused_client(self):
+        server = self.server(pixels=(800, 600))
+        window = server.x11.XCreateSimpleWindow(server.display, server.root, 0, 0,
+                                                200, 100, 0, 0, 0)
+        server.x11.XSelectInput(server.display, window, 3)
+        server.x11.XMapWindow(server.display, window)
+        server.x11.XSetInputFocus(server.display, window, 1, 0)
+        server.x11.XSync(server.display, False)
+        server.events()
+        server.reply(b'aA\r\x1b[A')
+        received = []
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            while server.x11.XPending(server.display):
+                event = (C.c_long * 24)()
+                server.x11.XNextEvent(server.display, C.byref(event))
+                key = C.cast(C.byref(event), C.POINTER(KeyEvent)).contents
+                if key.type == 2:
+                    text = C.create_string_buffer(32)
+                    sym = C.c_ulong()
+                    server.x11.XLookupString(C.byref(key), text, 32, C.byref(sym), None)
+                    if sym.value not in (0xffe1, 0xffe3):
+                        received.append((sym.value, text.value))
+            if len(received) >= 4:
+                break
+            time.sleep(0.01)
+        self.assertEqual(received, [(ord('a'), b'a'), (ord('A'), b'A'),
+                                     (0xff0d, b'\r'), (0xff52, b'')])
 
     def test_initial_ioctl_pixels(self):
         server = self.server(pixels=(800, 600))
