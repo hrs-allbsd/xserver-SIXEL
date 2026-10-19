@@ -121,6 +121,7 @@ starting the outer terminal:
 ```sh
 xterm -xrm 'XTerm*decTerminalID: vt340' \
     -xrm 'XTerm*numColorRegisters: 256' \
+    -xrm 'XTerm*maxGraphicSize: 4096x4096' \
     -xrm 'XTerm*disallowedMouseOps:'
 ```
 
@@ -167,3 +168,11 @@ inside that window. The pointer is restored on leaving the terminal and on
 Xsixel exit. Without that support, Xsixel requests xterm's pointer-hiding mode,
 whose effect depends on the terminal. No additional xterm startup option is
 needed for pointer hiding.
+
+Xterm's SIXEL graphics limit is independent of its window size and defaults to
+1000x1000. The transparent-offset renderer uses absolute graphic coordinates, so
+set `maxGraphicSize` large enough for the intended terminal dimensions (as in the
+command above). Otherwise RandR can report a correctly enlarged screen while
+pixels beyond the terminal's graphics limit are clipped. Xterm does not permit
+changing this resource through XTSMGRAPHICS after startup; restart the outer
+terminal to apply it.
