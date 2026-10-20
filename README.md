@@ -111,22 +111,30 @@ Chafa development files and `-Dchafa=true`; select it at runtime with
 
 Inside tmux, Xsixel detects `TMUX` and automatically sends SIXEL images through
 tmux passthrough, regardless of whether tmux was built with SIXEL support.
-Enable passthrough in the current pane before starting Xsixel:
+Enable passthrough and focus notifications before starting Xsixel:
 
 ```sh
 tmux set-option -p allow-passthrough on
+tmux set-option -g focus-events on
 ```
 
-Alternatively, add `set -g allow-passthrough on` to `~/.tmux.conf` for future
-panes. Xsixel checks the effective pane setting at startup and exits with setup
-instructions if it is off; `on` and `all` are accepted. The outer terminal must
+Alternatively, add these settings to `~/.tmux.conf`:
+
+```text
+set -g allow-passthrough on
+set -g focus-events on
+```
+
+Xsixel checks both settings at startup and exits with setup instructions if
+either is off. Passthrough accepts `on` and `all`. Focus notifications trigger a
+full redraw when returning to the Xsixel window. The outer terminal must
 support SIXEL. No tmux configuration is changed automatically.
 
 Passthrough draws directly on the outer terminal, so use a single pane or a
 zoomed pane (`Ctrl-b z`), preferably with the status line disabled
-(`tmux set-option status off`). Split-pane clipping, nested tmux, and automatic
-image restoration after switching windows are not handled; trigger an X redraw
-(e.g. `xrefresh -display :9`) if needed. tmux forwards SGR mouse positions in character cells rather than pixels. Xsixel
+(`tmux set-option status off`). Split-pane clipping and nested tmux are not
+handled. Use `xrefresh -display :9` if an additional redraw is needed. tmux
+forwards SGR mouse positions in character cells rather than pixels. Xsixel
 converts them to pixel positions using the current pane geometry, including after
 a resize. Pointer movement is consequently quantized to cell centres in tmux;
 outside tmux, SGR pixel precision is retained. Outside tmux, the existing direct output
@@ -141,9 +149,16 @@ including safe handling of the embedded image terminator. For example:
 screen Xsixel :9 -exec twm
 ```
 
-Use one full-screen region without a hardstatus or caption line. As with tmux,
-split-region clipping, nested multiplexers, and automatic restoration after
-window switching are not supported; use `xrefresh -display :9` to redraw.
+Use one full-screen region without a hardstatus or caption line. Split-region
+clipping and nested multiplexers are not supported. Window
+switching and reattachment restore the image automatically: screen-only probes
+ask the outer terminal for device status every 250 ms, and a response after a
+visibility gap triggers a full redraw. A full resync at most every two seconds
+while replies arrive also covers very quick switches between probes. Hidden
+windows receive no responses and do not run this periodic full resync. No
+external commands are spawned for these probes. Use `xrefresh -display :9` if an
+additional redraw is needed.
+
 Screen forwards SGR cell coordinates, which Xsixel converts using the current
 terminal dimensions; pointer precision is limited to character cells. Use the
 default SGR mouse protocol in screen. The outer terminal still needs SIXEL and

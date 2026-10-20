@@ -63,37 +63,34 @@ static Bool sixelTmux;
 static Bool sixelScreen;
 
 static void
-sixelCheckTmux(void)
+sixelTmuxOption(const char *pane, const char *option, char *value, size_t capacity)
 {
-    const char *tmux = getenv("TMUX");
-    const char *pane = getenv("TMUX_PANE");
     int fds[2], status;
     pid_t pid, waited;
     ssize_t n;
     size_t used = 0;
-    char value[32];
 
-    if (!tmux || !*tmux)
-        return;
     if (!pane || !*pane || pipe(fds) < 0)
-        FatalError("Xsixel: cannot check tmux allow-passthrough (TMUX_PANE missing or pipe failed)\n");
+        FatalError("Xsixel: cannot check tmux option (TMUX_PANE missing or pipe failed)\n");
     pid = fork();
     if (pid == 0) {
         close(fds[0]);
         if (dup2(fds[1], STDOUT_FILENO) < 0)
             _exit(127);
         close(fds[1]);
-        execlp("tmux", "tmux", "show-options", "-A", "-p", "-v", "-t", pane,
-               "allow-passthrough", (char *)NULL);
+        execlp("tmux", "tmux", "show-options", "-A",
+               strcmp(option, "focus-events") == 0 ? "-s" : "-p",
+               "-v", "-t", pane,
+               option, (char *)NULL);
         _exit(127);
     }
     close(fds[1]);
     if (pid < 0) {
         close(fds[0]);
-        FatalError("Xsixel: cannot run tmux to check allow-passthrough\n");
+        FatalError("Xsixel: cannot query tmux\n");
     }
-    while (used < sizeof(value) - 1) {
-        n = read(fds[0], value + used, sizeof(value) - 1 - used);
+    while (used < capacity - 1) {
+        n = read(fds[0], value + used, capacity - 1 - used);
         if (n > 0)
             used += n;
         else if (n == 0 || errno != EINTR)
@@ -106,12 +103,30 @@ sixelCheckTmux(void)
     value[used] = '\0';
     value[strcspn(value, "\r\n")] = '\0';
     if (waited != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
-        FatalError("Xsixel: cannot query tmux allow-passthrough; check tmux and TMUX_PANE\n");
+        FatalError("Xsixel: cannot query tmux setting; check tmux and TMUX_PANE\n");
+}
+
+static void
+sixelCheckTmux(void)
+{
+    const char *tmux = getenv("TMUX");
+    const char *pane = getenv("TMUX_PANE");
+    char value[32];
+
+    if (!tmux || !*tmux)
+        return;
+    sixelTmuxOption(pane, "allow-passthrough", value, sizeof(value));
     if (strcmp(value, "on") != 0 && strcmp(value, "all") != 0)
         FatalError("Xsixel: tmux allow-passthrough is off. Run in this pane:\n"
                    "  tmux set-option -p allow-passthrough on\n"
                    "Then restart Xsixel. To enable it persistently, add to ~/.tmux.conf:\n"
                    "  set -g allow-passthrough on\n");
+    sixelTmuxOption(pane, "focus-events", value, sizeof(value));
+    if (strcmp(value, "on") != 0)
+        FatalError("Xsixel: tmux focus-events is off. Run:\n"
+                   "  tmux set-option -g focus-events on\n"
+                   "Then restart Xsixel. To enable it persistently, add to ~/.tmux.conf:\n"
+                   "  set -g focus-events on\n");
     sixelTmux = TRUE;
 }
 
@@ -341,6 +356,7 @@ static sixel_renderer_t g_renderer = RENDERER_DEFAULT;
 #define SIXEL_LEFT              (1 << 12 | ('D' - '@'))
 #define SIXEL_END               (1 << 12 | ('F' - '@'))
 #define SIXEL_HOME              (1 << 12 | ('H' - '@'))
+#define SIXEL_STATUS            (1 << 12 | ('n' - '@'))
 #define SIXEL_FOCUSIN           (1 << 12 | ('I' - '@'))
 #define SIXEL_FOCUSOUT          (1 << 12 | ('O' - '@'))
 #define SIXEL_F1                (1 << 12 | ('P' - '@'))
@@ -810,6 +826,60 @@ SIXEL_Flip(SIXEL_Driver *driver)
     }
 }
 
+/* screen forwards a passthrough request only while this window is visible,
+ * and routes the terminal's response to the active window. Probe the outer
+ * terminal rather than spawning screen -Q clients (which may block). */
+static OsTimerPtr sixelScreenTimer;
+static CARD32 sixelScreenLastReply, sixelScreenLastRefresh;
+static Bool sixelScreenHadReply;
+
+static void
+sixelStopScreenMonitor(void)
+{
+    if (sixelScreenTimer) {
+        TimerFree(sixelScreenTimer);
+        sixelScreenTimer = NULL;
+    }
+}
+
+static CARD32
+sixelScreenPoll(OsTimerPtr timer, CARD32 now, void *arg)
+{
+    sixelTerminalControl("\033[5n");
+    fflush(stdout);
+    return 250;
+}
+
+static void
+sixelScreenStatus(void)
+{
+    CARD32 now = GetTimeInMillis();
+
+    if (!sixelScreen || !sixelScreenTimer || !g_driver)
+        return;
+    /* A periodic resync also covers a round trip between probes and removal
+     * of screen's overlays. Only an active window receives these responses. */
+    if (!sixelScreenHadReply || now - sixelScreenLastReply > 750 ||
+        now - sixelScreenLastRefresh >= 2000) {
+        /* Reattachment may use a different outer terminal with default modes. */
+        sixelTerminalControl("\033[?80h");
+        SIXEL_Flip(g_driver);
+        sixelScreenLastRefresh = now;
+    }
+    sixelScreenLastReply = now;
+    sixelScreenHadReply = TRUE;
+}
+
+static void
+sixelStartScreenMonitor(void)
+{
+    if (!sixelScreen)
+        return;
+    sixelScreenHadReply = FALSE;
+    sixelScreenTimer = TimerSet(NULL, 0, 250, sixelScreenPoll, NULL);
+    if (!sixelScreenTimer)
+        ErrorF("Xsixel: could not start screen automatic redraw monitor\n");
+}
 
 static Bool sixelMapFramebuffer(KdScreenInfo *screen)
 {
@@ -1632,6 +1702,10 @@ static void sixelPollInput(void)
                 }
                 KdEnqueueKeyboardEvent(sixelKeyboard, scancode, 1);
                 break;
+            case SIXEL_STATUS:
+                if (key->nparams == 1 && key->params[0] == 0)
+                    sixelScreenStatus();
+                break;
             case SIXEL_FOCUSIN:
                 SIXEL_Flip(g_driver);
                 break;
@@ -1716,6 +1790,7 @@ static void sixelFini(void)
     struct timeval timeout;
     char buf[4096];
 
+    sixelStopScreenMonitor();
     sixelStopResizeMonitor();
     if (sixelHostCursorFd >= 0) {
         RemoveNotifyFd(sixelHostCursorFd);
@@ -1829,6 +1904,7 @@ void ddxInit(void)
             sixelHostCursorDispatch();
         }
     }
+    sixelStartScreenMonitor();
     SetNotifyFd(STDIN_FILENO, sixelNotifyFd, X_NOTIFY_READ, NULL);
     if (!sixelStartResizeMonitor())
         FatalError("Xsixel: could not monitor terminal size changes\n");
