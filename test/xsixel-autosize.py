@@ -524,6 +524,12 @@ class TmuxPassthrough(unittest.TestCase):
         self.assertIn(b'tmux set-option -g focus-events on', result.stderr)
         self.assertNotIn(b'\x1b', result.stdout)
 
+    def test_pixel_size_is_not_rounded_for_tmux(self):
+        self.tmux('set-option', '-p', 'allow-passthrough', 'on')
+        server = Server(pixels=(604, 459), cells=(100, 35), env=self.env)
+        self.addCleanup(server.close)
+        self.assertEqual(server.dimensions(), (604, 459))
+
     def test_mouse_cells_cover_screen_and_follow_resize(self):
         self.tmux('set-option', '-g', 'allow-passthrough', 'on')
         server = Server(pixels=(800, 600), env=self.env)
@@ -603,6 +609,41 @@ class ScreenPassthrough(unittest.TestCase):
             time.sleep(.02)
         self.assertGreater(bytes(server.output).count(full), initial)
         self.assertNotIn(b'\x1b[5n', server.output)
+
+    def test_ioctl_padding_is_excluded_on_startup_and_resize(self):
+        server = self.server(pixels=(604, 459), cells=(100, 35))
+        self.assertEqual(server.dimensions(), (600, 455))
+        server.check_drawing_and_pointer(self, 600, 455)
+        server.resize_terminal((724, 524), cells=(120, 40))
+        server.wait_size(720, 520)
+        server.check_drawing_and_pointer(self, 720, 520)
+        # A font change must infer the new cell size rather than reuse it.
+        server.resize_terminal((964, 644), cells=(120, 40))
+        server.wait_size(960, 640)
+        server.resize_terminal((604, 459), cells=(100, 35))
+        server.wait_size(600, 455)
+        Autosize.mouse_events(self, server,
+            [b'\x1b[<0;100;35M', b'\x1b[<0;100;35m'],
+            [(4, 1, 597, 448), (5, 1, 597, 448)])
+
+    def test_padding_correction_keeps_explicit_screen(self):
+        server = self.server(pixels=(604, 459), cells=(100, 35),
+                             args=('-screen', '800x600'))
+        self.assertEqual(server.dimensions(), (800, 600))
+        server.resize_terminal((724, 524), cells=(120, 40))
+        time.sleep(.2)
+        self.assertEqual(server.dimensions(), (800, 600))
+
+    def test_padding_reports_in_either_order_keep_original_pixels(self):
+        server = self.server(pixels=(0, 0), cells=(80, 30))
+        server.reply(b'\x1b[4;459;604t')
+        server.wait_size(560, 450)
+        server.reply(b'\x1b[8;35;100t')
+        server.wait_size(600, 455)
+        server.resize_terminal((0, 0), cells=(120, 40))
+        time.sleep(.2)
+        server.reply(b'\x1b[8;35;100t\x1b[4;459;604t')
+        server.wait_size(600, 455)
 
     def test_cell_mouse_and_resize(self):
         server = self.server(pixels=(800, 600))

@@ -159,6 +159,11 @@ periodic encoding cost in screen only. No terminal status queries are used:
 their responses can interfere with screen's command-prefix input. Use
 `xrefresh -display :9` if an immediate redraw is needed.
 
+For screen, Xsixel fits reported pixel dimensions to whole character cells,
+excluding the usual xterm internal-border remainder. This correction applies
+at startup and on resize without adding terminal queries; an explicit `-screen`
+size remains authoritative. tmux and direct-terminal sizing are unchanged.
+
 Screen forwards SGR cell coordinates, which Xsixel converts using the current
 terminal dimensions; pointer precision is limited to character cells. Use the
 default SGR mouse protocol in screen. The outer terminal still needs SIXEL and
