@@ -170,6 +170,55 @@ default SGR mouse protocol in screen. The outer terminal still needs SIXEL and
 mouse-reporting support. The normal and tmux output paths retain their existing
 encoding and do not allocate screen's frame buffer or split output packets.
 
+Xsixel automatically enables libsixel compatibility mode at startup when
+`TERM_PROGRAM=iTerm.app` or `LC_TERMINAL=iTerm2` is present. The latter may be
+forwarded over SSH, depending on the client and server configuration. Detection
+runs only at startup, without terminal queries or subprocesses.
+
+If that information is unavailable, force the mode explicitly:
+
+```sh
+screen Xsixel :9 -iterm2 -exec ratpoison
+```
+
+iTerm2 3.7.6 decodes transparent SIXEL gaps as opaque pixels. With `-iterm2`,
+Xsixel encodes actual framebuffer pixels from the top-left corner through the
+bottom-right edge of each damaged region. This prevents blank rectangles above
+and to the left of updates, without always sending the entire screen. It costs
+more encoding and output for updates far from the origin. The option is off by
+default when neither iTerm2 identifier is present; normal terminal and tmux
+rendering retain their cropped fast path.
+Chafa already uses full-frame output; this option affects libsixel only.
+
+When using `screen -x` from multiple terminals, start Xsixel with `-iterm2` if
+an iTerm2 viewer will attach later and the startup environment does not identify
+it. Later attachments cannot be detected from the startup environment. The mode
+applies to all viewers of that Xsixel server. `TERM=xterm-256color` or
+`TERM_PROGRAM=tmux` alone does not enable compatibility mode.
+
+Change the libsixel drawing mode at runtime with the root-window property
+`_XSIXEL_RENDER_MODE` (type `STRING`, format 8):
+
+```sh
+# Enable iTerm2 compatibility after attaching another terminal.
+xprop -display :9 -root -f _XSIXEL_RENDER_MODE 8s -set _XSIXEL_RENDER_MODE iterm2
+
+# Restore normal cropped rendering.
+xprop -display :9 -root -f _XSIXEL_RENDER_MODE 8s -set _XSIXEL_RENDER_MODE fast
+
+# Read the current mode.
+xprop -display :9 -root _XSIXEL_RENDER_MODE
+```
+
+The initial value reflects `-iterm2` and startup environment detection. A change
+immediately schedules a full redraw; subsequent damage uses the selected mode.
+Writing the same value does not force a redraw. Only `fast` and `iterm2` are
+accepted; invalid values, other types, deletion, and property rotation are
+rejected so the readable property always matches the active mode. Settings on
+ordinary client windows do not affect the server. Runtime changes apply to all
+viewers and last until Xsixel restarts. Change notifications drive this control;
+there is no additional polling or property lookup in the frame rendering path.
+
 Mouse input defaults to SGR pixel reporting (terminal modes 1003, 1006, and
 1016), so xterm does not need DEC locator support. Motion, dragging, the first
 three buttons, and vertical/horizontal wheel events are supported. For terminals
