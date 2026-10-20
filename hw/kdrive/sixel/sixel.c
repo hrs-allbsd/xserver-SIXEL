@@ -30,6 +30,11 @@
 #include "os/ddx_priv.h"
 #include "sixel-config.h"
 #include "hostcursor.h"
+#include "dix/dix_priv.h"
+#include "dix/property_priv.h"
+#include "property.h"
+#include "windowstr.h"
+#include <X11/Xatom.h>
 #ifdef HAVE_CHAFA
 #include <chafa.h>
 /* Ensure we use a non-premultiplied BGRA format; fallback aliases for older API names */
@@ -61,6 +66,21 @@
 /* Multiplexer wrapping leaves direct terminal rendering unchanged. */
 static Bool sixelTmux;
 static Bool sixelScreen;
+static Bool sixelIterm2Compat;
+
+/* These identifiers may survive SSH/screen startup; TERM alone is not enough.
+ * Check once, without terminal queries or subprocesses. Later screen -x viewers
+ * cannot be discovered from this environment, so retain the explicit option. */
+static void
+sixelDetectIterm2(void)
+{
+    const char *program = getenv("TERM_PROGRAM");
+    const char *terminal = getenv("LC_TERMINAL");
+
+    if ((program && !strcmp(program, "iTerm.app")) ||
+        (terminal && !strcmp(terminal, "iTerm2")))
+        sixelIterm2Compat = TRUE;
+}
 
 static void
 sixelTmuxOption(const char *pane, const char *option, char *value, size_t capacity)
@@ -655,6 +675,11 @@ sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
 
     if (x1 >= x2 || y1 >= y2)
         return TRUE;
+    /* iTerm2 decodes transparent SIXEL gaps as opaque pixels. Include the
+     * framebuffer from the origin through the damage instead of emitting gaps.
+     * Keep the normal cropped fast path unless explicitly requested. */
+    if (sixelIterm2Compat)
+        x1 = y1 = 0;
     y1 = y1 / 6 * 6;
     y2 = min(driver->h, (y2 + 5) / 6 * 6);
     width = x2 - x1;
@@ -843,6 +868,105 @@ SIXEL_Flip(SIXEL_Driver *driver)
             sixelRenderFrame(driver);
             fflush(stdout);
         }
+    }
+}
+
+/* The root property is both the current state and the runtime control API.
+ * Intercept only this property and commit through DIX before changing modes.
+ * All other requests follow the normal path, with no per-frame property reads. */
+static Atom sixelRenderModeAtom;
+
+static void
+sixelRenderModeRoot(CallbackListPtr *list, void *closure, void *data)
+{
+    ScreenPtr screen = data;
+    const char *mode = sixelIterm2Compat ? "iterm2" : "fast";
+
+    if (!g_driver || screen != g_driver->screen->pScreen)
+        return;
+    sixelRenderModeAtom = MakeAtom("_XSIXEL_RENDER_MODE",
+                                   strlen("_XSIXEL_RENDER_MODE"), TRUE);
+    if (!sixelRenderModeAtom ||
+        dixChangeWindowProperty(serverClient, screen->root, sixelRenderModeAtom,
+                                XA_STRING, 8, PropModeReplace, strlen(mode), mode,
+                                FALSE) != Success)
+        FatalError("Xsixel: could not initialize _XSIXEL_RENDER_MODE\n");
+}
+
+static void
+sixelRenderModeProperty(CallbackListPtr *list, void *closure, void *data)
+{
+    PropertyFilterParam *request = data;
+    WindowPtr root, window;
+    Bool compat;
+    size_t i;
+
+    if (request->skip || !sixelRenderModeAtom || !g_driver ||
+        !g_driver->screen->pScreen)
+        return;
+    root = g_driver->screen->pScreen->root;
+    if (!root || request->window != root->drawable.id)
+        return;
+    /* Rotating or deleting the control would make its value disagree with the
+     * active mode. Keep the readable state present and reject such requests. */
+    for (i = 0; i < request->nAtoms; i++) {
+        if (request->atoms[i] == sixelRenderModeAtom) {
+            request->skip = TRUE;
+            request->status = BadAccess;
+            return;
+        }
+    }
+    if (request->property != sixelRenderModeAtom)
+        return;
+    if (request->delete || (request->access_mode & DixRemoveAccess)) {
+        request->skip = TRUE;
+        request->status = BadAccess;
+        return;
+    }
+    if (!(request->access_mode & DixWriteAccess))
+        return;
+    request->skip = TRUE;
+    request->status = BadValue;
+    if (request->type != XA_STRING || request->format != 8) {
+        request->status = BadMatch;
+        return;
+    }
+    if (request->mode != PropModeReplace)
+        return;
+    if (request->len == 4 && !memcmp(request->value, "fast", 4))
+        compat = FALSE;
+    else if (request->len == 6 && !memcmp(request->value, "iterm2", 6))
+        compat = TRUE;
+    else
+        return;
+    request->status = dixLookupWindow(&window, request->window, request->client,
+                                      DixSetPropAccess);
+    if (request->status != Success)
+        return;
+    request->status = dixChangeWindowProperty(request->client, window,
+        request->property, request->type, request->format, request->mode,
+        request->len, request->value, request->sendevent);
+    if (request->status == Success && sixelIterm2Compat != compat) {
+        sixelIterm2Compat = compat;
+        SIXEL_Flip(g_driver);
+    }
+}
+
+static void
+sixelStopRenderModeControl(void)
+{
+    DeleteCallback(&RootWindowFinalizeCallback, sixelRenderModeRoot, NULL);
+    DeleteCallback(&PropertyFilterCallback, sixelRenderModeProperty, NULL);
+    sixelRenderModeAtom = None;
+}
+
+static void
+sixelStartRenderModeControl(void)
+{
+    if (!AddCallback(&RootWindowFinalizeCallback, sixelRenderModeRoot, NULL) ||
+        !AddCallback(&PropertyFilterCallback, sixelRenderModeProperty, NULL)) {
+        sixelStopRenderModeControl();
+        FatalError("Xsixel: could not register render mode control\n");
     }
 }
 
@@ -1303,6 +1427,7 @@ void InitCard(char *name)
 void InitOutput(int argc, char **argv)
 {
     KdInitOutput(argc, argv);
+    sixelStartRenderModeControl();
     signal(SIGHUP, SIG_DFL);
     TRACE("InitOutput()\n");
 }
@@ -1347,11 +1472,16 @@ void ddxUseMsg(void)
     KdUseMsg();
     ErrorF("-exec command    Execute command after server started\n");
     ErrorF("-mouse-protocol {sgr|dec}  Select terminal mouse reporting (default: sgr pixels)\n");
+    ErrorF("-iterm2                  Force iTerm2 compatibility (also detected from startup environment)\n");
     ErrorF("-backend {chafa|libsixel}  Choose renderer backend (default: libsixel if built)\n");
 }
 
 int ddxProcessArgument(int argc, char **argv, int i)
 {
+    if (!strcmp(argv[i], "-iterm2")) {
+        sixelIterm2Compat = TRUE;
+        return 1;
+    }
     if (!strcmp(argv[i], "-mouse-protocol")) {
         if (i + 1 >= argc ||
             (strcmp(argv[i + 1], "sgr") && strcmp(argv[i + 1], "dec"))) {
@@ -1793,6 +1923,7 @@ static void sixelFini(void)
     struct timeval timeout;
     char buf[4096];
 
+    sixelStopRenderModeControl();
     sixelStopScreenMonitor();
     sixelStopResizeMonitor();
     if (sixelHostCursorFd >= 0) {
@@ -1892,6 +2023,7 @@ static const KdOsFuncs sixelOsFuncs = {
 
 void ddxInit(void)
 {
+    sixelDetectIterm2();
     sixelCheckTmux();
     /* TMUX takes precedence; nested multiplexers are not supported. */
     sixelScreen = !sixelTmux && getenv("STY") && *getenv("STY");

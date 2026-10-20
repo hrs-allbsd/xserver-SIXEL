@@ -66,7 +66,7 @@ class Server:
             stdin=self.slave, stdout=self.slave, stderr=self.log, pass_fds=(wfd,),
             start_new_session=True, preexec_fn=limit_memory if memory_limit else None,
             env=env if env is not None else {k: v for k, v in os.environ.items()
-                                             if k not in ("TMUX", "TMUX_PANE", "STY")})
+                                             if k not in ("TMUX", "TMUX_PANE", "STY", "TERM_PROGRAM", "LC_TERMINAL")})
         os.close(wfd)
         self.display = None
         try:
@@ -355,6 +355,90 @@ class Autosize(unittest.TestCase):
         self.assertNotIn(b'\x1b[?80l', packet)
         self.assertLess(len(packet), 10000)
 
+    def test_iterm2_compat_preserves_pixels_before_damage(self):
+        server = self.server(pixels=(800, 600), args=('-iterm2',))
+        Autosize.check_iterm2_pixels(self, server)
+
+    def test_iterm2_startup_environment(self):
+        for identity in ({'TERM_PROGRAM': 'iTerm.app'},
+                         {'LC_TERMINAL': 'iTerm2'},
+                         {'TERM_PROGRAM': 'tmux', 'LC_TERMINAL': 'iTerm2'}):
+            with self.subTest(identity=identity):
+                env = {k: v for k, v in os.environ.items() if k not in
+                       ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL')}
+                env.update(identity)
+                server = self.server(pixels=(800, 600), env=env)
+                Autosize.check_iterm2_pixels(self, server)
+                server.close()
+
+    def test_other_terminal_identity_retains_cropped_output(self):
+        for identity in ({}, {'TERM_PROGRAM': 'Apple_Terminal'},
+                         {'TERM_PROGRAM': 'tmux', 'LC_TERMINAL': ''},
+                         {'TERM_PROGRAM': 'iTerm.app-extra', 'LC_TERMINAL': 'iTerm2-extra'}):
+            with self.subTest(identity=identity):
+                env = {k: v for k, v in os.environ.items() if k not in
+                       ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL')}
+                env.update(identity)
+                server = self.server(pixels=(800, 600), env=env)
+                server.wait_output(b'\x1bP')
+                time.sleep(.05)
+                start = len(server.output)
+                window = server.x11.XCreateSimpleWindow(server.display, server.root,
+                                                        101, 83, 13, 11, 0, 0, 0xff)
+                server.x11.XMapWindow(server.display, window)
+                server.x11.XSync(server.display, False)
+                prefix = b'q"1;1;114;96' + b'-' * 13 + b'!101?'
+                server.wait_output(prefix, start)
+                server.close()
+
+    def check_iterm2_pixels(self, server):
+        subprocess.run(['xsetroot', '-display', server.name, '-solid', 'red'], check=True)
+        time.sleep(.1)
+        start = len(server.output)
+        window = server.x11.XCreateSimpleWindow(server.display, server.root, 101, 83,
+                                                13, 11, 0, 0, 0x0000ff)
+        server.x11.XMapWindow(server.display, window)
+        server.x11.XSync(server.display, False)
+        server.wait_output(b'q"1;1;114;96', start)
+        time.sleep(.05)
+        data = bytes(server.output[start:])
+        if b'\x1bPtmux;' in data:
+            data = b''.join(re.findall(rb'\x1bPtmux;((?:\x1b\x1b|[^\x1b])*)\x1b\\', data, re.S))
+            data = data.replace(b'\x1b\x1b', b'\x1b')
+        elif b'\x1bP\x1b[H' in data:
+            data = b''.join(re.findall(rb'\x1bP(.*?)\x1b\\', data, re.S))
+        packets = re.findall(rb'\x1bP0;1q"1;1;114;96.*?\x1b\\', data, re.S)
+        self.assertTrue(packets)
+        # Decode the pixels, rather than checking just an origin/header change.
+        lib = C.CDLL(ctypes.util.find_library('sixel'))
+        lib.sixel_decode_raw.argtypes = [C.c_void_p, C.c_int, C.POINTER(C.c_void_p),
+            C.POINTER(C.c_int), C.POINTER(C.c_int), C.POINTER(C.c_void_p),
+            C.POINTER(C.c_int), C.c_void_p]
+        libc = C.CDLL(ctypes.util.find_library('c'))
+        libc.free.argtypes = [C.c_void_p]
+        pixels, palette = C.c_void_p(), C.c_void_p()
+        width, height, colors = C.c_int(), C.c_int(), C.c_int()
+        encoded = C.create_string_buffer(packets[-1])
+        status = lib.sixel_decode_raw(encoded, len(packets[-1]), C.byref(pixels),
+            C.byref(width), C.byref(height), C.byref(palette), C.byref(colors), None)
+        try:
+            self.assertEqual(status, 0)
+            self.assertEqual((width.value, height.value), (114, 96))
+            indexed = C.cast(pixels, C.POINTER(C.c_ubyte))
+            rgb = C.cast(palette, C.POINTER(C.c_ubyte))
+            def color(x, y):
+                index = indexed[y * width.value + x]
+                self.assertLess(index, colors.value)
+                return tuple(rgb[index * 3 + i] for i in range(3))
+            self.assertEqual(color(0, 0), (255, 0, 0))
+            self.assertEqual(color(100, 82), (255, 0, 0))
+            self.assertEqual(color(105, 88), (0, 0, 255))
+            self.assertEqual(color(110, 95), (255, 0, 0))
+        finally:
+            libc.free(pixels)
+            libc.free(palette)
+        self.assertNotIn(b'q"1;1;800;600', data)
+
     def test_initial_ioctl_pixels(self):
         server = self.server(pixels=(800, 600))
         self.assertEqual(server.dimensions(), (800, 600))
@@ -501,7 +585,8 @@ class TmuxPassthrough(unittest.TestCase):
         self.addCleanup(self.tmux, 'kill-server')
         socket_path = self.tmux('display-message', '-p', '#{socket_path}').strip()
         pane = self.tmux('display-message', '-p', '#{pane_id}').strip()
-        self.env = dict(os.environ, TMUX=socket_path + ',0,0', TMUX_PANE=pane)
+        self.env = dict({k: v for k, v in os.environ.items()
+                         if k not in ("TERM_PROGRAM", "LC_TERMINAL", "STY")}, TMUX=socket_path + ',0,0', TMUX_PANE=pane)
 
     def tmux(self, *args):
         return subprocess.check_output(['tmux', '-L', self.socket, '-f', '/dev/null',
@@ -523,6 +608,13 @@ class TmuxPassthrough(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(b'tmux set-option -g focus-events on', result.stderr)
         self.assertNotIn(b'\x1b', result.stdout)
+
+    def test_iterm2_identity_forwarded_through_tmux(self):
+        self.tmux('set-option', '-p', 'allow-passthrough', 'on')
+        env = dict(self.env, TERM_PROGRAM='tmux', LC_TERMINAL='iTerm2')
+        server = Server(pixels=(800, 600), env=env)
+        self.addCleanup(server.close)
+        Autosize.check_iterm2_pixels(self, server)
 
     def test_pixel_size_is_not_rounded_for_tmux(self):
         self.tmux('set-option', '-p', 'allow-passthrough', 'on')
@@ -570,7 +662,7 @@ class TmuxPassthrough(unittest.TestCase):
 
 class ScreenPassthrough(unittest.TestCase):
     def server(self, **kwargs):
-        env = {k: v for k, v in os.environ.items() if k not in ('TMUX', 'TMUX_PANE')}
+        env = {k: v for k, v in os.environ.items() if k not in ('TMUX', 'TMUX_PANE', 'TERM_PROGRAM', 'LC_TERMINAL')}
         env['STY'] = 'xsixel-screen-test'
         server = Server(env=env, **kwargs)
         self.addCleanup(server.close)
@@ -594,6 +686,17 @@ class ScreenPassthrough(unittest.TestCase):
         images = re.findall(rb'\x1bP0;1q(.*?)\x1b\\', decoded, re.S)
         self.assertTrue(images)
         self.assertTrue(all(image.startswith(b'"1;1;') for image in images))
+
+    def test_iterm2_identity_forwarded_through_screen(self):
+        env = {k: v for k, v in os.environ.items() if k not in
+               ('TMUX', 'TMUX_PANE', 'TERM_PROGRAM', 'LC_TERMINAL')}
+        env.update(STY='xsixel-screen-test', LC_TERMINAL='iTerm2')
+        server = Server(pixels=(800, 600), env=env)
+        self.addCleanup(server.close)
+        Autosize.check_iterm2_pixels(self, server)
+
+    def test_iterm2_compat_through_screen(self):
+        Autosize.test_iterm2_compat_preserves_pixels_before_damage(self)
 
     def test_keyboard(self):
         Autosize.test_terminal_keyboard_reaches_focused_client(self)
@@ -658,6 +761,86 @@ class ScreenPassthrough(unittest.TestCase):
             [b'\x1b[<0;100;40M', b'\x1b[<0;100;40m', b'\x1b[<65;100;40M'],
             [(4, 1, 1194, 790), (5, 1, 1194, 790),
              (4, 5, 1194, 790), (5, 5, 1194, 790)])
+
+
+@unittest.skipUnless(shutil.which('xprop'), 'xprop not installed')
+class RenderModeControl(unittest.TestCase):
+    property = '_XSIXEL_RENDER_MODE'
+
+    def server(self, **kwargs):
+        server = Server(pixels=(800, 600), **kwargs)
+        self.addCleanup(server.close)
+        return server
+
+    def xprop(self, server, *args, check=True):
+        return subprocess.run(['xprop', '-display', server.name, '-root', *args],
+                              capture_output=True, text=True, check=check, timeout=5)
+
+    def mode(self, server):
+        return self.xprop(server, self.property).stdout.strip()
+
+    def set_mode(self, server, mode):
+        return self.xprop(server, '-f', self.property, '8s', '-set', self.property, mode)
+
+    def test_round_trip_redraw_and_subsequent_damage(self):
+        server = self.server()
+        self.assertIn('"fast"', self.mode(server))
+        time.sleep(.1)
+        start = len(server.output)
+        self.set_mode(server, 'fast')
+        time.sleep(.05)
+        self.assertNotIn(b'q"1;1;800;600', bytes(server.output[start:]))
+        start = len(server.output)
+        self.set_mode(server, 'iterm2')
+        self.assertIn('"iterm2"', self.mode(server))
+        server.wait_output(b'\x1bP0;1q"1;1;800;600', start)
+        Autosize.check_iterm2_pixels(self, server)
+        start = len(server.output)
+        self.set_mode(server, 'fast')
+        self.assertIn('"fast"', self.mode(server))
+        server.wait_output(b'\x1bP0;1q"1;1;800;600', start)
+        time.sleep(.05)
+        start = len(server.output)
+        window = server.x11.XCreateSimpleWindow(server.display, server.root,
+                                                201, 143, 10, 10, 0, 0, 0xff)
+        server.x11.XMapWindow(server.display, window)
+        server.x11.XSync(server.display, False)
+        server.wait_output(b'q"1;1;211;156' + b'-' * 23 + b'!201?', start)
+
+    def test_initial_mode_matches_flag_and_environment(self):
+        explicit = self.server(args=('-iterm2',))
+        self.assertIn('"iterm2"', self.mode(explicit))
+        explicit.close()
+        env = {k: v for k, v in os.environ.items() if k not in
+               ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL')}
+        env['LC_TERMINAL'] = 'iTerm2'
+        detected = self.server(env=env)
+        self.assertIn('"iterm2"', self.mode(detected))
+        self.set_mode(detected, 'fast')
+        self.assertIn('"fast"', self.mode(detected))
+
+    def test_invalid_values_type_and_deletion_preserve_mode(self):
+        server = self.server()
+        for value in ('unknown', 'FAST', '', 'iterm2-extra'):
+            with self.subTest(value=value):
+                result = self.xprop(server, '-f', self.property, '8s', '-set',
+                                    self.property, value, check=False)
+                self.assertIn('BadValue', result.stderr)
+                self.assertIn('"fast"', self.mode(server))
+        result = self.xprop(server, '-f', self.property, '32c', '-set',
+                            self.property, '1', check=False)
+        self.assertIn('BadMatch', result.stderr)
+        result = self.xprop(server, '-remove', self.property, check=False)
+        self.assertIn('BadAccess', result.stderr)
+        self.assertIn('"fast"', self.mode(server))
+        # A property with the same name on an ordinary window is just client data.
+        window = server.x11.XCreateSimpleWindow(server.display, server.root,
+                                                0, 0, 10, 10, 0, 0, 0)
+        server.x11.XSync(server.display, False)
+        subprocess.run(['xprop', '-display', server.name, '-id', str(window),
+                        '-f', self.property, '8s', '-set', self.property, 'iterm2'],
+                       check=True, capture_output=True)
+        self.assertIn('"fast"', self.mode(server))
 
 
 if __name__ == '__main__':
