@@ -67,6 +67,7 @@
 static Bool sixelTmux;
 static Bool sixelScreen;
 static Bool sixelIterm2Compat;
+static Bool sixelIterm2Terminal; /* Startup identity, independent of render mode. */
 
 /* These identifiers may survive SSH/screen startup; TERM alone is not enough.
  * Check once, without terminal queries or subprocesses. Later screen -x viewers
@@ -79,7 +80,7 @@ sixelDetectIterm2(void)
 
     if ((program && !strcmp(program, "iTerm.app")) ||
         (terminal && !strcmp(terminal, "iTerm2")))
-        sixelIterm2Compat = TRUE;
+        sixelIterm2Compat = sixelIterm2Terminal = TRUE;
 }
 
 static void
@@ -360,7 +361,11 @@ sixelReadTerminalSize(SIXEL_Driver *driver)
     /* Windows ssh.exe can preserve a plausible but stale 640x480 pixel size.
      * Use ioctl immediately, then let terminal replies correct it. tmux's valid
      * pane dimensions stay authoritative; screen must pass queries outside. */
-    if (!sixelTmux || !driver->pixel_w || !driver->pixel_h)
+    /* iTerm2 reports window dimensions in points via 14t, whereas ioctl
+     * supplies the drawable grid in SIXEL pixels (including Retina scaling).
+     * Preserve valid ioctl dimensions even if the render mode changes later. */
+    if ((!sixelTmux && !sixelIterm2Terminal) ||
+        !driver->pixel_w || !driver->pixel_h)
         sixelTerminalControl("\033[14t\033[16t");
     fflush(stdout);
 }
@@ -1488,7 +1493,7 @@ void ddxUseMsg(void)
 int ddxProcessArgument(int argc, char **argv, int i)
 {
     if (!strcmp(argv[i], "-iterm2")) {
-        sixelIterm2Compat = TRUE;
+        sixelIterm2Compat = sixelIterm2Terminal = TRUE;
         return 1;
     }
     if (!strcmp(argv[i], "-mouse-protocol")) {

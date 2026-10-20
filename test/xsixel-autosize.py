@@ -465,6 +465,33 @@ class Autosize(unittest.TestCase):
         self.assertEqual(server.dimensions(), (800, 600))
         server.check_drawing_and_pointer(self, 800, 600)
 
+    def test_iterm2_ioctl_pixels_survive_startup_and_resize(self):
+        for identity in ({'TERM_PROGRAM': 'iTerm.app'}, {'LC_TERMINAL': 'iTerm2'}, {}):
+            for screen in (False, True):
+                with self.subTest(identity=identity, screen=screen):
+                    env = {k: v for k, v in os.environ.items() if k not in
+                           ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL')}
+                    env.update(identity)
+                    if screen:
+                        env['STY'] = 'xsixel-screen-test'
+                    server = self.server(pixels=(1120, 850), cells=(80, 25),
+                                         env=env, args=() if identity else ('-iterm2',))
+                    self.assertEqual(server.dimensions(), (1120, 850))
+                    self.assertNotIn(b'\x1b[14t', server.output)
+                    self.assertNotIn(b'\x1b[16t', server.output)
+                    start = len(server.output)
+                    server.resize_terminal((1400, 1020), cells=(100, 30))
+                    server.wait_size(1400, 1020)
+                    self.assertNotIn(b'\x1b[14t', server.output[start:])
+                    self.assertNotIn(b'\x1b[16t', server.output[start:])
+                    server.close()
+
+    def test_iterm2_without_ioctl_still_queries(self):
+        server = self.server(pixels=(0, 0), args=('-iterm2',))
+        server.wait_output(b'\x1b[14t\x1b[16t')
+        server.reply(b'\x1b[4;425;560t')
+        server.wait_size(560, 425)
+
     def test_terminal_reply_corrects_stale_ioctl_pixels(self):
         server = self.server(pixels=(640, 480), cells=(120, 30))
         self.assertEqual(server.dimensions(), (640, 480))
