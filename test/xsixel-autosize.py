@@ -66,7 +66,7 @@ class Server:
             stdin=self.slave, stdout=self.slave, stderr=self.log, pass_fds=(wfd,),
             start_new_session=True, preexec_fn=limit_memory if memory_limit else None,
             env=env if env is not None else {k: v for k, v in os.environ.items()
-                                             if k not in ("TMUX", "TMUX_PANE")})
+                                             if k not in ("TMUX", "TMUX_PANE", "STY")})
         os.close(wfd)
         self.display = None
         try:
@@ -548,6 +548,51 @@ class TmuxPassthrough(unittest.TestCase):
                 finally:
                     server.close()
                 self.assertIn(b'\x1bPtmux;\x1b\x1b[?80r\x1b\\', server.output)
+
+
+class ScreenPassthrough(unittest.TestCase):
+    def server(self, **kwargs):
+        env = {k: v for k, v in os.environ.items() if k not in ('TMUX', 'TMUX_PANE')}
+        env['STY'] = 'xsixel-screen-test'
+        server = Server(env=env, **kwargs)
+        self.addCleanup(server.close)
+        return server
+
+    def test_bounded_packets_preserve_images_and_terminal_restore(self):
+        server = self.server(pixels=(800, 600))
+        subprocess.run(['xsetroot', '-display', server.name, '-solid', 'red'], check=True)
+        server.wait_output(b'\x1bP\\\x1b\\')
+        server.close()
+        packets = re.findall(rb'\x1bP(.*?)\x1b\\', bytes(server.output), re.S)
+        self.assertGreater(len(packets), 10)
+        self.assertTrue(all(len(packet) <= 252 for packet in packets))
+        decoded = b''.join(packets)
+        self.assertIn(b'\x1b[?80s\x1b[?80h', decoded)
+        self.assertIn(b'\x1b[H\x1bP0;1q"1;1;800;600', decoded)
+        self.assertIn(b'\x1b\\', decoded)
+        self.assertIn(b'\x1b[?80r', decoded)
+        self.assertNotIn(b'tmux;', decoded)
+        # Each image must retain a complete header and terminator after unpacking.
+        images = re.findall(rb'\x1bP0;1q(.*?)\x1b\\', decoded, re.S)
+        self.assertTrue(images)
+        self.assertTrue(all(image.startswith(b'"1;1;') for image in images))
+
+    def test_keyboard(self):
+        Autosize.test_terminal_keyboard_reaches_focused_client(self)
+
+    def test_cell_mouse_and_resize(self):
+        server = self.server(pixels=(800, 600))
+        server.wait_output(b'\x1b[?1006h\x1b[?1003h')
+        self.assertNotIn(b'\x1b[?1016h', server.output)
+        Autosize.mouse_events(self, server,
+            [b'\x1b[<0;1;1M', b'\x1b[<32;80;30M', b'\x1b[<0;80;30m'],
+            [(4, 1, 5, 10), (5, 1, 795, 590)])
+        server.resize_terminal((1200, 800), cells=(100, 40))
+        server.wait_size(1200, 800)
+        Autosize.mouse_events(self, server,
+            [b'\x1b[<0;100;40M', b'\x1b[<0;100;40m', b'\x1b[<65;100;40M'],
+            [(4, 1, 1194, 790), (5, 1, 1194, 790),
+             (4, 5, 1194, 790), (5, 5, 1194, 790)])
 
 
 if __name__ == '__main__':

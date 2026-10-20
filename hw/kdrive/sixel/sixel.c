@@ -58,8 +58,9 @@
 #include <errno.h>
 #include <fcntl.h>
 
-/* Only the tmux path adds wrapping; direct terminal rendering is unchanged. */
+/* Multiplexer wrapping leaves direct terminal rendering unchanged. */
 static Bool sixelTmux;
+static Bool sixelScreen;
 
 static void
 sixelCheckTmux(void)
@@ -114,10 +115,37 @@ sixelCheckTmux(void)
     sixelTmux = TRUE;
 }
 
-/* Send terminal-specific controls through tmux, doubling every embedded ESC. */
+/* GNU screen has a 768-byte DCS buffer. Keep packets below 256 bytes,
+ * including delimiters, and split ESC-backslash across packets so it cannot
+ * terminate the enclosing passthrough string. No ESC doubling is used. */
+static void
+sixelScreenWrite(const char *data, size_t length)
+{
+    while (length) {
+        size_t n = min(length, 252), i;
+
+        for (i = 0; i + 1 < n; i++) {
+            if (data[i] == '\033' && data[i + 1] == '\\') {
+                n = i + 1;
+                break;
+            }
+        }
+        fputs("\033P", stdout);
+        fwrite(data, 1, n, stdout);
+        fputs("\033\\", stdout);
+        data += n;
+        length -= n;
+    }
+}
+
+/* Multiplexers need distinct envelopes for terminal-specific controls. */
 static void
 sixelTerminalControl(const char *s)
 {
+    if (sixelScreen) {
+        sixelScreenWrite(s, strlen(s));
+        return;
+    }
     if (!sixelTmux) {
         fputs(s, stdout);
         return;
@@ -571,10 +599,10 @@ static void tty_restore(void)
 /* Blank SIXEL columns/rows advance the raster without touching existing pixels
  * when DCS parameter Pb is 1. This permits exact pixel offsets with DECSDM set. */
 static void
-sixelHorizontalOffset(int x)
+sixelHorizontalOffset(FILE *out, int x)
 {
     if (x)
-        printf("!%d?", x);
+        fprintf(out, "!%d?", x);
 }
 
 static Bool
@@ -585,6 +613,9 @@ sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
     int x, y, width, height;
     size_t body, end, chunk, i;
     SIXELSTATUS status;
+    FILE *out = stdout;
+    char *screen_data = NULL;
+    size_t screen_length = 0;
 
     if (x1 >= x2 || y1 >= y2)
         return TRUE;
@@ -625,30 +656,44 @@ sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
                 driver->encoded[body] == ';'))
             body++;
     }
+    if (sixelScreen) {
+        out = open_memstream(&screen_data, &screen_length);
+        if (!out)
+            return FALSE;
+        fputs("\033[H", out);
+    }
     if (sixelTmux) {
         /* Home and DECSDM must reach the outer terminal together with the image.
          * The image body contains SIXEL ASCII only, so only the DCS delimiters
          * require ESC doubling. */
-        fputs("\033Ptmux;\033\033[H\033\033P", stdout);
-        printf("0;1q\"1;1;%d;%d", x2, y2);
+        fputs("\033Ptmux;\033\033[H\033\033P", out);
+        fprintf(out, "0;1q\"1;1;%d;%d", x2, y2);
     } else
-        printf("\033P0;1q\"1;1;%d;%d", x2, y2);
+        fprintf(out, "\033P0;1q\"1;1;%d;%d", x2, y2);
     for (y = 0; y < y1; y += 6)
-        putchar('-');
-    sixelHorizontalOffset(x1);
+        putc('-', out);
+    sixelHorizontalOffset(out, x1);
     chunk = body;
     for (i = body; i < end - 2; i++) {
         if (driver->encoded[i] == '$' || driver->encoded[i] == '-') {
-            fwrite(driver->encoded + chunk, 1, i + 1 - chunk, stdout);
-            sixelHorizontalOffset(x1);
+            fwrite(driver->encoded + chunk, 1, i + 1 - chunk, out);
+            sixelHorizontalOffset(out, x1);
             chunk = i + 1;
         }
     }
-    fwrite(driver->encoded + chunk, 1, end - 2 - chunk, stdout);
+    fwrite(driver->encoded + chunk, 1, end - 2 - chunk, out);
     if (sixelTmux)
-        fputs("\033\033\\\033\\", stdout);
+        fputs("\033\033\\\033\\", out);
     else
-        printf("\033\\");
+        fprintf(out, "\033\\");
+    if (sixelScreen) {
+        if (fclose(out) != 0) {
+            free(screen_data);
+            return FALSE;
+        }
+        sixelScreenWrite(screen_data, screen_length);
+        free(screen_data);
+    }
     return TRUE;
 }
 #endif
@@ -704,7 +749,7 @@ static int sixelRenderFrame(SIXEL_Driver *driver)
         GString *s = chafa_canvas_print(driver->chafa_canvas, driver->chafa_tinfo);
         if (s) {
             printf("\033[H");
-            if (sixelTmux)
+            if (sixelTmux || sixelScreen)
                 sixelTerminalControl(s->str);
             else
                 fwrite(s->str, 1, s->len, stdout);
@@ -1423,8 +1468,8 @@ sixelEnableMouse(void)
 {
     if (sixelDecMouse)
         printf("\033[1;1'z\033[1;3'{\033['w");
-    else if (sixelTmux)
-        /* tmux forwards SGR cell coordinates and does not implement 1016. */
+    else if (sixelTmux || sixelScreen)
+        /* Both multiplexers forward SGR cells rather than 1016 pixels. */
         printf("\033[?1006h\033[?1003h");
     else
         printf("\033[?1006h\033[?1016h\033[?1003h");
@@ -1464,12 +1509,12 @@ sixelMouseReport(sixel_key_t *key)
     flags = key->params[0];
     x = key->params[1] - 1;
     y = key->params[2] - 1;
-    if (sixelTmux && g_driver &&
+    if ((sixelTmux || sixelScreen) && g_driver &&
         g_driver->cell_w > 0 && g_driver->cell_h > 0) {
         int width = g_driver->pixel_w > 0 ? g_driver->pixel_w : g_driver->w;
         int height = g_driver->pixel_h > 0 ? g_driver->pixel_h : g_driver->h;
 
-        /* SGR 1006 from tmux is pane-relative, in cells. Place the pointer at
+        /* Multiplexer SGR 1006 coordinates are relative to the pane, in cells. Place the pointer at
          * the cell centre; use current terminal geometry after each resize.
          * Outside tmux, 1016 continues to provide exact pixel coordinates. */
         x = ((int64_t)x * width + width / 2) / g_driver->cell_w;
@@ -1770,6 +1815,8 @@ static const KdOsFuncs sixelOsFuncs = {
 void ddxInit(void)
 {
     sixelCheckTmux();
+    /* TMUX takes precedence; nested multiplexers are not supported. */
+    sixelScreen = !sixelTmux && getenv("STY") && *getenv("STY");
     /* Initialize terminal + sixel, then hook stdin for input */
     KdOsInit(&sixelOsFuncs);
     sixelInit();
