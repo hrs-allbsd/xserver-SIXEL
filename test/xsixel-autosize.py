@@ -465,7 +465,7 @@ class Autosize(unittest.TestCase):
         self.assertEqual(server.dimensions(), (800, 600))
         server.check_drawing_and_pointer(self, 800, 600)
 
-    def test_iterm2_ioctl_pixels_survive_startup_and_resize(self):
+    def test_iterm2_cell_pixels_correct_retina_startup_and_resize(self):
         for identity in ({'TERM_PROGRAM': 'iTerm.app'}, {'LC_TERMINAL': 'iTerm2'}, {}):
             for screen in (False, True):
                 with self.subTest(identity=identity, screen=screen):
@@ -478,19 +478,34 @@ class Autosize(unittest.TestCase):
                                          env=env, args=() if identity else ('-iterm2',))
                     self.assertEqual(server.dimensions(), (1120, 850))
                     self.assertNotIn(b'\x1b[14t', server.output)
-                    self.assertNotIn(b'\x1b[16t', server.output)
+                    server.wait_output(b'\x1b[16t')
+                    server.reply(b'\x1b[6;17;7t')
+                    server.wait_size(560, 425)
+                    if screen:
+                        Autosize.mouse_events(self, server,
+                            [b'\x1b[<0;80;25M', b'\x1b[<0;80;25m'],
+                            [(4, 1, 556, 416), (5, 1, 556, 416)])
+                    else:
+                        Autosize.mouse_events(self, server,
+                            [b'\x1b[<0;557;417M', b'\x1b[<0;557;417m'],
+                            [(4, 1, 556, 416), (5, 1, 556, 416)])
+                    # A late window-size reply must not replace the cell grid.
+                    server.reply(b'\x1b[4;462;587t')
+                    server.wait_size(560, 425)
                     start = len(server.output)
                     server.resize_terminal((1400, 1020), cells=(100, 30))
-                    server.wait_size(1400, 1020)
+                    server.wait_output(b'\x1b[16t', start)
+                    server.reply(b'\x1b[6;17;7t')
+                    server.wait_size(700, 510)
                     self.assertNotIn(b'\x1b[14t', server.output[start:])
-                    self.assertNotIn(b'\x1b[16t', server.output[start:])
                     server.close()
 
     def test_iterm2_without_ioctl_still_queries(self):
         server = self.server(pixels=(0, 0), args=('-iterm2',))
-        server.wait_output(b'\x1b[14t\x1b[16t')
-        server.reply(b'\x1b[4;425;560t')
-        server.wait_size(560, 425)
+        server.wait_output(b'\x1b[16t')
+        self.assertNotIn(b'\x1b[14t', server.output)
+        server.reply(b'\x1b[6;17;7t')
+        server.wait_size(560, 510)
 
     def test_terminal_reply_corrects_stale_ioctl_pixels(self):
         server = self.server(pixels=(640, 480), cells=(120, 30))
