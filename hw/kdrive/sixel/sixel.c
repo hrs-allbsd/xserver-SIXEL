@@ -361,11 +361,12 @@ sixelReadTerminalSize(SIXEL_Driver *driver)
     /* Windows ssh.exe can preserve a plausible but stale 640x480 pixel size.
      * Use ioctl immediately, then let terminal replies correct it. tmux's valid
      * pane dimensions stay authoritative; screen must pass queries outside. */
-    /* iTerm2 reports window dimensions in points via 14t, whereas ioctl
-     * supplies the drawable grid in SIXEL pixels (including Retina scaling).
-     * Preserve valid ioctl dimensions even if the render mode changes later. */
-    if ((!sixelTmux && !sixelIterm2Terminal) ||
-        !driver->pixel_w || !driver->pixel_h)
+    /* iTerm2's ioctl may use Retina backing pixels, while 14t includes window
+     * chrome. Cell dimensions describe the SIXEL/mouse coordinate grid. Keep
+     * tmux's pane geometry authoritative; query through screen as usual. */
+    if (sixelIterm2Terminal && !sixelTmux)
+        sixelTerminalControl("\033[16t");
+    else if (!sixelTmux || !driver->pixel_w || !driver->pixel_h)
         sixelTerminalControl("\033[14t\033[16t");
     fflush(stdout);
 }
@@ -1541,7 +1542,7 @@ static void
 sixelApplyTerminalSize(SIXEL_Driver *driver)
 {
     sixelNormalizeScreenPixels(driver);
-    if (!driver->pixel_size_reply &&
+    if ((!driver->pixel_size_reply || (sixelIterm2Terminal && !sixelTmux)) &&
         driver->cell_pixel_w > 0 && driver->cell_pixel_h > 0 &&
         driver->cell_w > 0 && driver->cell_h > 0 &&
         driver->cell_pixel_w <= SHRT_MAX / driver->cell_w &&
