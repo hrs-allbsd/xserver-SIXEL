@@ -253,6 +253,7 @@ class Autosize(unittest.TestCase):
     def test_sgr_mouse_click_drag_and_scroll(self):
         server = self.server(pixels=(800, 600))
         server.wait_output(b'\x1b[?1016h\x1b[?1003h')
+        self.assertNotIn(b'\x1b[5n', server.output)
         self.mouse_events(server,
             [b'\x1b[<35;121;81M', b'\x1b[<0;201;151M',
              b'\x1b[<32;221;171M', b'\x1b[<0;221;171m',
@@ -496,6 +497,7 @@ class TmuxPassthrough(unittest.TestCase):
         import uuid
         self.socket = 'xsixel-test-' + uuid.uuid4().hex
         self.tmux('new-session', '-d', '-s', 'test')
+        self.tmux('set-option', '-g', 'focus-events', 'on')
         self.addCleanup(self.tmux, 'kill-server')
         socket_path = self.tmux('display-message', '-p', '#{socket_path}').strip()
         pane = self.tmux('display-message', '-p', '#{pane_id}').strip()
@@ -511,6 +513,15 @@ class TmuxPassthrough(unittest.TestCase):
                                 env=self.env, capture_output=True, timeout=10)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(b'tmux set-option -p allow-passthrough on', result.stderr)
+        self.assertNotIn(b'\x1b', result.stdout)
+
+    def test_disabled_focus_explains_setting_before_terminal_changes(self):
+        self.tmux('set-option', '-p', 'allow-passthrough', 'on')
+        self.tmux('set-option', '-g', 'focus-events', 'off')
+        result = subprocess.run([os.environ['XSIXEL'], '-displayfd', '1'],
+                                env=self.env, capture_output=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b'tmux set-option -g focus-events on', result.stderr)
         self.assertNotIn(b'\x1b', result.stdout)
 
     def test_mouse_cells_cover_screen_and_follow_resize(self):
@@ -543,6 +554,7 @@ class TmuxPassthrough(unittest.TestCase):
                     while prefix not in server.output and time.monotonic() < deadline:
                         time.sleep(.02)
                     self.assertIn(prefix, server.output)
+                    self.assertNotIn(b'\x1b[5n', server.output)
                     self.assertIn(b'\x1b\x1b\\\x1b\\', server.output)
                     self.assertIn(b'\x1bPtmux;\x1b\x1b[?80s\x1b\x1b[?80h\x1b\\', server.output)
                 finally:
@@ -579,6 +591,39 @@ class ScreenPassthrough(unittest.TestCase):
 
     def test_keyboard(self):
         Autosize.test_terminal_keyboard_reaches_focused_client(self)
+
+    def test_status_probe_restores_frame_after_visibility_gap(self):
+        server = self.server(pixels=(800, 600))
+        probe = b'\x1bP\x1b[5n\x1b\\'
+        full = b'\x1bP\x1b[H\x1bP0;1q"1;1;800;600'
+        server.wait_output(probe)
+        initial = bytes(server.output).count(full)
+        server.reply(b'\x1b[0n')
+        deadline = time.monotonic() + 2
+        while bytes(server.output).count(full) <= initial and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.assertGreater(bytes(server.output).count(full), initial)
+        count = bytes(server.output).count(full)
+        # An active-window reply does not redraw every probe.
+        for _ in range(3):
+            server.reply(b'\x1b[0n')
+            time.sleep(.1)
+        self.assertEqual(bytes(server.output).count(full), count)
+        # A hidden window receives no replies; the first one on return redraws.
+        time.sleep(.85)
+        server.reply(b'\x1b[0n')
+        deadline = time.monotonic() + 2
+        while bytes(server.output).count(full) <= count and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.assertGreater(bytes(server.output).count(full), count)
+        count = bytes(server.output).count(full)
+        # Continuous replies still resync periodically, covering fast switches
+        # that happened entirely between probes without a visibility gap.
+        for _ in range(6):
+            time.sleep(.4)
+            server.reply(b'\x1b[0n')
+        time.sleep(.05)
+        self.assertGreater(bytes(server.output).count(full), count)
 
     def test_cell_mouse_and_resize(self):
         server = self.server(pixels=(800, 600))
