@@ -356,7 +356,6 @@ static sixel_renderer_t g_renderer = RENDERER_DEFAULT;
 #define SIXEL_LEFT              (1 << 12 | ('D' - '@'))
 #define SIXEL_END               (1 << 12 | ('F' - '@'))
 #define SIXEL_HOME              (1 << 12 | ('H' - '@'))
-#define SIXEL_STATUS            (1 << 12 | ('n' - '@'))
 #define SIXEL_FOCUSIN           (1 << 12 | ('I' - '@'))
 #define SIXEL_FOCUSOUT          (1 << 12 | ('O' - '@'))
 #define SIXEL_F1                (1 << 12 | ('P' - '@'))
@@ -826,12 +825,12 @@ SIXEL_Flip(SIXEL_Driver *driver)
     }
 }
 
-/* screen forwards a passthrough request only while this window is visible,
- * and routes the terminal's response to the active window. Probe the outer
- * terminal rather than spawning screen -Q clients (which may block). */
+/* screen has no focus notifications. Resend a frame periodically, without
+ * terminal queries: their replies can be interpreted as commands after Ctrl-a.
+ * screen forwards passthrough output only to displays showing this window. */
 static OsTimerPtr sixelScreenTimer;
-static CARD32 sixelScreenLastReply, sixelScreenLastRefresh;
-static Bool sixelScreenHadReply;
+
+enum { SIXEL_SCREEN_REFRESH_INTERVAL = 2000 };
 
 static void
 sixelStopScreenMonitor(void)
@@ -845,29 +844,12 @@ sixelStopScreenMonitor(void)
 static CARD32
 sixelScreenPoll(OsTimerPtr timer, CARD32 now, void *arg)
 {
-    sixelTerminalControl("\033[5n");
-    fflush(stdout);
-    return 250;
-}
-
-static void
-sixelScreenStatus(void)
-{
-    CARD32 now = GetTimeInMillis();
-
-    if (!sixelScreen || !sixelScreenTimer || !g_driver)
-        return;
-    /* A periodic resync also covers a round trip between probes and removal
-     * of screen's overlays. Only an active window receives these responses. */
-    if (!sixelScreenHadReply || now - sixelScreenLastReply > 750 ||
-        now - sixelScreenLastRefresh >= 2000) {
-        /* Reattachment may use a different outer terminal with default modes. */
+    if (g_driver) {
+        /* Reattachment may use a different terminal with default modes. */
         sixelTerminalControl("\033[?80h");
         SIXEL_Flip(g_driver);
-        sixelScreenLastRefresh = now;
     }
-    sixelScreenLastReply = now;
-    sixelScreenHadReply = TRUE;
+    return SIXEL_SCREEN_REFRESH_INTERVAL;
 }
 
 static void
@@ -875,8 +857,8 @@ sixelStartScreenMonitor(void)
 {
     if (!sixelScreen)
         return;
-    sixelScreenHadReply = FALSE;
-    sixelScreenTimer = TimerSet(NULL, 0, 250, sixelScreenPoll, NULL);
+    sixelScreenTimer = TimerSet(NULL, 0, SIXEL_SCREEN_REFRESH_INTERVAL,
+                                sixelScreenPoll, NULL);
     if (!sixelScreenTimer)
         ErrorF("Xsixel: could not start screen automatic redraw monitor\n");
 }
@@ -1701,10 +1683,6 @@ static void sixelPollInput(void)
                     SendModifierKey(key->params[1], 1);
                 }
                 KdEnqueueKeyboardEvent(sixelKeyboard, scancode, 1);
-                break;
-            case SIXEL_STATUS:
-                if (key->nparams == 1 && key->params[0] == 0)
-                    sixelScreenStatus();
                 break;
             case SIXEL_FOCUSIN:
                 SIXEL_Flip(g_driver);

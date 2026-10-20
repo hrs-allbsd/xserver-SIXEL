@@ -592,38 +592,17 @@ class ScreenPassthrough(unittest.TestCase):
     def test_keyboard(self):
         Autosize.test_terminal_keyboard_reaches_focused_client(self)
 
-    def test_status_probe_restores_frame_after_visibility_gap(self):
+    def test_periodic_redraw_needs_no_terminal_response(self):
         server = self.server(pixels=(800, 600))
-        probe = b'\x1bP\x1b[5n\x1b\\'
         full = b'\x1bP\x1b[H\x1bP0;1q"1;1;800;600'
-        server.wait_output(probe)
+        server.wait_output(full)
         initial = bytes(server.output).count(full)
-        server.reply(b'\x1b[0n')
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + 3
+        # Never send a response: auto redraw must not depend on terminal input.
         while bytes(server.output).count(full) <= initial and time.monotonic() < deadline:
             time.sleep(.02)
         self.assertGreater(bytes(server.output).count(full), initial)
-        count = bytes(server.output).count(full)
-        # An active-window reply does not redraw every probe.
-        for _ in range(3):
-            server.reply(b'\x1b[0n')
-            time.sleep(.1)
-        self.assertEqual(bytes(server.output).count(full), count)
-        # A hidden window receives no replies; the first one on return redraws.
-        time.sleep(.85)
-        server.reply(b'\x1b[0n')
-        deadline = time.monotonic() + 2
-        while bytes(server.output).count(full) <= count and time.monotonic() < deadline:
-            time.sleep(.02)
-        self.assertGreater(bytes(server.output).count(full), count)
-        count = bytes(server.output).count(full)
-        # Continuous replies still resync periodically, covering fast switches
-        # that happened entirely between probes without a visibility gap.
-        for _ in range(6):
-            time.sleep(.4)
-            server.reply(b'\x1b[0n')
-        time.sleep(.05)
-        self.assertGreater(bytes(server.output).count(full), count)
+        self.assertNotIn(b'\x1b[5n', server.output)
 
     def test_cell_mouse_and_resize(self):
         server = self.server(pixels=(800, 600))
