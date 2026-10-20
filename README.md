@@ -181,14 +181,15 @@ If that information is unavailable, force the mode explicitly:
 screen Xsixel :9 -iterm2 -exec ratpoison
 ```
 
-iTerm2 3.7.6 decodes transparent SIXEL gaps as opaque pixels. With `-iterm2`,
-Xsixel encodes actual framebuffer pixels from the top-left corner through the
-bottom-right edge of each damaged region. This prevents blank rectangles above
-and to the left of updates, without always sending the entire screen. It costs
-more encoding and output for updates far from the origin. The option is off by
-default when neither iTerm2 identifier is present; normal terminal and tmux
-rendering retain their cropped fast path.
-Chafa already uses full-frame output; this option affects libsixel only.
+iTerm2 3.7.6 decodes transparent SIXEL gaps as opaque pixels, and rounds image
+coverage to character cells. Partial images can therefore leave black padding
+at their right and bottom edges, even when their interior pixels are correct.
+In compatibility mode, Xsixel encodes the full framebuffer for every update,
+keeping image boundaries fixed at the screen edges. This also works when
+`screen -x` viewers have different cell sizes. It increases encoding and output
+cost, especially during pointer movement; normal terminal and tmux rendering
+retain their cropped fast path when compatibility mode is off. Chafa already
+uses full-frame output; this option affects libsixel only.
 
 When using `screen -x` from multiple terminals, start Xsixel with `-iterm2` if
 an iTerm2 viewer will attach later and the startup environment does not identify
@@ -243,16 +244,25 @@ The Debian and macOS helper scripts use the same Meson build. Set `BUILD_DIR`
 to change their build directory, or `CHAFA=true` to enable Chafa. They expect
 build dependencies to be installed beforehand and do not install packages.
 
-Without `-screen`, Xsixel uses the terminal's pixel dimensions. If the terminal
-only reports rows and columns, Xsixel also asks for its pixel dimensions and
-character-cell size. It starts at 640x480 if those dimensions are unavailable,
-then resizes through RandR when a valid reply arrives. Explicit dimensions such
-as `-screen 1024x768` remain fixed. Terminal replies do not block startup.
+Without `-screen`, Xsixel initially uses the terminal's ioctl pixel dimensions,
+or 640x480 when those dimensions are unavailable. It also asks the outer terminal
+for its text-area pixel size and character-cell size at startup and on SIGWINCH:
+a nonzero ioctl value may be stale (Windows `ssh.exe` can report 640x480 while
+Windows Terminal reports a 1200x600 SIXEL area). A valid text-area reply overrides
+the ioctl fallback; a cell-size reply can supply the dimensions when no text-area
+reply is available. screen uses passthrough for these queries. tmux keeps valid
+pane pixel dimensions and does not add queries in that case. Terminal replies
+resize the screen through RandR without blocking startup. Explicit dimensions
+such as `-screen 1024x768` remain fixed.
+
+Windows Terminal reports virtual SIXEL pixels, not necessarily physical display
+pixels; its replies determine the correct drawable area. These queries are not
+periodic, and the frame rendering path is unchanged.
 Terminal window changes are detected through SIGWINCH. Updates are applied after
 100 ms without another resize notification, so dragging the terminal window does
-not repeatedly reallocate the framebuffer. When pixel dimensions are unavailable,
-Xsixel queries the terminal again and keeps the current screen size until a valid
-reply arrives. Explicit `-screen` dimensions remain fixed during window changes.
+not repeatedly reallocate the framebuffer. If no usable dimensions are available,
+Xsixel keeps the current screen size until a valid reply arrives. Explicit
+`-screen` dimensions remain fixed during window changes.
 
 The PTY integration tests cover sizing, delayed and fragmented replies, RandR
 notifications, SIGWINCH resizing and coalescing, font-size changes, drawing,
