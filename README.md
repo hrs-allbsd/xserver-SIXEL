@@ -151,13 +151,13 @@ screen Xsixel :9 -exec twm
 
 Use one full-screen region without a hardstatus or caption line. Split-region
 clipping and nested multiplexers are not supported. Window
-switching and reattachment restore the image automatically: screen-only probes
-ask the outer terminal for device status every 250 ms, and a response after a
-visibility gap triggers a full redraw. A full resync at most every two seconds
-while replies arrive also covers very quick switches between probes. Hidden
-windows receive no responses and do not run this periodic full resync. No
-external commands are spawned for these probes. Use `xrefresh -display :9` if an
-additional redraw is needed.
+switching and reattachment restore the image automatically within about two
+seconds. In screen only, Xsixel periodically resends a full frame; screen
+forwards it to displays showing that window. Frames are also encoded while the
+window is hidden, since screen provides no focus notifications. This adds a
+periodic encoding cost in screen only. No terminal status queries are used:
+their responses can interfere with screen's command-prefix input. Use
+`xrefresh -display :9` if an immediate redraw is needed.
 
 Screen forwards SGR cell coordinates, which Xsixel converts using the current
 terminal dimensions; pointer precision is limited to character cells. Use the
