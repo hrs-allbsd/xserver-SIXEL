@@ -258,6 +258,7 @@ typedef struct
     int h;
     int pitch;
     int pixel_w, pixel_h;
+    int reported_pixel_w, reported_pixel_h;
     int cell_w, cell_h;
     int cell_pixel_w, cell_pixel_h;
     Bool auto_size;
@@ -297,6 +298,23 @@ sixelValidSize(int width, int height)
     return width > 0 && height > 0 && width <= SHRT_MAX && height <= SHRT_MAX;
 }
 
+/* screen preserves xterm's ioctl pixel size including its internal border,
+ * whereas SIXEL is clipped to the character grid. Use whole integer-sized
+ * cells, keeping the original report for replies arriving in either order.
+ * This adds neither terminal queries nor work to the frame rendering path. */
+static void
+sixelNormalizeScreenPixels(SIXEL_Driver *driver)
+{
+    if (!sixelScreen || !driver->pixel_size_reported)
+        return;
+    driver->pixel_w = driver->reported_pixel_w;
+    driver->pixel_h = driver->reported_pixel_h;
+    if (driver->cell_w > 0 && driver->pixel_w >= driver->cell_w)
+        driver->pixel_w -= driver->pixel_w % driver->cell_w;
+    if (driver->cell_h > 0 && driver->pixel_h >= driver->cell_h)
+        driver->pixel_h -= driver->pixel_h % driver->cell_h;
+}
+
 static void
 sixelReadTerminalSize(SIXEL_Driver *driver)
 {
@@ -307,12 +325,15 @@ sixelReadTerminalSize(SIXEL_Driver *driver)
             driver->pixel_size_reported = TRUE;
             driver->pixel_w = ws.ws_xpixel;
             driver->pixel_h = ws.ws_ypixel;
+            driver->reported_pixel_w = ws.ws_xpixel;
+            driver->reported_pixel_h = ws.ws_ypixel;
         }
         if (sixelValidSize(ws.ws_col, ws.ws_row)) {
             driver->cell_w = ws.ws_col;
             driver->cell_h = ws.ws_row;
         }
     }
+    sixelNormalizeScreenPixels(driver);
     if (!driver->cell_w || !driver->cell_h)
         printf("\033[18t");
     if (!driver->pixel_w || !driver->pixel_h)
@@ -1375,6 +1396,7 @@ int ddxProcessArgument(int argc, char **argv, int i)
 static void
 sixelApplyTerminalSize(SIXEL_Driver *driver)
 {
+    sixelNormalizeScreenPixels(driver);
     if (!driver->pixel_size_reported &&
         driver->cell_pixel_w > 0 && driver->cell_pixel_h > 0 &&
         driver->cell_w > 0 && driver->cell_h > 0 &&
@@ -1432,6 +1454,7 @@ sixelResizeTimeout(OsTimerPtr timer, CARD32 now, void *arg)
     /* Pixel and cell dimensions must belong to this terminal configuration.
      * In particular, do not reuse cell geometry after a font-size change. */
     driver->pixel_w = driver->pixel_h = 0;
+    driver->reported_pixel_w = driver->reported_pixel_h = 0;
     driver->cell_w = driver->cell_h = 0;
     driver->cell_pixel_w = driver->cell_pixel_h = 0;
     driver->pixel_size_reported = FALSE;
@@ -1625,6 +1648,8 @@ static void sixelPollInput(void)
                         g_driver->pixel_size_reported = TRUE;
                         g_driver->pixel_h = key->params[1];
                         g_driver->pixel_w = key->params[2];
+                        g_driver->reported_pixel_w = key->params[2];
+                        g_driver->reported_pixel_h = key->params[1];
                         size_changed = TRUE;
                         break;
                     case 6:
