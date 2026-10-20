@@ -359,6 +359,26 @@ class Autosize(unittest.TestCase):
         server = self.server(pixels=(800, 600), args=('-iterm2',))
         Autosize.check_iterm2_pixels(self, server)
 
+    def test_iterm2_pointer_motion_keeps_image_bounds_fixed(self):
+        server = self.server(pixels=(800, 600), args=('-iterm2',))
+        server.x11.XCreateFontCursor.restype = C.c_ulong
+        server.x11.XCreateFontCursor.argtypes = [C.c_void_p, C.c_uint]
+        server.x11.XDefineCursor.argtypes = [C.c_void_p, C.c_ulong, C.c_ulong]
+        cursor = server.x11.XCreateFontCursor(server.display, 68)
+        server.x11.XDefineCursor(server.display, server.root, cursor)
+        server.x11.XSync(server.display, False)
+        server.wait_output(b'q"1;1;800;600')
+        time.sleep(.1)
+        for x, y in ((121, 83), (701, 563), (211, 91)):
+            start = len(server.output)
+            server.x11.XWarpPointer(server.display, 0, server.root, 0, 0, 0, 0, x, y)
+            server.x11.XSync(server.display, False)
+            server.wait_output(b'q"1;1;800;600', start)
+            time.sleep(.03)
+            sizes = re.findall(rb'q"1;1;([0-9]+);([0-9]+)', bytes(server.output[start:]))
+            self.assertTrue(sizes)
+            self.assertTrue(all(size == (b'800', b'600') for size in sizes))
+
     def test_iterm2_startup_environment(self):
         for identity in ({'TERM_PROGRAM': 'iTerm.app'},
                          {'LC_TERMINAL': 'iTerm2'},
@@ -399,7 +419,7 @@ class Autosize(unittest.TestCase):
                                                 13, 11, 0, 0, 0x0000ff)
         server.x11.XMapWindow(server.display, window)
         server.x11.XSync(server.display, False)
-        server.wait_output(b'q"1;1;114;96', start)
+        server.wait_output(b'q"1;1;800;600', start)
         time.sleep(.05)
         data = bytes(server.output[start:])
         if b'\x1bPtmux;' in data:
@@ -407,7 +427,7 @@ class Autosize(unittest.TestCase):
             data = data.replace(b'\x1b\x1b', b'\x1b')
         elif b'\x1bP\x1b[H' in data:
             data = b''.join(re.findall(rb'\x1bP(.*?)\x1b\\', data, re.S))
-        packets = re.findall(rb'\x1bP0;1q"1;1;114;96.*?\x1b\\', data, re.S)
+        packets = re.findall(rb'\x1bP0;1q"1;1;800;600.*?\x1b\\', data, re.S)
         self.assertTrue(packets)
         # Decode the pixels, rather than checking just an origin/header change.
         lib = C.CDLL(ctypes.util.find_library('sixel'))
@@ -423,7 +443,7 @@ class Autosize(unittest.TestCase):
             C.byref(width), C.byref(height), C.byref(palette), C.byref(colors), None)
         try:
             self.assertEqual(status, 0)
-            self.assertEqual((width.value, height.value), (114, 96))
+            self.assertEqual((width.value, height.value), (800, 600))
             indexed = C.cast(pixels, C.POINTER(C.c_ubyte))
             rgb = C.cast(palette, C.POINTER(C.c_ubyte))
             def color(x, y):
@@ -434,15 +454,41 @@ class Autosize(unittest.TestCase):
             self.assertEqual(color(100, 82), (255, 0, 0))
             self.assertEqual(color(105, 88), (0, 0, 255))
             self.assertEqual(color(110, 95), (255, 0, 0))
+            self.assertEqual(color(799, 599), (255, 0, 0))
         finally:
             libc.free(pixels)
             libc.free(palette)
-        self.assertNotIn(b'q"1;1;800;600', data)
+        self.assertNotIn(b'q"1;1;114;96', data)
 
     def test_initial_ioctl_pixels(self):
         server = self.server(pixels=(800, 600))
         self.assertEqual(server.dimensions(), (800, 600))
         server.check_drawing_and_pointer(self, 800, 600)
+
+    def test_terminal_reply_corrects_stale_ioctl_pixels(self):
+        server = self.server(pixels=(640, 480), cells=(120, 30))
+        self.assertEqual(server.dimensions(), (640, 480))
+        server.wait_output(b'\x1b[14t\x1b[16t')
+        server.reply(b'\x1b[4;600;1200t\x1b[6;20;10t')
+        server.wait_size(1200, 600)
+        server.check_drawing_and_pointer(self, 1200, 600)
+        # A later cell report must not override a complete text-area report.
+        server.reply(b'\x1b[6;21;11t')
+        time.sleep(.05)
+        self.assertEqual(server.dimensions(), (1200, 600))
+        start = len(server.output)
+        server.resize_terminal((640, 480), cells=(100, 25))
+        server.wait_output(b'\x1b[14t\x1b[16t', start)
+        server.reply(b'\x1b[4;500;1000t\x1b[6;20;10t')
+        server.wait_size(1000, 500)
+
+    def test_cell_reply_can_correct_stale_ioctl_without_text_reply(self):
+        server = self.server(pixels=(640, 480), cells=(120, 30))
+        server.wait_output(b'\x1b[14t\x1b[16t')
+        server.reply(b'\x1b[6;20;10t')
+        server.wait_size(1200, 600)
+        server.reply(b'\x1b[4;610;1210t')
+        server.wait_size(1210, 610)
 
     def test_no_reply_falls_back_without_waiting(self):
         server = self.server()
@@ -621,6 +667,8 @@ class TmuxPassthrough(unittest.TestCase):
         server = Server(pixels=(604, 459), cells=(100, 35), env=self.env)
         self.addCleanup(server.close)
         self.assertEqual(server.dimensions(), (604, 459))
+        self.assertNotIn(b'\x1b[14t', server.output)
+        self.assertNotIn(b'\x1b[16t', server.output)
 
     def test_mouse_cells_cover_screen_and_follow_resize(self):
         self.tmux('set-option', '-g', 'allow-passthrough', 'on')
@@ -728,6 +776,18 @@ class ScreenPassthrough(unittest.TestCase):
         Autosize.mouse_events(self, server,
             [b'\x1b[<0;100;35M', b'\x1b[<0;100;35m'],
             [(4, 1, 597, 448), (5, 1, 597, 448)])
+
+    def test_size_queries_pass_through_screen_with_stale_ioctl(self):
+        server = self.server(pixels=(640, 480), cells=(120, 30))
+        query = b'\x1bP\x1b[14t\x1b[16t\x1b\\'
+        server.wait_output(query)
+        server.reply(b'\x1b[4;600;1200t\x1b[6;20;10t')
+        server.wait_size(1200, 600)
+        start = len(server.output)
+        server.resize_terminal((640, 480), cells=(100, 25))
+        server.wait_output(query, start)
+        server.reply(b'\x1b[6;20;10t')
+        server.wait_size(1000, 500)
 
     def test_padding_correction_keeps_explicit_screen(self):
         server = self.server(pixels=(604, 459), cells=(100, 35),

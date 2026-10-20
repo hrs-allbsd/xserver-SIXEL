@@ -283,6 +283,7 @@ typedef struct
     int cell_pixel_w, cell_pixel_h;
     Bool auto_size;
     Bool pixel_size_reported;
+    Bool pixel_size_reply; /* Explicit 14t reply, rather than ioctl fallback. */
     KdScreenInfo *screen;
     Rotation randr;
     Bool shadow;
@@ -356,8 +357,11 @@ sixelReadTerminalSize(SIXEL_Driver *driver)
     sixelNormalizeScreenPixels(driver);
     if (!driver->cell_w || !driver->cell_h)
         printf("\033[18t");
-    if (!driver->pixel_w || !driver->pixel_h)
-        printf("\033[14t\033[16t");
+    /* Windows ssh.exe can preserve a plausible but stale 640x480 pixel size.
+     * Use ioctl immediately, then let terminal replies correct it. tmux's valid
+     * pane dimensions stay authoritative; screen must pass queries outside. */
+    if (!sixelTmux || !driver->pixel_w || !driver->pixel_h)
+        sixelTerminalControl("\033[14t\033[16t");
     fflush(stdout);
 }
 
@@ -675,11 +679,16 @@ sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
 
     if (x1 >= x2 || y1 >= y2)
         return TRUE;
-    /* iTerm2 decodes transparent SIXEL gaps as opaque pixels. Include the
-     * framebuffer from the origin through the damage instead of emitting gaps.
-     * Keep the normal cropped fast path unless explicitly requested. */
-    if (sixelIterm2Compat)
+    /* iTerm2 treats gaps as opaque and replaces whole character cells at image
+     * edges. A partial image leaves black cell padding even without gaps.
+     * Keep its image bounds fixed at the screen edges; screen -x viewers may
+     * have different cell sizes, so rounding to one viewer's cells is unsafe.
+     * The normal mode retains its cropped fast path. */
+    if (sixelIterm2Compat) {
         x1 = y1 = 0;
+        x2 = driver->w;
+        y2 = driver->h;
+    }
     y1 = y1 / 6 * 6;
     y2 = min(driver->h, (y2 + 5) / 6 * 6);
     width = x2 - x1;
@@ -1527,7 +1536,7 @@ static void
 sixelApplyTerminalSize(SIXEL_Driver *driver)
 {
     sixelNormalizeScreenPixels(driver);
-    if (!driver->pixel_size_reported &&
+    if (!driver->pixel_size_reply &&
         driver->cell_pixel_w > 0 && driver->cell_pixel_h > 0 &&
         driver->cell_w > 0 && driver->cell_h > 0 &&
         driver->cell_pixel_w <= SHRT_MAX / driver->cell_w &&
@@ -1588,6 +1597,7 @@ sixelResizeTimeout(OsTimerPtr timer, CARD32 now, void *arg)
     driver->cell_w = driver->cell_h = 0;
     driver->cell_pixel_w = driver->cell_pixel_h = 0;
     driver->pixel_size_reported = FALSE;
+    driver->pixel_size_reply = FALSE;
     sixelReadTerminalSize(driver);
     if (sixelValidSize(driver->pixel_w, driver->pixel_h))
         sixelApplyTerminalSize(driver);
@@ -1776,6 +1786,7 @@ static void sixelPollInput(void)
                     switch (key->params[0]) {
                     case 4:
                         g_driver->pixel_size_reported = TRUE;
+                        g_driver->pixel_size_reply = TRUE;
                         g_driver->pixel_h = key->params[1];
                         g_driver->pixel_w = key->params[2];
                         g_driver->reported_pixel_w = key->params[2];
