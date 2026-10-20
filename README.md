@@ -132,6 +132,24 @@ a resize. Pointer movement is consequently quantized to cell centres in tmux;
 outside tmux, SGR pixel precision is retained. Outside tmux, the existing direct output
 and damage-based encoding are retained without extra buffering or subprocesses.
 
+Inside GNU screen, Xsixel detects `STY` and uses screen's DCS passthrough
+automatically. No SIXEL build option or passthrough setting is required in
+screen. SIXEL frames are split into packets below screen's string-size limit,
+including safe handling of the embedded image terminator. For example:
+
+```sh
+screen Xsixel :9 -exec twm
+```
+
+Use one full-screen region without a hardstatus or caption line. As with tmux,
+split-region clipping, nested multiplexers, and automatic restoration after
+window switching are not supported; use `xrefresh -display :9` to redraw.
+Screen forwards SGR cell coordinates, which Xsixel converts using the current
+terminal dimensions; pointer precision is limited to character cells. Use the
+default SGR mouse protocol in screen. The outer terminal still needs SIXEL and
+mouse-reporting support. The normal and tmux output paths retain their existing
+encoding and do not allocate screen's frame buffer or split output packets.
+
 Mouse input defaults to SGR pixel reporting (terminal modes 1003, 1006, and
 1016), so xterm does not need DEC locator support. Motion, dragging, the first
 three buttons, and vertical/horizontal wheel events are supported. For terminals
