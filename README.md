@@ -252,12 +252,14 @@ Windows Terminal reports a 1200x600 SIXEL area). A valid text-area reply overrid
 the ioctl fallback; a cell-size reply can supply the dimensions when no text-area
 reply is available. screen uses passthrough for these queries. tmux keeps valid
 pane pixel dimensions and does not add queries in that case. For iTerm2 (identified
-by the startup environment or `-iterm2`), Xsixel instead queries the character-cell
-size and multiplies it by the columns and rows. Its ioctl dimensions may use
-Retina backing pixels, while its window-size reply includes window chrome;
-neither necessarily matches the drawable coordinate grid. This policy also
-applies through screen and is independent of runtime rendering-mode changes.
-Terminal replies
+by the startup environment or `-iterm2`), Xsixel keeps valid ioctl dimensions
+for SIXEL images and queries the character-cell size separately for mouse input.
+On Retina displays, images use backing pixels while mouse reports use points;
+shrinking the framebuffer to the point dimensions leaves part of the terminal
+unpainted. Window-size replies may include window chrome and do not override
+valid iTerm2 ioctl dimensions. screen mouse reports already use cell coordinates
+and are converted using the framebuffer dimensions. Rendering-mode changes do
+not change this policy. Terminal replies
 resize the screen through RandR without blocking startup. Explicit dimensions
 such as `-screen 1024x768` remain fixed.
 

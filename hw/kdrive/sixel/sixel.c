@@ -362,7 +362,7 @@ sixelReadTerminalSize(SIXEL_Driver *driver)
      * Use ioctl immediately, then let terminal replies correct it. tmux's valid
      * pane dimensions stay authoritative; screen must pass queries outside. */
     /* iTerm2's ioctl may use Retina backing pixels, while 14t includes window
-     * chrome. Cell dimensions describe the SIXEL/mouse coordinate grid. Keep
+     * chrome. Cell dimensions describe mouse coordinates, not image pixels. Keep
      * tmux's pane geometry authoritative; query through screen as usual. */
     if (sixelIterm2Terminal && !sixelTmux)
         sixelTerminalControl("\033[16t");
@@ -1542,7 +1542,8 @@ static void
 sixelApplyTerminalSize(SIXEL_Driver *driver)
 {
     sixelNormalizeScreenPixels(driver);
-    if ((!driver->pixel_size_reply || (sixelIterm2Terminal && !sixelTmux)) &&
+    if (!driver->pixel_size_reply &&
+        !(sixelIterm2Terminal && driver->pixel_size_reported) &&
         driver->cell_pixel_w > 0 && driver->cell_pixel_h > 0 &&
         driver->cell_w > 0 && driver->cell_h > 0 &&
         driver->cell_pixel_w <= SHRT_MAX / driver->cell_w &&
@@ -1741,6 +1742,16 @@ sixelMouseReport(sixel_key_t *key)
         x = ((int64_t)x * width + width / 2) / g_driver->cell_w;
         y = ((int64_t)y * height + height / 2) / g_driver->cell_h;
     }
+    else if (sixelIterm2Terminal && g_driver &&
+             g_driver->cell_pixel_w > 0 && g_driver->cell_pixel_h > 0 &&
+             g_driver->cell_w > 0 && g_driver->cell_h > 0) {
+        /* iTerm2 reports SGR pixels in points, but displays SIXEL in Retina
+         * backing pixels. Convert input independently of framebuffer sizing. */
+        int64_t mouse_width = (int64_t)g_driver->cell_pixel_w * g_driver->cell_w;
+        int64_t mouse_height = (int64_t)g_driver->cell_pixel_h * g_driver->cell_h;
+        x = (int64_t)x * g_driver->pixel_w / mouse_width;
+        y = (int64_t)y * g_driver->pixel_h / mouse_height;
+    }
     button = flags & 3;
     if (flags & 64) {
         if (!release) {
@@ -1791,6 +1802,8 @@ static void sixelPollInput(void)
                     sixelValidSize(key->params[2], key->params[1])) {
                     switch (key->params[0]) {
                     case 4:
+                        if (sixelIterm2Terminal && g_driver->pixel_size_reported)
+                            break;
                         g_driver->pixel_size_reported = TRUE;
                         g_driver->pixel_size_reply = TRUE;
                         g_driver->pixel_h = key->params[1];
