@@ -411,7 +411,7 @@ class Autosize(unittest.TestCase):
                 server.wait_output(prefix, start)
                 server.close()
 
-    def check_iterm2_pixels(self, server):
+    def check_iterm2_pixels(self, server, scale=1):
         subprocess.run(['xsetroot', '-display', server.name, '-solid', 'red'], check=True)
         time.sleep(.1)
         start = len(server.output)
@@ -419,7 +419,7 @@ class Autosize(unittest.TestCase):
                                                 13, 11, 0, 0, 0x0000ff)
         server.x11.XMapWindow(server.display, window)
         server.x11.XSync(server.display, False)
-        server.wait_output(b'q"1;1;800;600', start)
+        server.wait_output(f'q"1;1;{800 * scale};{600 * scale}'.encode(), start)
         time.sleep(.05)
         data = bytes(server.output[start:])
         if b'\x1bPtmux;' in data:
@@ -427,7 +427,8 @@ class Autosize(unittest.TestCase):
             data = data.replace(b'\x1b\x1b', b'\x1b')
         elif b'\x1bP\x1b[H' in data:
             data = b''.join(re.findall(rb'\x1bP(.*?)\x1b\\', data, re.S))
-        packets = re.findall(rb'\x1bP0;1q"1;1;800;600.*?\x1b\\', data, re.S)
+        packets = re.findall(rb'\x1bP0;1q"1;1;' + str(800 * scale).encode() + b';' +
+                             str(600 * scale).encode() + rb'.*?\x1b\\', data, re.S)
         self.assertTrue(packets)
         # Decode the pixels, rather than checking just an origin/header change.
         lib = C.CDLL(ctypes.util.find_library('sixel'))
@@ -443,10 +444,12 @@ class Autosize(unittest.TestCase):
             C.byref(width), C.byref(height), C.byref(palette), C.byref(colors), None)
         try:
             self.assertEqual(status, 0)
-            self.assertEqual((width.value, height.value), (800, 600))
+            self.assertEqual((width.value, height.value), (800 * scale, 600 * scale))
             indexed = C.cast(pixels, C.POINTER(C.c_ubyte))
             rgb = C.cast(palette, C.POINTER(C.c_ubyte))
             def color(x, y):
+                x *= scale
+                y *= scale
                 index = indexed[y * width.value + x]
                 self.assertLess(index, colors.value)
                 return tuple(rgb[index * 3 + i] for i in range(3))
@@ -455,10 +458,57 @@ class Autosize(unittest.TestCase):
             self.assertEqual(color(105, 88), (0, 0, 255))
             self.assertEqual(color(110, 95), (255, 0, 0))
             self.assertEqual(color(799, 599), (255, 0, 0))
+            # Every output pixel in a replicated source pixel must match.
+            for dy in range(scale):
+                for dx in range(scale):
+                    index = indexed[(83 * scale + dy) * width.value + 101 * scale + dx]
+                    self.assertEqual(tuple(rgb[index * 3 + i] for i in range(3)), (0, 0, 255))
+
         finally:
             libc.free(pixels)
             libc.free(palette)
         self.assertNotIn(b'q"1;1;114;96', data)
+
+    def test_iterm2_double_size_images_and_logical_mouse(self):
+        for screen in (False, True):
+            with self.subTest(screen=screen):
+                env = {k: v for k, v in os.environ.items() if k not in
+                       ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL')}
+                if screen:
+                    env['STY'] = 'xsixel-screen-test'
+                server = self.server(pixels=(1600, 1200), cells=(80, 30),
+                                     args=('-iterm2-scale', '2'), env=env)
+                self.assertEqual(server.dimensions(), (800, 600))
+                server.wait_output(b'\x1b[16t')
+                server.reply(b'\x1b[6;20;10t')
+                self.check_iterm2_pixels(server, scale=2)
+                if screen:
+                    self.mouse_events(server,
+                        [b'\x1b[<0;70;25M', b'\x1b[<0;70;25m'],
+                        [(4, 1, 695, 490), (5, 1, 695, 490)])
+                else:
+                    self.mouse_events(server,
+                        [b'\x1b[<0;701;501M', b'\x1b[<0;701;501m'],
+                        [(4, 1, 700, 500), (5, 1, 700, 500)])
+                if shutil.which('xprop'):
+                    subprocess.run(['xprop', '-display', server.name, '-root',
+                        '-f', '_XSIXEL_RENDER_MODE', '8s', '-set',
+                        '_XSIXEL_RENDER_MODE', 'fast'], check=True, stdout=subprocess.DEVNULL)
+                    self.check_iterm2_pixels(server, scale=2)
+                start = len(server.output)
+                server.resize_terminal((2000, 1400), cells=(100, 35))
+                server.wait_size(1000, 700)
+                server.wait_output(b'q"1;1;2000;1400', start)
+                server.close()
+
+    def test_iterm2_enlargement_without_ioctl_uses_cell_dimensions(self):
+        server = self.server(pixels=(0, 0), cells=(80, 25),
+                             args=('-iterm2-scale', '2'))
+        server.wait_output(b'\x1b[16t')
+        start = len(server.output)
+        server.reply(b'\x1b[6;17;7t')
+        server.wait_size(560, 425)
+        server.wait_output(b'q"1;1;1120;850', start)
 
     def test_initial_ioctl_pixels(self):
         server = self.server(pixels=(800, 600))
@@ -696,6 +746,14 @@ class TmuxPassthrough(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(b'tmux set-option -g focus-events on', result.stderr)
         self.assertNotIn(b'\x1b', result.stdout)
+
+    def test_iterm2_scale_does_not_change_tmux_geometry(self):
+        self.tmux('set-option', '-p', 'allow-passthrough', 'on')
+        server = Server(pixels=(800, 600), env=self.env,
+                        args=('-iterm2-scale', '2'))
+        self.addCleanup(server.close)
+        self.assertEqual(server.dimensions(), (800, 600))
+        Autosize.check_iterm2_pixels(self, server)
 
     def test_iterm2_identity_forwarded_through_tmux(self):
         self.tmux('set-option', '-p', 'allow-passthrough', 'on')

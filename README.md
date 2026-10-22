@@ -191,6 +191,33 @@ cost, especially during pointer movement; normal terminal and tmux rendering
 retain their cropped fast path when compatibility mode is off. Chafa already
 uses full-frame output; this option affects libsixel only.
 
+On Retina displays, enlarge the X desktop's pixels before SIXEL encoding to
+keep bitmap fonts, window decorations, and cursors at a comfortable size:
+
+```sh
+Xsixel :9 -iterm2-scale 2 -exec ratpoison
+# Or inside GNU screen:
+screen Xsixel :9 -iterm2-scale 2 -exec ratpoison
+```
+
+This option also enables iTerm2 compatibility. For a terminal reporting
+1120x850 image pixels, the X desktop is 560x425 and the output image is 1120x850.
+Each source pixel becomes an exact 2x2 block (nearest-neighbor enlargement).
+The RGB buffer is reused across frames; only resizing allocates new buffers.
+Mouse coordinates and terminal resizes use the logical desktop dimensions.
+Explicit `-screen` dimensions specify the logical X desktop, and its output
+image is enlarged by the selected factor.
+
+The default is `-iterm2-scale 1`, preserving existing behavior. Enlargement is
+currently an explicit startup choice, separate from the `fast`/`iterm2` drawing
+mode; automatic Retina-scale detection is not implemented. At scale 2, both
+drawing modes send a full enlarged image to avoid iTerm2's partial-image edges.
+The option requires libsixel. tmux always uses scale 1, preserving its existing
+geometry and output path. Normal terminals without this option retain their
+existing framebuffer, RGB conversion, and cropped rendering path. In a shared
+screen session the selected scale applies to every viewer, including non-Retina
+viewers.
+
 When using `screen -x` from multiple terminals, start Xsixel with `-iterm2` if
 an iTerm2 viewer will attach later and the startup environment does not identify
 it. Later attachments cannot be detected from the startup environment. The mode
