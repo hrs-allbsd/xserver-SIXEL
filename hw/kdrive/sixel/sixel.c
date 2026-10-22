@@ -67,6 +67,7 @@
 static Bool sixelTmux;
 static Bool sixelScreen;
 static Bool sixelIterm2Compat;
+static int sixelIterm2Scale = 1;
 static Bool sixelIterm2Terminal; /* Startup identity, independent of render mode. */
 
 /* These identifiers may survive SSH/screen startup; TERM alone is not enough.
@@ -278,6 +279,7 @@ typedef struct
     int w;
     int h;
     int pitch;
+    int output_scale;
     int pixel_w, pixel_h;
     int reported_pixel_w, reported_pixel_h;
     int cell_w, cell_h;
@@ -378,9 +380,11 @@ sixelAllocateBuffers(SIXEL_Driver *driver, int width, int height)
 
     if (!sixelValidSize(width, height))
         return FALSE;
+    if (!sixelValidSize(width * driver->output_scale, height * driver->output_scale))
+        return FALSE;
     pixels = (size_t) width * height;
     driver->buffer = calloc(pixels, 4);
-    driver->bitmap = calloc(pixels, 3);
+    driver->bitmap = calloc(pixels, 3 * driver->output_scale * driver->output_scale);
     if (!driver->buffer || !driver->bitmap) {
         free(driver->buffer);
         free(driver->bitmap);
@@ -690,7 +694,7 @@ sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
      * Keep its image bounds fixed at the screen edges; screen -x viewers may
      * have different cell sizes, so rounding to one viewer's cells is unsafe.
      * The normal mode retains its cropped fast path. */
-    if (sixelIterm2Compat) {
+    if (sixelIterm2Compat || driver->output_scale > 1) {
         x1 = y1 = 0;
         x2 = driver->w;
         y2 = driver->h;
@@ -707,6 +711,27 @@ sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
             dst[1] = src[1];
             dst[2] = src[0];
         }
+    }
+    if (driver->output_scale == 2) {
+        /* Expand backwards in the reusable RGB buffer, preserving source pixels
+         * until read. Integer replication keeps bitmap fonts and cursors crisp. */
+        for (y = height - 1; y >= 0; y--) {
+            unsigned char *src = driver->bitmap + (size_t)y * width * 3;
+            unsigned char *dst = driver->bitmap + (size_t)(y * 2) * width * 6;
+            for (x = width - 1; x >= 0; x--) {
+                unsigned char rgb[3];
+                memcpy(rgb, src + x * 3, 3);
+                memcpy(dst + x * 6, rgb, 3);
+                memcpy(dst + x * 6 + 3, rgb, 3);
+            }
+            memcpy(dst + width * 6, dst, width * 6);
+        }
+        width *= 2;
+        height *= 2;
+        x1 *= 2;
+        y1 *= 2;
+        x2 *= 2;
+        y2 *= 2;
     }
     driver->encoded_size = 0;
     driver->encode_failed = FALSE;
@@ -1101,11 +1126,12 @@ static Bool sixelScreenInit(KdScreenInfo *screen)
     if (!driver)
         return FALSE;
     driver->screen = screen;
+    driver->output_scale = sixelIterm2Terminal && !sixelTmux ? sixelIterm2Scale : 1;
     driver->auto_size = !screen->width && !screen->height;
     sixelReadTerminalSize(driver);
     if (driver->auto_size && sixelValidSize(driver->pixel_w, driver->pixel_h)) {
-        screen->width = driver->pixel_w;
-        screen->height = driver->pixel_h;
+        screen->width = max(1, driver->pixel_w / driver->output_scale);
+        screen->height = max(1, driver->pixel_h / driver->output_scale);
     }
     if (!screen->width || !screen->height) {
         screen->width = 640;
@@ -1134,6 +1160,8 @@ static Bool sixelScreenInit(KdScreenInfo *screen)
     if (g_renderer == RENDERER_DEFAULT)
         g_renderer = RENDERER_CHAFA;
 #endif
+    if (driver->output_scale > 1 && g_renderer != RENDERER_LIBSIXEL)
+        FatalError("Xsixel: -iterm2-scale 2 requires the libsixel backend\n");
 
 #ifdef HAVE_CHAFA
     if (g_renderer == RENDERER_CHAFA) {
@@ -1488,11 +1516,21 @@ void ddxUseMsg(void)
     ErrorF("-exec command    Execute command after server started\n");
     ErrorF("-mouse-protocol {sgr|dec}  Select terminal mouse reporting (default: sgr pixels)\n");
     ErrorF("-iterm2                  Force iTerm2 compatibility (also detected from startup environment)\n");
+    ErrorF("-iterm2-scale {1|2}       iTerm2 image enlargement (default: 1; libsixel only)\n");
     ErrorF("-backend {chafa|libsixel}  Choose renderer backend (default: libsixel if built)\n");
 }
 
 int ddxProcessArgument(int argc, char **argv, int i)
 {
+    if (!strcmp(argv[i], "-iterm2-scale")) {
+        if (i + 1 >= argc || (strcmp(argv[i + 1], "1") && strcmp(argv[i + 1], "2"))) {
+            UseMsg();
+            return 0;
+        }
+        sixelIterm2Scale = argv[i + 1][0] - '0';
+        sixelIterm2Compat = sixelIterm2Terminal = TRUE;
+        return 2;
+    }
     if (!strcmp(argv[i], "-iterm2")) {
         sixelIterm2Compat = sixelIterm2Terminal = TRUE;
         return 1;
@@ -1546,18 +1584,19 @@ sixelApplyTerminalSize(SIXEL_Driver *driver)
         !(sixelIterm2Terminal && driver->pixel_size_reported) &&
         driver->cell_pixel_w > 0 && driver->cell_pixel_h > 0 &&
         driver->cell_w > 0 && driver->cell_h > 0 &&
-        driver->cell_pixel_w <= SHRT_MAX / driver->cell_w &&
-        driver->cell_pixel_h <= SHRT_MAX / driver->cell_h) {
-        driver->pixel_w = driver->cell_pixel_w * driver->cell_w;
-        driver->pixel_h = driver->cell_pixel_h * driver->cell_h;
+        driver->cell_pixel_w <= SHRT_MAX / driver->cell_w / driver->output_scale &&
+        driver->cell_pixel_h <= SHRT_MAX / driver->cell_h / driver->output_scale) {
+        driver->pixel_w = driver->cell_pixel_w * driver->cell_w * driver->output_scale;
+        driver->pixel_h = driver->cell_pixel_h * driver->cell_h * driver->output_scale;
     }
 #ifdef RANDR
     if (driver->auto_size && driver->screen->pScreen &&
         sixelValidSize(driver->pixel_w, driver->pixel_h) &&
-        (driver->w != driver->pixel_w || driver->h != driver->pixel_h)) {
+        (driver->w != max(1, driver->pixel_w / driver->output_scale) ||
+         driver->h != max(1, driver->pixel_h / driver->output_scale))) {
         RRScreenSize size = {0};
-        size.width = driver->pixel_w;
-        size.height = driver->pixel_h;
+        size.width = max(1, driver->pixel_w / driver->output_scale);
+        size.height = max(1, driver->pixel_h / driver->output_scale);
         if (!sixelRandRSetConfig(driver->screen->pScreen, RR_Rotate_0, 0, &size))
             ErrorF("Xsixel: could not resize to terminal dimensions %dx%d\n",
                    size.width, size.height);
@@ -1733,8 +1772,8 @@ sixelMouseReport(sixel_key_t *key)
     y = key->params[2] - 1;
     if ((sixelTmux || sixelScreen) && g_driver &&
         g_driver->cell_w > 0 && g_driver->cell_h > 0) {
-        int width = g_driver->pixel_w > 0 ? g_driver->pixel_w : g_driver->w;
-        int height = g_driver->pixel_h > 0 ? g_driver->pixel_h : g_driver->h;
+        int width = g_driver->pixel_w > 0 ? g_driver->pixel_w / g_driver->output_scale : g_driver->w;
+        int height = g_driver->pixel_h > 0 ? g_driver->pixel_h / g_driver->output_scale : g_driver->h;
 
         /* Multiplexer SGR 1006 coordinates are relative to the pane, in cells. Place the pointer at
          * the cell centre; use current terminal geometry after each resize.
@@ -1749,8 +1788,8 @@ sixelMouseReport(sixel_key_t *key)
          * backing pixels. Convert input independently of framebuffer sizing. */
         int64_t mouse_width = (int64_t)g_driver->cell_pixel_w * g_driver->cell_w;
         int64_t mouse_height = (int64_t)g_driver->cell_pixel_h * g_driver->cell_h;
-        x = (int64_t)x * g_driver->pixel_w / mouse_width;
-        y = (int64_t)y * g_driver->pixel_h / mouse_height;
+        x = (int64_t)x * (g_driver->pixel_w / g_driver->output_scale) / mouse_width;
+        y = (int64_t)y * (g_driver->pixel_h / g_driver->output_scale) / mouse_height;
     }
     button = flags & 3;
     if (flags & 64) {
