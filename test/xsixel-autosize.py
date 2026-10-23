@@ -270,9 +270,59 @@ class Autosize(unittest.TestCase):
             [(4, 1, 200, 150), (4, 3, 200, 150),
              (5, 1, 200, 150), (5, 3, 200, 150)])
 
+    def test_unsupported_pixel_mouse_uses_cells_and_follows_resize(self):
+        server = self.server(pixels=(640, 480), cells=(120, 30))
+        server.wait_output(b'\x1b[?1016$p')
+        # Match Windows ssh.exe's stale ioctl, then the actual SIXEL area.
+        server.reply(b'\x1b[4;600;1200t\x1b[6;20;10t')
+        server.wait_size(1200, 600)
+        start = len(server.output)
+        for fragment in (b'\x1b[?10', b'16;0$', b'y'):
+            server.reply(fragment)
+            time.sleep(.02)
+        server.wait_output(b'\x1b[?1016l\x1b[?1006h\x1b[?1003h', start)
+        self.mouse_events(server,
+            [b'\x1b[<0;120;30M', b'\x1b[<32;60;15M',
+             b'\x1b[<0;60;15m', b'\x1b[<64;120;30M'],
+            [(4, 1, 1195, 590), (5, 1, 595, 290),
+             (4, 4, 1195, 590), (5, 4, 1195, 590)])
+        server.resize_terminal((1000, 500), cells=(100, 25))
+        server.wait_size(1000, 500)
+        self.mouse_events(server,
+            [b'\x1b[<0;100;25M', b'\x1b[<0;100;25m'],
+            [(4, 1, 995, 490), (5, 1, 995, 490)])
+        self.assertEqual(bytes(server.output).count(b'\x1b[?1016$p'), 1)
+
+    def test_supported_pixel_mouse_preserves_pixel_precision(self):
+        for status in (1, 2, 3):
+            with self.subTest(status=status):
+                server = self.server(pixels=(1200, 600), cells=(120, 30))
+                server.wait_output(b'\x1b[?1016$p')
+                start = len(server.output)
+                server.reply(f'\x1b[?1016;{status}$y'.encode())
+                self.mouse_events(server,
+                    [b'\x1b[<0;120;30M', b'\x1b[<0;120;30m'],
+                    [(4, 1, 119, 29), (5, 1, 119, 29)])
+                self.assertNotIn(b'\x1b[?1016l', server.output[start:])
+                server.close()
+
+    def test_pixel_mouse_reply_validation_and_permanently_disabled_mode(self):
+        server = self.server(pixels=(1200, 600), cells=(120, 30))
+        server.wait_output(b'\x1b[?1016$p')
+        server.reply(b'\x1b[?1006;0$y\x1b[?1016;5$y\x1b[?1016;0;0$y')
+        self.mouse_events(server,
+            [b'\x1b[<0;120;30M', b'\x1b[<0;120;30m'],
+            [(4, 1, 119, 29), (5, 1, 119, 29)])
+        server.reply(b'\x1b[?1016;4$y')
+        server.wait_output(b'\x1b[?1016l\x1b[?1006h')
+        self.mouse_events(server,
+            [b'\x1b[<0;120;30M', b'\x1b[<0;120;30m'],
+            [(4, 1, 1195, 590), (5, 1, 1195, 590)])
+
     def test_dec_mouse_compatibility(self):
         server = self.server(pixels=(800, 600), args=('-mouse-protocol', 'dec'))
         server.wait_output(b"\x1b[1;1'z")
+        self.assertNotIn(b'\x1b[?1016$p', server.output)
         self.mouse_events(server,
             [b'\x1b[10;0;81;121;0&w', b'\x1b[2;4;151;201;0&w',
              b'\x1b[6;5;151;201;0&w', b'\x1b[3;1;151;201;0&w',
@@ -769,6 +819,7 @@ class TmuxPassthrough(unittest.TestCase):
         self.assertEqual(server.dimensions(), (604, 459))
         self.assertNotIn(b'\x1b[14t', server.output)
         self.assertNotIn(b'\x1b[16t', server.output)
+        self.assertNotIn(b'\x1b[?1016$p', server.output)
 
     def test_mouse_cells_cover_screen_and_follow_resize(self):
         self.tmux('set-option', '-g', 'allow-passthrough', 'on')
@@ -910,6 +961,7 @@ class ScreenPassthrough(unittest.TestCase):
 
     def test_cell_mouse_and_resize(self):
         server = self.server(pixels=(800, 600))
+        self.assertNotIn(b'\x1b[?1016$p', server.output)
         server.wait_output(b'\x1b[?1006h\x1b[?1003h')
         self.assertNotIn(b'\x1b[?1016h', server.output)
         Autosize.mouse_events(self, server,

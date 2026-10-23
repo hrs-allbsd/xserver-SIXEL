@@ -253,6 +253,16 @@ three buttons, and vertical/horizontal wheel events are supported. For terminals
 using DEC locator reports, start Xsixel with `-mouse-protocol dec`. Mouse reporting
 modes are disabled when Xsixel exits.
 
+Outside tmux and GNU screen, SGR mode queries pixel-reporting mode 1016 once
+at startup using DECRQM (`CSI ? 1016 $ p`). If the terminal reports it as
+unsupported or permanently disabled, Xsixel selects SGR cell reporting instead
+and maps each cell to its centre in the drawable area. This supports Windows
+Terminal versions without mode 1016; pointer precision is then limited to cells.
+The mapping follows terminal resizes. Supported modes, or terminals that do not
+answer the query, retain the existing pixel reporting behavior without a startup
+wait. tmux and GNU screen already use cell reporting and do not receive this
+query. No repeated queries or rendering-path changes are needed.
+
 If xterm suppresses mouse reports, clear its `disallowedMouseOps` list when
 starting the outer terminal:
 

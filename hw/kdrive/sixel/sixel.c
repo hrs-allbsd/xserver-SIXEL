@@ -66,6 +66,8 @@
 /* Multiplexer wrapping leaves direct terminal rendering unchanged. */
 static Bool sixelTmux;
 static Bool sixelScreen;
+static Bool sixelMouseCells;
+static Bool sixelMouseModeQueryPending;
 static Bool sixelIterm2Compat;
 static int sixelIterm2Scale = 1;
 static Bool sixelIterm2Terminal; /* Startup identity, independent of render mode. */
@@ -421,6 +423,7 @@ static sixel_renderer_t g_renderer = RENDERER_DEFAULT;
 #define SIXEL_MOUSE_SGR         (1 << 12 | ('<' - ';') << 4 << 6 | ('M' - '@'))
 #define SIXEL_MOUSE_SGR_RELEASE (1 << 12 | ('<' - ';') << 4 << 6 | ('m' - '@'))
 #define SIXEL_MOUSE_DEC         (1 << 12 | ('&' - 0x1f) << 6 | ('w' - '@'))
+#define SIXEL_DECRPM            (1 << 12 | ((('?' - ';') << 4) | ('$' - 0x1f)) << 6 | ('y' - '@'))
 #define SIXEL_DTTERM_SEQS       (1 << 12 | ('t' - '@'))
 #define SIXEL_UNKNOWN           (513)
 
@@ -1729,8 +1732,8 @@ sixelEnableMouse(void)
 {
     if (sixelDecMouse)
         printf("\033[1;1'z\033[1;3'{\033['w");
-    else if (sixelTmux || sixelScreen)
-        /* Both multiplexers forward SGR cells rather than 1016 pixels. */
+    else if (sixelTmux || sixelScreen || sixelMouseCells)
+        /* Multiplexers and terminals without 1016 report character cells. */
         printf("\033[?1006h\033[?1003h");
     else
         printf("\033[?1006h\033[?1016h\033[?1003h");
@@ -1770,14 +1773,14 @@ sixelMouseReport(sixel_key_t *key)
     flags = key->params[0];
     x = key->params[1] - 1;
     y = key->params[2] - 1;
-    if ((sixelTmux || sixelScreen) && g_driver &&
+    if ((sixelTmux || sixelScreen || sixelMouseCells) && g_driver &&
         g_driver->cell_w > 0 && g_driver->cell_h > 0) {
         int width = g_driver->pixel_w > 0 ? g_driver->pixel_w / g_driver->output_scale : g_driver->w;
         int height = g_driver->pixel_h > 0 ? g_driver->pixel_h / g_driver->output_scale : g_driver->h;
 
-        /* Multiplexer SGR 1006 coordinates are relative to the pane, in cells. Place the pointer at
-         * the cell centre; use current terminal geometry after each resize.
-         * Outside tmux, 1016 continues to provide exact pixel coordinates. */
+        /* SGR 1006 coordinates use cells without 1016 support. Place the
+         * pointer at the cell centre using current geometry after each resize.
+         * Terminals supporting 1016 retain their pixel coordinates. */
         x = ((int64_t)x * width + width / 2) / g_driver->cell_w;
         y = ((int64_t)y * height + height / 2) / g_driver->cell_h;
     }
@@ -1836,6 +1839,22 @@ static void sixelPollInput(void)
         for (i = 0; i < nkeys; ++i) {
             key = keys + i;
             switch (key->value) {
+            case SIXEL_DECRPM:
+                /* Only consume the answer to our one-time startup query.
+                 * No answer preserves the existing pixel mode for terminals
+                 * implementing 1016 without DECRQM support. */
+                if (sixelMouseModeQueryPending && key->nparams == 2 &&
+                    key->params[0] == 1016 && key->params[1] >= 0 &&
+                    key->params[1] <= 4) {
+                    sixelMouseModeQueryPending = FALSE;
+                    if (key->params[1] == 0 || key->params[1] == 4) {
+                        sixelMouseCells = TRUE;
+                        /* Disable 1016 before selecting SGR cell encoding. */
+                        printf("\033[?1016l");
+                        sixelEnableMouse();
+                    }
+                }
+                break;
             case SIXEL_DTTERM_SEQS:
                 if (g_driver && key->nparams == 3 &&
                     sixelValidSize(key->params[2], key->params[1])) {
@@ -1980,7 +1999,14 @@ static int sixelInit(void)
     /* Request the strongest terminal fallback; XFixes handles motion too. */
     printf("\033[>3p");
     mouseState = 0;
+    sixelMouseCells = FALSE;
+    sixelMouseModeQueryPending = FALSE;
     sixelEnableMouse();
+    if (!sixelTmux && !sixelScreen && !sixelDecMouse) {
+        sixelMouseModeQueryPending = TRUE;
+        printf("\033[?1016$p");
+        fflush(stdout);
+    }
 
     return 0;
 }
