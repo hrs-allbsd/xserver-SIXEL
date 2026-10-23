@@ -170,59 +170,67 @@ default SGR mouse protocol in screen. The outer terminal still needs SIXEL and
 mouse-reporting support. The normal and tmux output paths retain their existing
 encoding and do not allocate screen's frame buffer or split output packets.
 
-Xsixel automatically enables libsixel compatibility mode at startup when
-`TERM_PROGRAM=iTerm.app` or `LC_TERMINAL=iTerm2` is present. The latter may be
-forwarded over SSH, depending on the client and server configuration. Detection
-runs only at startup, without terminal queries or subprocesses.
+Xsixel detects iTerm2 from `TERM_PROGRAM=iTerm.app` or `LC_TERMINAL=iTerm2`,
+and also asks the outer terminal for its identity once at startup (`CSI > q`).
+The terminal query works over SSH even when those environment variables are
+absent, and uses passthrough inside GNU screen. tmux does not receive these
+queries or change its existing geometry/output path. Startup does not wait for
+an answer: other terminals, and terminals that do not answer, retain their
+existing behavior.
 
-If that information is unavailable, force the mode explicitly:
-
-```sh
-screen Xsixel :9 -iterm2 -exec ratpoison
-```
-
-iTerm2 3.7.6 decodes transparent SIXEL gaps as opaque pixels, and rounds image
-coverage to character cells. Partial images can therefore leave black padding
-at their right and bottom edges, even when their interior pixels are correct.
-In compatibility mode, Xsixel encodes the full framebuffer for every update,
-keeping image boundaries fixed at the screen edges. This also works when
-`screen -x` viewers have different cell sizes. It increases encoding and output
-cost, especially during pointer movement; normal terminal and tmux rendering
-retain their cropped fast path when compatibility mode is off. Chafa already
-uses full-frame output; this option affects libsixel only.
-
-On Retina displays, enlarge the X desktop's pixels before SIXEL encoding to
-keep bitmap fonts, window decorations, and cursors at a comfortable size:
+After identifying iTerm2, Xsixel requests `OSC 1337;ReportCellSize` to obtain
+cell dimensions and the Retina scale. The default `-iterm2-scale auto` selects
+scale 1 or 2 from that reply. Xsixel atomically reallocates the framebuffer and
+uses RandR to change the logical desktop, then redraws the full image. Allocation
+failure preserves the previous framebuffer. Cell geometry is queried again on
+terminal resize so a change of font or display scale can be applied. The root
+`_XSIXEL_RENDER_MODE` property reflects automatic iTerm2 detection.
 
 ```sh
+Xsixel :9 -exec ratpoison
+# The same automatic detection works inside GNU screen:
+screen Xsixel :9 -exec ratpoison
+# Manual overrides are retained and take precedence over the reported scale:
 Xsixel :9 -iterm2-scale 2 -exec ratpoison
-# Or inside GNU screen:
-screen Xsixel :9 -iterm2-scale 2 -exec ratpoison
+Xsixel :9 -iterm2-scale 1 -exec ratpoison
 ```
 
-This option also enables iTerm2 compatibility. For a terminal reporting
-1120x850 image pixels, the X desktop is 560x425 and the output image is 1120x850.
-Each source pixel becomes an exact 2x2 block (nearest-neighbor enlargement).
-The RGB buffer is reused across frames; only resizing allocates new buffers.
-Mouse coordinates and terminal resizes use the logical desktop dimensions.
-Explicit `-screen` dimensions specify the logical X desktop, and its output
-image is enlarged by the selected factor.
+`-iterm2` forces compatibility when identification is unavailable. Without a
+usable scale reply, automatic mode keeps scale 1. tmux always keeps scale 1.
+Scale 2 requires libsixel; Chafa retains its existing rendering at scale 1.
+For a Retina terminal reporting 1120x850 image pixels, the X desktop is 560x425
+and the output image is 1120x850. Each source pixel becomes an exact 2x2 block,
+so bitmap fonts, decorations, and cursors retain their apparent size. Explicit
+`-screen` dimensions specify the logical X desktop. The RGB conversion buffer
+is reused between frames and is reallocated only when the framebuffer changes.
 
-The default is `-iterm2-scale 1`, preserving existing behavior. Enlargement is
-currently an explicit startup choice, separate from the `fast`/`iterm2` drawing
-mode; automatic Retina-scale detection is not implemented. At scale 2, both
-drawing modes send a full enlarged image to avoid iTerm2's partial-image edges.
-The option requires libsixel. tmux always uses scale 1, preserving its existing
-geometry and output path. Normal terminals without this option retain their
-existing framebuffer, RGB conversion, and cropped rendering path. In a shared
-screen session the selected scale applies to every viewer, including non-Retina
-viewers.
+In iTerm2 compatibility mode, updates with known, integral cell geometry are
+expanded to whole character rows spanning the desktop width. Xsixel positions
+the terminal cursor at the first cell of each row range and sends an opaque
+SIXEL image. Horizontal image fragments leave black remnants in iTerm2 3.7.6,
+so whole-width rows are required even when only the pointer moved. Overlapping
+row ranges are merged; separated old/new pointer rows can be encoded separately.
+iTerm2's SIXEL display mode ignores cursor positioning, so positioned row
+updates use mode 80 off. Known whole-cell bounds keep images inside the grid
+and prevent bottom-edge scrolling. The full-image fallback uses mode 80 on,
+and exit restores the mode saved at startup. Only the dirty rows are converted,
+enlarged, and encoded. This also avoids opaque decoding of transparent offsets
+and black padding at partial-cell image edges. Initialization,
+resizing, focus return, and explicit refresh still repaint the full image.
+Unknown or fractional cell geometry, or a desktop that does not match the cell
+grid, retains the full-image compatibility path. Normal terminals and tmux keep
+their existing renderer and do not use this cell-row path. iTerm2 uses the fixed
+palette without error diffusion so background colors are independent of patch
+origin; this may make smooth gradients less smooth. Its native pixel mouse
+reporting is kept even though iTerm2 3.7.6 incorrectly reports mode 1016 as
+permanently disabled in DECRQM.
 
-When using `screen -x` from multiple terminals, start Xsixel with `-iterm2` if
-an iTerm2 viewer will attach later and the startup environment does not identify
-it. Later attachments cannot be detected from the startup environment. The mode
-applies to all viewers of that Xsixel server. `TERM=xterm-256color` or
-`TERM_PROGRAM=tmux` alone does not enable compatibility mode.
+When sharing a screen session with `screen -x` viewers that have different cell
+sizes, start Xsixel with `-iterm2-full-redraw`. This retains full-image updates
+rather than aligning patches to one viewer's cells. The selected drawing mode
+and scale apply to every viewer of that Xsixel server. An iTerm2 viewer attaching
+later to a server started from another terminal is not discovered automatically;
+use `-iterm2-full-redraw` and an explicit scale if needed for that session.
 
 Change the libsixel drawing mode at runtime with the root-window property
 `_XSIXEL_RENDER_MODE` (type `STRING`, format 8):

@@ -60,6 +60,7 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <limits.h>
+#include <math.h>
 #include <errno.h>
 #include <fcntl.h>
 
@@ -69,12 +70,15 @@ static Bool sixelScreen;
 static Bool sixelMouseCells;
 static Bool sixelMouseModeQueryPending;
 static Bool sixelIterm2Compat;
-static int sixelIterm2Scale = 1;
+static int sixelIterm2Scale; /* 0: automatic, 1/2: explicit override. */
+static int sixelDetectedScale = 1;
+static Bool sixelIdentityPending, sixelCellPending;
+static Bool sixelIterm2FullRedraw;
 static Bool sixelIterm2Terminal; /* Startup identity, independent of render mode. */
 
-/* These identifiers may survive SSH/screen startup; TERM alone is not enough.
- * Check once, without terminal queries or subprocesses. Later screen -x viewers
- * cannot be discovered from this environment, so retain the explicit option. */
+/* Environment hints can identify iTerm2 before its startup query answers.
+ * SSH may omit both variables; TERM alone is not enough. Later screen -x
+ * viewers still need explicit options when their cell geometry differs. */
 static void
 sixelDetectIterm2(void)
 {
@@ -286,6 +290,8 @@ typedef struct
     int reported_pixel_w, reported_pixel_h;
     int cell_w, cell_h;
     int cell_pixel_w, cell_pixel_h;
+    double iterm_cell_w, iterm_cell_h;
+    int iterm_cell_scale;
     Bool auto_size;
     Bool pixel_size_reported;
     Bool pixel_size_reply; /* Explicit 14t reply, rather than ioctl fallback. */
@@ -316,6 +322,22 @@ static Bool sixelFramePending;
 static RegionRec sixelPendingDamage;
 static Bool sixelDamageInitialized;
 static int sixelHostCursorFd = -1;
+
+static int
+sixelOutputScale(void)
+{
+    return sixelIterm2Terminal && !sixelTmux ?
+           (sixelIterm2Scale ? sixelIterm2Scale : sixelDetectedScale) : 1;
+}
+
+static void
+sixelQueryCellSize(void)
+{
+    if (sixelIterm2Terminal && !sixelTmux && !sixelCellPending) {
+        sixelCellPending = TRUE;
+        sixelTerminalControl("\033]1337;ReportCellSize\007");
+    }
+}
 
 /* Screen coordinates and damage rectangles use signed 16-bit coordinates. */
 static Bool
@@ -372,6 +394,7 @@ sixelReadTerminalSize(SIXEL_Driver *driver)
         sixelTerminalControl("\033[16t");
     else if (!sixelTmux || !driver->pixel_w || !driver->pixel_h)
         sixelTerminalControl("\033[14t\033[16t");
+    sixelQueryCellSize();
     fflush(stdout);
 }
 
@@ -425,6 +448,8 @@ static sixel_renderer_t g_renderer = RENDERER_DEFAULT;
 #define SIXEL_MOUSE_DEC         (1 << 12 | ('&' - 0x1f) << 6 | ('w' - '@'))
 #define SIXEL_DECRPM            (1 << 12 | ((('?' - ';') << 4) | ('$' - 0x1f)) << 6 | ('y' - '@'))
 #define SIXEL_DTTERM_SEQS       (1 << 12 | ('t' - '@'))
+#define SIXEL_TERMINAL_ID        514
+#define SIXEL_CELL_SIZE          515
 #define SIXEL_UNKNOWN           (513)
 
 typedef struct _key {
@@ -438,6 +463,8 @@ enum _state {
     STATE_ESC = 1,
     STATE_CSI = 2,
     STATE_CSI_IGNORE = 3,
+    STATE_CONTROL_STRING = 5,
+    STATE_CONTROL_ESCAPE = 6,
     STATE_CSI_PARAM = 4,
 };
 
@@ -461,6 +488,8 @@ static int getkeys(char *buf, int nread, sixel_key_t *keys)
     static int ibytes = 0;
     static int pbytes = 0;
     static sixel_key_t pending;
+    static int string_type;
+    static Bool string_overflow;
 
     for (i = 0; i < nread; i++) {
         c = buf[i];
@@ -477,8 +506,52 @@ restart:
                 break;
             }
             break;
+        case STATE_CONTROL_STRING:
+        case STATE_CONTROL_ESCAPE:
+            if ((state == STATE_CONTROL_ESCAPE && c == '\\') ||
+                (state == STATE_CONTROL_STRING && c == '\007')) {
+                if (!string_overflow) {
+                    pending.value = string_type;
+                    keys[size++] = pending;
+                }
+                state = STATE_GROUND;
+            } else if (c == '\033') {
+                state = STATE_CONTROL_ESCAPE;
+            } else if (state == STATE_CONTROL_ESCAPE) {
+                /* A new escape sequence also recovers from a truncated reply. */
+                state = STATE_ESC;
+                goto restart;
+            } else if (pending.nparams < 255) {
+                const char *prefix = string_type == SIXEL_TERMINAL_ID ?
+                                     ">|" : "1337;ReportCellSize=";
+                if (pending.nparams < strlen(prefix) && c != prefix[pending.nparams]) {
+                    /* Preserve ordinary Alt-P/Alt-] and unrecognized escapes.
+                     * Only the actual response prefixes enter string parsing. */
+                    keys[size].nparams = 0;
+                    keys[size++].value = 0x1b;
+                    keys[size].nparams = 0;
+                    keys[size++].value = string_type == SIXEL_TERMINAL_ID ? 'P' : ']';
+                    for (int j = 0; j < pending.nparams; j++) {
+                        keys[size].nparams = 0;
+                        keys[size++].value = pending.params[j];
+                    }
+                    state = STATE_GROUND;
+                    goto restart;
+                }
+                pending.params[pending.nparams++] = c;
+            } else {
+                string_overflow = TRUE;
+            }
+            break;
         case STATE_ESC:
             switch (c) {
+            case 'P':
+            case ']':
+                pending.nparams = 0;
+                string_type = c == 'P' ? SIXEL_TERMINAL_ID : SIXEL_CELL_SIZE;
+                string_overflow = FALSE;
+                state = STATE_CONTROL_STRING;
+                break;
             case 'O':
             case '[':
                 pending.nparams = 0;
@@ -679,11 +752,30 @@ sixelHorizontalOffset(FILE *out, int x)
 }
 
 static Bool
+sixelPatchCells(SIXEL_Driver *driver, int *cw, int *ch)
+{
+    double w, h;
+    if ((!sixelIterm2Compat && driver->output_scale == 1) ||
+        !sixelIterm2Terminal || sixelTmux || sixelIterm2FullRedraw ||
+        !driver->iterm_cell_scale || driver->cell_w <= 0 || driver->cell_h <= 0)
+        return FALSE;
+    w = driver->iterm_cell_w * driver->iterm_cell_scale / driver->output_scale;
+    h = driver->iterm_cell_h * driver->iterm_cell_scale / driver->output_scale;
+    *cw = (int)(w + 0.5);
+    *ch = (int)(h + 0.5);
+    return *cw > 0 && *ch > 0 && fabs(w - *cw) < 0.001 &&
+           fabs(h - *ch) < 0.001 &&
+           (int64_t)*cw * driver->cell_w == driver->w &&
+           (int64_t)*ch * driver->cell_h == driver->h;
+}
+
+static Bool
 sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
 {
     int x1 = max(0, damage->x1), y1 = max(0, damage->y1);
     int x2 = min(driver->w, damage->x2), y2 = min(driver->h, damage->y2);
-    int x, y, width, height;
+    int x, y, width, height, cw, ch, row = 0, col = 0;
+    Bool patch = sixelPatchCells(driver, &cw, &ch);
     size_t body, end, chunk, i;
     SIXELSTATUS status;
     FILE *out = stdout;
@@ -692,18 +784,28 @@ sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
 
     if (x1 >= x2 || y1 >= y2)
         return TRUE;
-    /* iTerm2 treats gaps as opaque and replaces whole character cells at image
-     * edges. A partial image leaves black cell padding even without gaps.
-     * Keep its image bounds fixed at the screen edges; screen -x viewers may
-     * have different cell sizes, so rounding to one viewer's cells is unsafe.
-     * The normal mode retains its cropped fast path. */
-    if (sixelIterm2Compat || driver->output_scale > 1) {
+    /* iTerm2 treats transparent gaps as opaque and replaces whole cells.
+     * Position opaque, cell-aligned patches when geometry is known. Unknown
+     * geometry and shared viewers can retain the full-image compatibility path.
+     * The normal mode retains its transparent-offset fast path. */
+    if (patch) {
+        /* iTerm2 leaves black remnants when replacing horizontal fragments of
+         * an older image. Whole-width cell rows avoid splitting image runs. */
+        x1 = 0;
+        y1 = y1 / ch * ch;
+        x2 = driver->w;
+        y2 = min(driver->h, (y2 + ch - 1) / ch * ch);
+        col = x1 / cw + 1;
+        row = y1 / ch + 1;
+    } else if (sixelIterm2Compat || driver->output_scale > 1) {
         x1 = y1 = 0;
         x2 = driver->w;
         y2 = driver->h;
     }
-    y1 = y1 / 6 * 6;
-    y2 = min(driver->h, (y2 + 5) / 6 * 6);
+    if (!patch) {
+        y1 = y1 / 6 * 6;
+        y2 = min(driver->h, (y2 + 5) / 6 * 6);
+    }
     width = x2 - x1;
     height = y2 - y1;
     for (y = y1; y < y2; y++) {
@@ -738,6 +840,11 @@ sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
     }
     driver->encoded_size = 0;
     driver->encode_failed = FALSE;
+    /* Error diffusion depends on pixels outside a patch and leaves visible
+     * seams when the same background is encoded with another origin. Use a
+     * position-independent mapping for iTerm2 full frames and patches alike. */
+    if (sixelIterm2Terminal && !sixelTmux)
+        sixel_dither_set_diffusion_type(driver->dither, SIXEL_DIFFUSE_NONE);
     status = sixel_encode(driver->bitmap, width, height, 3,
                           driver->dither, driver->output);
     if (SIXEL_FAILED(status) || driver->encode_failed)
@@ -764,8 +871,16 @@ sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
         out = open_memstream(&screen_data, &screen_length);
         if (!out)
             return FALSE;
-        fputs("\033[H", out);
+        if (!patch)
+            fputs("\033[H", out);
     }
+    if (patch)
+        /* DECSDM ignores CUP. Keep it off for positioned images, rather than
+         * restoring it while iTerm2's asynchronous image work is outstanding.
+         * Whole-cell bounds prevent scrolling; fallback/exit restore the mode. */
+        fprintf(out, "\033[?80l\033[%d;%dH", row, col);
+    else if (sixelIterm2Terminal && !sixelTmux)
+        fputs("\033[?80h\033[H", out);
     if (sixelTmux) {
         /* Home and DECSDM must reach the outer terminal together with the image.
          * The image body contains SIXEL ASCII only, so only the DCS delimiters
@@ -773,15 +888,17 @@ sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
         fputs("\033Ptmux;\033\033[H\033\033P", out);
         fprintf(out, "0;1q\"1;1;%d;%d", x2, y2);
     } else
-        fprintf(out, "\033P0;1q\"1;1;%d;%d", x2, y2);
-    for (y = 0; y < y1; y += 6)
+        fprintf(out, "\033P0;1q\"1;1;%d;%d", patch ? width : x2, patch ? height : y2);
+    for (y = 0; !patch && y < y1; y += 6)
         putc('-', out);
-    sixelHorizontalOffset(out, x1);
+    if (!patch)
+        sixelHorizontalOffset(out, x1);
     chunk = body;
     for (i = body; i < end - 2; i++) {
         if (driver->encoded[i] == '$' || driver->encoded[i] == '-') {
             fwrite(driver->encoded + chunk, 1, i + 1 - chunk, out);
-            sixelHorizontalOffset(out, x1);
+            if (!patch)
+                sixelHorizontalOffset(out, x1);
             chunk = i + 1;
         }
     }
@@ -790,6 +907,8 @@ sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
         fputs("\033\033\\\033\\", out);
     else
         fprintf(out, "\033\\");
+    if (patch)
+        fputs("\033[H", out);
     if (sixelScreen) {
         if (fclose(out) != 0) {
             free(screen_data);
@@ -887,7 +1006,25 @@ sixelFrameTimeout(OsTimerPtr timer, CARD32 now, void *arg)
         } else if (RegionNotEmpty(&sixelPendingDamage)) {
 #ifdef HAVE_LIBSIXEL
             if (g_renderer == RENDERER_LIBSIXEL) {
-                if (!sixelRenderRect(g_driver, RegionExtents(&sixelPendingDamage)))
+                int cw, ch, n = RegionNumRects(&sixelPendingDamage);
+                if (sixelPatchCells(g_driver, &cw, &ch) && n <= 16) {
+                    BoxPtr rects = RegionRects(&sixelPendingDamage);
+                    BoxRec rows = {0, 0, g_driver->w, 0};
+                    for (int i = 0; i < n; i++) {
+                        int y1 = rects[i].y1 / ch * ch;
+                        int y2 = min(g_driver->h, (rects[i].y2 + ch - 1) / ch * ch);
+                        if (rows.y2 > 0 && y1 > rows.y2) {
+                            if (!sixelRenderRect(g_driver, &rows))
+                                ErrorF("Xsixel: could not encode damaged cell rows\n");
+                            rows.y2 = 0;
+                        }
+                        if (!rows.y2)
+                            rows.y1 = y1;
+                        rows.y2 = max(rows.y2, y2);
+                    }
+                    if (rows.y2 && !sixelRenderRect(g_driver, &rows))
+                        ErrorF("Xsixel: could not encode damaged cell rows\n");
+                } else if (!sixelRenderRect(g_driver, RegionExtents(&sixelPendingDamage)))
                     ErrorF("Xsixel: could not encode damaged region\n");
             } else
 #endif
@@ -1129,7 +1266,7 @@ static Bool sixelScreenInit(KdScreenInfo *screen)
     if (!driver)
         return FALSE;
     driver->screen = screen;
-    driver->output_scale = sixelIterm2Terminal && !sixelTmux ? sixelIterm2Scale : 1;
+    driver->output_scale = sixelOutputScale();
     driver->auto_size = !screen->width && !screen->height;
     sixelReadTerminalSize(driver);
     if (driver->auto_size && sixelValidSize(driver->pixel_w, driver->pixel_h)) {
@@ -1303,6 +1440,7 @@ static Bool sixelRandRSetConfig(ScreenPtr pScreen,
         height = pSize->width;
     }
     next.randr = KdAddRotation(screen->randr, randr);
+    next.output_scale = sixelOutputScale();
     if (!sixelAllocateBuffers(&next, width, height))
         return FALSE;
 
@@ -1519,18 +1657,24 @@ void ddxUseMsg(void)
     ErrorF("-exec command    Execute command after server started\n");
     ErrorF("-mouse-protocol {sgr|dec}  Select terminal mouse reporting (default: sgr pixels)\n");
     ErrorF("-iterm2                  Force iTerm2 compatibility (also detected from startup environment)\n");
-    ErrorF("-iterm2-scale {1|2}       iTerm2 image enlargement (default: 1; libsixel only)\n");
+    ErrorF("-iterm2-scale {auto|1|2}  iTerm2 image enlargement (default: auto; libsixel only)\n");
+    ErrorF("-iterm2-full-redraw      Use full images for shared screen viewers\n");
     ErrorF("-backend {chafa|libsixel}  Choose renderer backend (default: libsixel if built)\n");
 }
 
 int ddxProcessArgument(int argc, char **argv, int i)
 {
+    if (!strcmp(argv[i], "-iterm2-full-redraw")) {
+        sixelIterm2FullRedraw = TRUE;
+        sixelIterm2Compat = sixelIterm2Terminal = TRUE;
+        return 1;
+    }
     if (!strcmp(argv[i], "-iterm2-scale")) {
-        if (i + 1 >= argc || (strcmp(argv[i + 1], "1") && strcmp(argv[i + 1], "2"))) {
+        if (i + 1 >= argc || (strcmp(argv[i + 1], "auto") && strcmp(argv[i + 1], "1") && strcmp(argv[i + 1], "2"))) {
             UseMsg();
             return 0;
         }
-        sixelIterm2Scale = argv[i + 1][0] - '0';
+        sixelIterm2Scale = !strcmp(argv[i + 1], "auto") ? 0 : argv[i + 1][0] - '0';
         sixelIterm2Compat = sixelIterm2Terminal = TRUE;
         return 2;
     }
@@ -1582,7 +1726,19 @@ int ddxProcessArgument(int argc, char **argv, int i)
 static void
 sixelApplyTerminalSize(SIXEL_Driver *driver)
 {
+    int scale = sixelOutputScale();
+    int width, height;
     sixelNormalizeScreenPixels(driver);
+    if (driver->iterm_cell_scale && !sixelTmux &&
+        driver->cell_w > 0 && driver->cell_h > 0) {
+        double w = driver->iterm_cell_w * driver->cell_w * driver->iterm_cell_scale;
+        double h = driver->iterm_cell_h * driver->cell_h * driver->iterm_cell_scale;
+        if (w >= 1 && h >= 1 && w <= SHRT_MAX && h <= SHRT_MAX) {
+            driver->pixel_w = driver->reported_pixel_w = (int)(w + 0.5);
+            driver->pixel_h = driver->reported_pixel_h = (int)(h + 0.5);
+            driver->pixel_size_reported = TRUE;
+        }
+    }
     if (!driver->pixel_size_reply &&
         !(sixelIterm2Terminal && driver->pixel_size_reported) &&
         driver->cell_pixel_w > 0 && driver->cell_pixel_h > 0 &&
@@ -1592,14 +1748,14 @@ sixelApplyTerminalSize(SIXEL_Driver *driver)
         driver->pixel_w = driver->cell_pixel_w * driver->cell_w * driver->output_scale;
         driver->pixel_h = driver->cell_pixel_h * driver->cell_h * driver->output_scale;
     }
+    width = driver->auto_size && driver->pixel_w > 0 ? max(1, driver->pixel_w / scale) : driver->w;
+    height = driver->auto_size && driver->pixel_h > 0 ? max(1, driver->pixel_h / scale) : driver->h;
 #ifdef RANDR
-    if (driver->auto_size && driver->screen->pScreen &&
-        sixelValidSize(driver->pixel_w, driver->pixel_h) &&
-        (driver->w != max(1, driver->pixel_w / driver->output_scale) ||
-         driver->h != max(1, driver->pixel_h / driver->output_scale))) {
+    if (driver->screen->pScreen && sixelValidSize(width, height) &&
+        (driver->w != width || driver->h != height || driver->output_scale != scale)) {
         RRScreenSize size = {0};
-        size.width = max(1, driver->pixel_w / driver->output_scale);
-        size.height = max(1, driver->pixel_h / driver->output_scale);
+        size.width = width;
+        size.height = height;
         if (!sixelRandRSetConfig(driver->screen->pScreen, RR_Rotate_0, 0, &size))
             ErrorF("Xsixel: could not resize to terminal dimensions %dx%d\n",
                    size.width, size.height);
@@ -1645,6 +1801,8 @@ sixelResizeTimeout(OsTimerPtr timer, CARD32 now, void *arg)
     driver->reported_pixel_w = driver->reported_pixel_h = 0;
     driver->cell_w = driver->cell_h = 0;
     driver->cell_pixel_w = driver->cell_pixel_h = 0;
+    driver->iterm_cell_scale = 0;
+    sixelCellPending = FALSE;
     driver->pixel_size_reported = FALSE;
     driver->pixel_size_reply = FALSE;
     sixelReadTerminalSize(driver);
@@ -1789,8 +1947,10 @@ sixelMouseReport(sixel_key_t *key)
              g_driver->cell_w > 0 && g_driver->cell_h > 0) {
         /* iTerm2 reports SGR pixels in points, but displays SIXEL in Retina
          * backing pixels. Convert input independently of framebuffer sizing. */
-        int64_t mouse_width = (int64_t)g_driver->cell_pixel_w * g_driver->cell_w;
-        int64_t mouse_height = (int64_t)g_driver->cell_pixel_h * g_driver->cell_h;
+        double mouse_width = (g_driver->iterm_cell_scale ? g_driver->iterm_cell_w :
+                              g_driver->cell_pixel_w) * g_driver->cell_w;
+        double mouse_height = (g_driver->iterm_cell_scale ? g_driver->iterm_cell_h :
+                               g_driver->cell_pixel_h) * g_driver->cell_h;
         x = (int64_t)x * (g_driver->pixel_w / g_driver->output_scale) / mouse_width;
         y = (int64_t)y * (g_driver->pixel_h / g_driver->output_scale) / mouse_height;
     }
@@ -1823,7 +1983,7 @@ static void sixelPollInput(void)
     static int events = 0;
 #endif
     char buf[4096];
-    static sixel_key_t keys[4097];
+    static sixel_key_t keys[4096 + 256];
     int scancode;
     sixel_key_t *key;
     int nread, nkeys;
@@ -1839,6 +1999,50 @@ static void sixelPollInput(void)
         for (i = 0; i < nkeys; ++i) {
             key = keys + i;
             switch (key->value) {
+            case SIXEL_TERMINAL_ID:
+            case SIXEL_CELL_SIZE: {
+                char text[256];
+                int used = 0;
+                double h, w, scale;
+                for (int j = 0; j < key->nparams; j++)
+                    text[j] = key->params[j];
+                text[key->nparams] = 0;
+                if (key->value == SIXEL_TERMINAL_ID && sixelIdentityPending) {
+                    sixelIdentityPending = FALSE;
+                    if (!strncmp(text, ">|iTerm2 ", 9) && !sixelTmux) {
+                        sixelIterm2Terminal = sixelIterm2Compat = TRUE;
+                        /* iTerm2 3.7.6 reports 1016 as permanently disabled in
+                         * DECRQM despite implementing it. Identity is stronger
+                         * evidence here; retain native pixel mouse precision. */
+                        if (!sixelTmux && !sixelScreen && !sixelDecMouse) {
+                            sixelMouseModeQueryPending = FALSE;
+                            sixelMouseCells = FALSE;
+                            sixelEnableMouse();
+                        }
+                        if (g_driver && g_driver->screen->pScreen)
+                            sixelRenderModeRoot(NULL, NULL, g_driver->screen->pScreen);
+                        sixelQueryCellSize();
+                        fflush(stdout);
+                    }
+                } else if (key->value == SIXEL_CELL_SIZE && sixelCellPending &&
+                           g_driver && !sixelTmux &&
+                           sscanf(text, "1337;ReportCellSize=%lf;%lf;%lf%n",
+                                  &h, &w, &scale, &used) == 3 &&
+                           text[used] == 0 && isfinite(w) && isfinite(h) &&
+                           isfinite(scale) && w >= 1 && h >= 1 &&
+                           w <= SHRT_MAX && h <= SHRT_MAX &&
+                           (scale == 1 || scale == 2)) {
+                    sixelCellPending = FALSE;
+                    sixelDetectedScale = g_renderer == RENDERER_LIBSIXEL ? (int)scale : 1;
+                    g_driver->iterm_cell_w = w;
+                    g_driver->iterm_cell_h = h;
+                    g_driver->iterm_cell_scale = (int)scale;
+                    g_driver->cell_pixel_w = (int)w;
+                    g_driver->cell_pixel_h = (int)h;
+                    size_changed = TRUE;
+                }
+                break;
+            }
             case SIXEL_DECRPM:
                 /* Only consume the answer to our one-time startup query.
                  * No answer preserves the existing pixel mode for terminals
@@ -2002,7 +2206,12 @@ static int sixelInit(void)
     sixelMouseCells = FALSE;
     sixelMouseModeQueryPending = FALSE;
     sixelEnableMouse();
-    if (!sixelTmux && !sixelScreen && !sixelDecMouse) {
+    if (!sixelTmux) {
+        sixelIdentityPending = TRUE;
+        sixelTerminalControl("\033[>q");
+        sixelQueryCellSize();
+    }
+    if (!sixelTmux && !sixelScreen && !sixelDecMouse && !sixelIterm2Terminal) {
         sixelMouseModeQueryPending = TRUE;
         printf("\033[?1016$p");
         fflush(stdout);
