@@ -339,7 +339,7 @@ class Autosize(unittest.TestCase):
         server.x11.XSetInputFocus(server.display, window, 1, 0)
         server.x11.XSync(server.display, False)
         server.events()
-        server.reply(b'aA\r\x1b[A')
+        server.reply(b'aA\r\x1b[A\x1bPx\x1b]y')
         received = []
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
@@ -353,11 +353,13 @@ class Autosize(unittest.TestCase):
                     server.x11.XLookupString(C.byref(key), text, 32, C.byref(sym), None)
                     if sym.value not in (0xffe1, 0xffe3):
                         received.append((sym.value, text.value))
-            if len(received) >= 4:
+            if len(received) >= 10:
                 break
             time.sleep(0.01)
         self.assertEqual(received, [(ord('a'), b'a'), (ord('A'), b'A'),
-                                     (0xff0d, b'\r'), (0xff52, b'')])
+                                     (0xff0d, b'\r'), (0xff52, b''),
+                                     (0xff1b, b'\x1b'), (ord('P'), b'P'), (ord('x'), b'x'),
+                                     (0xff1b, b'\x1b'), (ord(']'), b']'), (ord('y'), b'y')])
 
     def test_display_modes_and_bottom_edge_updates(self):
         server = self.server(pixels=(800, 600))
@@ -762,6 +764,231 @@ class Autosize(unittest.TestCase):
         server.wait_size(800, 600)
         server.check_drawing_and_pointer(self, 800, 600)
 
+
+
+class Iterm2Detection(unittest.TestCase):
+    def server(self, screen=False, **kwargs):
+        env = {k: v for k, v in os.environ.items() if k not in
+               ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL')}
+        if screen:
+            env['STY'] = 'xsixel-iterm-detection-test'
+        server = Server(env=env, pixels=(1120, 850), cells=(80, 25), **kwargs)
+        self.addCleanup(server.close)
+        return server
+
+    def identify(self, server):
+        server.wait_output(b'\x1b[>q')
+        for part in (b'\x1bP>|iTer', b'm2 3.7.6\x1b', b'\\'):
+            server.reply(part)
+            time.sleep(.01)
+        server.wait_output(b'\x1b]1337;ReportCellSize\x07')
+
+    def cell_reply(self, server, scale=2):
+        server.reply(f'\x1b]1337;ReportCellSize=17.0;7.0;{scale}.0\x1b\\'.encode())
+
+    def test_ssh_identity_scale_and_resize(self):
+        for screen in (False, True):
+            with self.subTest(screen=screen):
+                server = self.server(screen=screen)
+                self.identify(server)
+                self.cell_reply(server)
+                server.wait_size(560, 425)
+                server.wait_output(b'q"1;1;1120;850')
+                if shutil.which('xprop'):
+                    mode = subprocess.check_output(['xprop', '-display', server.name,
+                        '-root', '_XSIXEL_RENDER_MODE'], text=True)
+                    self.assertIn('"iterm2"', mode)
+                start = len(server.output)
+                server.resize_terminal((1400, 1020), cells=(100, 30))
+                server.wait_size(700, 510)
+                server.wait_output(b'\x1b]1337;ReportCellSize\x07', start)
+                # Moving the terminal to a non-Retina display changes the scale.
+                self.cell_reply(server, scale=1)
+                server.wait_size(700, 510)
+                server.wait_output(b'q"1;1;700;510', start)
+                self.assertEqual(bytes(server.output).count(b'\x1b[>q'), 1)
+                server.close()
+
+    def test_iterm2_identity_overrides_incorrect_1016_mode_report(self):
+        server = self.server()
+        server.wait_output(b'\x1b[>q')
+        server.reply(b'\x1bP>|iTerm2 3.7.6\x1b\\\x1b[?1016;4$y')
+        server.wait_output(b'\x1b]1337;ReportCellSize\x07')
+        self.cell_reply(server)
+        server.wait_size(560, 425)
+        Autosize.mouse_events(self, server,
+            [b'\x1b[<0;557;417M', b'\x1b[<0;557;417m'],
+            [(4, 1, 556, 416), (5, 1, 556, 416)])
+        # Fine motion inside one character cell must remain visible.
+        Autosize.mouse_events(self, server,
+            [b'\x1b[<0;558;418M', b'\x1b[<0;558;418m'],
+            [(4, 1, 557, 417), (5, 1, 557, 417)])
+
+    def test_explicit_scale_and_screen_size_take_precedence(self):
+        for args, expected in ((('-iterm2-scale', '1'), (1120, 850)),
+                               (('-iterm2-scale', '2'), (560, 425)),
+                               (('-screen', '800x600'), (800, 600))):
+            with self.subTest(args=args):
+                server = self.server(args=args)
+                self.identify(server)
+                self.cell_reply(server)
+                time.sleep(.1)
+                self.assertEqual(server.dimensions(), expected)
+                if args[0] == '-screen':
+                    server.wait_output(b'q"1;1;1600;1200')
+                server.close()
+
+    def test_other_terminal_and_invalid_cell_reports(self):
+        server = self.server()
+        server.wait_output(b'\x1b[>q')
+        server.reply(b'\x1bP>|XTerm(400)\x1b\\')
+        start = len(server.output)
+        self.cell_reply(server)
+        time.sleep(.05)
+        self.assertEqual(server.dimensions(), (1120, 850))
+        self.assertNotIn(b'ReportCellSize', server.output[start:])
+        server.close()
+        server = self.server()
+        self.identify(server)
+        for value in ('nan;7;2', '17;inf;2', '0;7;2', '17;7;3', '17;7;2junk',
+                      '17;7;2;' + 'a' * 300):
+            server.reply(('\x1b]1337;ReportCellSize=' + value + '\x07').encode())
+        time.sleep(.05)
+        self.assertEqual(server.dimensions(), (1120, 850))
+        self.cell_reply(server)
+        server.wait_size(560, 425)
+
+    @staticmethod
+    def decode(packet):
+        lib = C.CDLL(ctypes.util.find_library('sixel'))
+        lib.sixel_decode_raw.argtypes = [C.c_void_p, C.c_int, C.POINTER(C.c_void_p),
+            C.POINTER(C.c_int), C.POINTER(C.c_int), C.POINTER(C.c_void_p),
+            C.POINTER(C.c_int), C.c_void_p]
+        libc = C.CDLL(ctypes.util.find_library('c'))
+        libc.free.argtypes = [C.c_void_p]
+        pixels, palette = C.c_void_p(), C.c_void_p()
+        width, height, colors = C.c_int(), C.c_int(), C.c_int()
+        status = lib.sixel_decode_raw(C.create_string_buffer(packet), len(packet),
+            C.byref(pixels), C.byref(width), C.byref(height), C.byref(palette),
+            C.byref(colors), None)
+        try:
+            if status != 0:
+                raise AssertionError(f'SIXEL decode failed: {status}')
+            indices = C.string_at(pixels, width.value * height.value)
+            rgb = C.string_at(palette, colors.value * 3)
+            return width.value, height.value, b''.join(rgb[i*3:i*3+3] for i in indices)
+        finally:
+            libc.free(pixels)
+            libc.free(palette)
+
+    def test_cell_patches_preserve_background_cursor_and_screen_edges(self):
+        for screen in (False, True):
+            with self.subTest(screen=screen):
+                server = self.server(screen=screen)
+                self.identify(server)
+                self.cell_reply(server)
+                server.wait_size(560, 425)
+                subprocess.run(['xsetroot', '-display', server.name, '-solid', 'red'], check=True)
+                time.sleep(.15)
+                canvas = bytearray(b'\xff\0\0' * (1120 * 850))
+                window = server.x11.XCreateSimpleWindow(server.display, server.root,
+                    101, 83, 13, 11, 0, 0, 0x0000ff)
+                start = len(server.output)
+                server.x11.XMapWindow(server.display, window)
+                server.x11.XSync(server.display, False)
+                server.wait_output(b'q"1;1;1120;68', start)
+                time.sleep(.05)
+                for stage in range(2):
+                    if stage:
+                        move = server.x11.XMoveWindow
+                        move.argtypes = [C.c_void_p, C.c_ulong, C.c_int, C.c_int]
+                        start = len(server.output)
+                        move(server.display, window, 547, 414)
+                        server.x11.XSync(server.display, False)
+                        server.wait_output(b'q"1;1;1120;34', start)
+                        time.sleep(.05)
+                    data = bytes(server.output[start:])
+                    if screen:
+                        data = b''.join(re.findall(rb'\x1bP(.*?)\x1b\\', data, re.S))
+                    patches = re.findall(rb'\x1b\[(\d+);(\d+)H(\x1bP0;1q.*?\x1b\\)', data, re.S)
+                    self.assertTrue(patches)
+                    self.assertIn(b'\x1b[?80l', data)
+                    self.assertIn(b'\x1b\\\x1b[H', data)
+                    self.assertNotIn(b'\x1b[?80h', data)
+                    for row, col, packet in patches:
+                        w, h, rgb = self.decode(packet)
+                        self.assertEqual(w, 1120)
+                        self.assertEqual(int(col), 1)
+                        self.assertEqual(h % 34, 0)
+                        self.assertLess(w * h, 1120 * 850)
+                        x, y = (int(col)-1)*14, (int(row)-1)*34
+                        for dy in range(h):
+                            dest = ((y+dy)*1120+x)*3
+                            canvas[dest:dest+w*3] = rgb[dy*w*3:(dy+1)*w*3]
+                    def color(x, y):
+                        i = (y*1120+x)*3
+                        return tuple(canvas[i:i+3])
+                    if not stage:
+                        self.assertEqual(color(202, 166), (0, 0, 255))
+                        self.assertEqual(color(227, 187), (0, 0, 255))
+                        self.assertEqual(color(200, 166), (255, 0, 0))
+                    else:
+                        self.assertEqual(color(202, 166), (255, 0, 0))
+                        self.assertEqual(color(1119, 849), (0, 0, 255))
+                server.close()
+
+    def test_nonpalette_background_and_software_cursor_match_full_redraw(self):
+        server = self.server()
+        self.identify(server)
+        self.cell_reply(server)
+        server.wait_size(560, 425)
+        subprocess.run(['xsetroot', '-display', server.name, '-solid', '#e0d080'], check=True)
+        create = server.x11.XCreateFontCursor
+        create.argtypes, create.restype = [C.c_void_p, C.c_uint], C.c_ulong
+        define = server.x11.XDefineCursor
+        define.argtypes = [C.c_void_p, C.c_ulong, C.c_ulong]
+        define(server.display, server.root, create(server.display, 68))
+        server.x11.XSync(server.display, False)
+        time.sleep(.1)
+        pattern = rb'\x1b\[(\d+);(\d+)H(\x1bP0;1q.*?\x1b\\)'
+        def full_frame():
+            start = len(server.output)
+            server.reply(b'\x0c')
+            server.wait_output(b'q"1;1;1120;850', start)
+            time.sleep(.03)
+            packets = re.findall(pattern, bytes(server.output[start:]), re.S)
+            return bytearray(self.decode(packets[-1][2])[2])
+        canvas = full_frame()
+        for px, py in ((40, 40), (280, 212), (540, 405), (180, 375)):
+            start = len(server.output)
+            server.x11.XWarpPointer(server.display, 0, server.root, 0, 0, 0, 0, px, py)
+            server.x11.XSync(server.display, False)
+            time.sleep(.06)
+            patches = re.findall(pattern, bytes(server.output[start:]), re.S)
+            self.assertTrue(patches)
+            for row, col, packet in patches:
+                w, h, rgb = self.decode(packet)
+                self.assertEqual((int(col), w), (1, 1120))
+                y = (int(row)-1)*34
+                offset = y*1120*3
+                canvas[offset:offset+len(rgb)] = rgb
+        self.assertEqual(canvas, full_frame())
+
+    def test_unknown_cell_geometry_and_shared_screen_keep_full_frames(self):
+        for args, reply in ((('-iterm2-full-redraw',), b'17;7;2'),
+                             ((), b'17;7.25;2')):
+            server = self.server(args=args)
+            self.identify(server)
+            server.reply(b'\x1b]1337;ReportCellSize=' + reply + b'\x07')
+            time.sleep(.1)
+            start = len(server.output)
+            window = server.x11.XCreateSimpleWindow(server.display, server.root,
+                100, 80, 13, 11, 0, 0, 0x0000ff)
+            server.x11.XMapWindow(server.display, window)
+            server.x11.XSync(server.display, False)
+            expected = b'q"1;1;1120;850' if args else b'q"1;1;1160;850'
+            server.wait_output(expected, start)
+            server.close()
 
 @unittest.skipUnless(shutil.which('tmux'), 'tmux not installed')
 class TmuxPassthrough(unittest.TestCase):
