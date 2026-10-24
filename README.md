@@ -129,6 +129,9 @@ Xsixel checks both settings at startup and exits with setup instructions if
 either is off. Passthrough accepts `on` and `all`. Focus notifications trigger a
 full redraw when returning to the Xsixel window. The outer terminal must
 support SIXEL. No tmux configuration is changed automatically.
+Images exceeding tmux's default 1 MiB input-string limit are subdivided into
+independent SIXEL images. Images that fit and small damage updates retain the
+direct streaming path.
 
 Passthrough draws directly on the outer terminal, so use a single pane or a
 zoomed pane (`Ctrl-b z`), preferably with the status line disabled
@@ -164,17 +167,38 @@ excluding the usual xterm internal-border remainder. This correction applies
 at startup and on resize without adding terminal queries; an explicit `-screen`
 size remains authoritative. tmux and direct-terminal sizing are unchanged.
 
+GNU screen 5.0.1 drops pixel-only size changes when the character grid stays
+the same (for example, changing xterm's font). Xsixel then receives neither
+the new pixel size nor SIGWINCH. The companion patch
+[`patches/screen-5.0.1-pixel-resize.patch`](patches/screen-5.0.1-pixel-resize.patch)
+updates the PTY of visible full-window applications without reflowing the grid.
+Apply it to screen's source with `patch -p1`, then rebuild screen using your
+platform's usual configuration and patches. Start a new session with that
+screen binary; an already-running screen server keeps its old behavior.
+This does not require an Xsixel rendering change or periodic terminal queries.
+Split regions remain unsupported. To check the forwarding independently:
+
+```sh
+SCREEN=/path/to/patched/screen python3 test/screen-pixel-resize.py
+```
+
+The test covers width-only and height-only pixel changes, restoration, a
+character-grid resize, and returning to a previously hidden window in an
+isolated screen session. The supplied patch was
+tested against screen 5.0.1; other versions need separate validation.
+
 Screen forwards SGR cell coordinates, which Xsixel converts using the current
 terminal dimensions; pointer precision is limited to character cells. Use the
 default SGR mouse protocol in screen. The outer terminal still needs SIXEL and
-mouse-reporting support. The normal and tmux output paths retain their existing
-encoding and do not allocate screen's frame buffer or split output packets.
+mouse-reporting support. Direct terminals retain their existing output path;
+tmux uses its own envelope and splits only large images.
 
 Xsixel detects iTerm2 from `TERM_PROGRAM=iTerm.app` or `LC_TERMINAL=iTerm2`,
 and also asks the outer terminal for its identity once at startup (`CSI > q`).
 The terminal query works over SSH even when those environment variables are
-absent, and uses passthrough inside GNU screen. tmux does not receive these
-queries or change its existing geometry/output path. Startup does not wait for
+absent, and uses passthrough inside GNU screen. tmux does not receive the
+identity query or automatically change rendering modes; its cell-size probe is
+used only for pane geometry, as described below. Startup does not wait for
 an answer: other terminals, and terminals that do not answer, retain their
 existing behavior.
 
@@ -295,8 +319,16 @@ for its text-area pixel size and character-cell size at startup and on SIGWINCH:
 a nonzero ioctl value may be stale (Windows `ssh.exe` can report 640x480 while
 Windows Terminal reports a 1200x600 SIXEL area). A valid text-area reply overrides
 the ioctl fallback; a cell-size reply can supply the dimensions when no text-area
-reply is available. screen uses passthrough for these queries. tmux keeps valid
-pane pixel dimensions and does not add queries in that case. For iTerm2 (identified
+reply is available. screen uses passthrough for these queries. Inside tmux,
+Xsixel queries the outer terminal's cell size through passthrough and combines
+it with the pane's own rows and columns. This corrects stale SSH pixel sizes
+without adopting the outer window's full dimensions. Matching ioctl cell sizes
+retain the existing pane pixel dimensions, including padding; absent or invalid
+replies retain the ioctl fallback. A geometry-only iTerm2 cell/Retina query
+preserves backing-pixel dimensions inside tmux without changing its rendering
+mode or output scale. Replies are coalesced for 100 ms; these queries run only
+at startup and after a resize, never during ordinary frame updates.
+For iTerm2 (identified
 by the startup environment or `-iterm2`), Xsixel keeps valid ioctl dimensions
 for SIXEL images and queries the character-cell size separately for mouse input.
 On Retina displays, images use backing pixels while mouse reports use points;

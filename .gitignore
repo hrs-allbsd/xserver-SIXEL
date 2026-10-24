@@ -1,6 +1,7 @@
 *~
 *.swp
 *.patch
+!/patches/screen-5.0.1-pixel-resize.patch
 tags
 compile_commands.json
 .vscode/*
