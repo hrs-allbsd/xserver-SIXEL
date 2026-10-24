@@ -318,6 +318,7 @@ typedef struct
 
 static SIXEL_Driver *g_driver = NULL;
 static OsTimerPtr sixelFrameTimer;
+static OsTimerPtr sixelTmuxSizeTimer;
 static Bool sixelFramePending;
 static RegionRec sixelPendingDamage;
 static Bool sixelDamageInitialized;
@@ -333,7 +334,9 @@ sixelOutputScale(void)
 static void
 sixelQueryCellSize(void)
 {
-    if (sixelIterm2Terminal && !sixelTmux && !sixelCellPending) {
+    /* In tmux this is a geometry-only probe. iTerm2's 16t reply uses points,
+     * while SIXEL uses backing pixels. Other terminals may simply ignore it. */
+    if ((sixelIterm2Terminal || sixelTmux) && !sixelCellPending) {
         sixelCellPending = TRUE;
         sixelTerminalControl("\033]1337;ReportCellSize\007");
     }
@@ -385,14 +388,18 @@ sixelReadTerminalSize(SIXEL_Driver *driver)
     if (!driver->cell_w || !driver->cell_h)
         printf("\033[18t");
     /* Windows ssh.exe can preserve a plausible but stale 640x480 pixel size.
-     * Use ioctl immediately, then let terminal replies correct it. tmux's valid
-     * pane dimensions stay authoritative; screen must pass queries outside. */
+     * Use ioctl immediately, then let terminal replies correct it. */
     /* iTerm2's ioctl may use Retina backing pixels, while 14t includes window
      * chrome. Cell dimensions describe mouse coordinates, not image pixels. Keep
-     * tmux's pane geometry authoritative; query through screen as usual. */
-    if (sixelIterm2Terminal && !sixelTmux)
+     * tmux's pane cell counts authoritative; query through screen as usual. */
+    if (sixelTmux) {
+        sixelQueryCellSize();
+        /* Outer window dimensions (14t) must never replace pane dimensions. */
         sixelTerminalControl("\033[16t");
-    else if (!sixelTmux || !driver->pixel_w || !driver->pixel_h)
+    }
+    else if (sixelIterm2Terminal)
+        sixelTerminalControl("\033[16t");
+    else
         sixelTerminalControl("\033[14t\033[16t");
     sixelQueryCellSize();
     fflush(stdout);
@@ -770,7 +777,7 @@ sixelPatchCells(SIXEL_Driver *driver, int *cw, int *ch)
 }
 
 static Bool
-sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
+sixelRenderRectPart(SIXEL_Driver *driver, BoxPtr damage, Bool part)
 {
     int x1 = max(0, damage->x1), y1 = max(0, damage->y1);
     int x2 = min(driver->w, damage->x2), y2 = min(driver->h, damage->y2);
@@ -797,7 +804,7 @@ sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
         y2 = min(driver->h, (y2 + ch - 1) / ch * ch);
         col = x1 / cw + 1;
         row = y1 / ch + 1;
-    } else if (sixelIterm2Compat || driver->output_scale > 1) {
+    } else if (!part && (sixelIterm2Compat || driver->output_scale > 1)) {
         x1 = y1 = 0;
         x2 = driver->w;
         y2 = driver->h;
@@ -867,6 +874,33 @@ sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
                 driver->encoded[body] == ';'))
             body++;
     }
+    /* Count the actual envelope, transparent gaps and offset commands before
+     * sending a large image. Keep all packets that fit the tmux default limit
+     * on the original path. Independent images avoid inter-packet controls
+     * interrupting an open SIXEL string in the outer terminal. */
+    if (sixelTmux && end > 65536) {
+        size_t length = end - body + 128 + y1 / 6;
+        int offset = x1 ? snprintf(NULL, 0, "!%d?", x1) : 0;
+        length += offset;
+        if (offset) {
+            for (i = body; i < end - 2; i++) {
+                if (driver->encoded[i] == '$' || driver->encoded[i] == '-')
+                    length += offset;
+            }
+        }
+        if (length > 1048576) {
+            BoxRec first = {x1, y1, x2, y2}, second = first;
+            if (height > 6) {
+                int middle = y1 + max(6, height / 12 * 6);
+                first.y2 = second.y1 = middle;
+            } else if (width > 1) {
+                first.x2 = second.x1 = x1 + width / 2;
+            } else
+                return FALSE;
+            return sixelRenderRectPart(driver, &first, TRUE) &&
+                   sixelRenderRectPart(driver, &second, TRUE);
+        }
+    }
     if (sixelScreen) {
         out = open_memstream(&screen_data, &screen_length);
         if (!out)
@@ -918,6 +952,12 @@ sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
         free(screen_data);
     }
     return TRUE;
+}
+
+static Bool
+sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
+{
+    return sixelRenderRectPart(driver, damage, FALSE);
 }
 #endif
 
@@ -1723,6 +1763,39 @@ int ddxProcessArgument(int argc, char **argv, int i)
     return KdProcessArgument(argc, argv, i);
 }
 
+/* The outer terminal supplies cell geometry, not pane geometry. Preserve ioctl
+ * padding when its cell size agrees; replace stale SSH pixels otherwise. */
+static void
+sixelNormalizeTmuxPixels(SIXEL_Driver *driver)
+{
+    double cell_w = driver->cell_pixel_w, cell_h = driver->cell_pixel_h;
+    double w, h;
+
+    if (!sixelTmux || driver->cell_w <= 0 || driver->cell_h <= 0)
+        return;
+    /* A known Retina terminal must not shrink to a points-only 16t reply if
+     * its backing-cell query is unavailable. Retain ioctl in that case. */
+    if (sixelIterm2Terminal && !driver->iterm_cell_scale)
+        return;
+    if (driver->iterm_cell_scale) {
+        cell_w = driver->iterm_cell_w * driver->iterm_cell_scale;
+        cell_h = driver->iterm_cell_h * driver->iterm_cell_scale;
+    }
+    w = cell_w * driver->cell_w;
+    h = cell_h * driver->cell_h;
+    if (cell_w < 1 || cell_h < 1 || w > SHRT_MAX || h > SHRT_MAX)
+        return;
+    if (driver->pixel_size_reported &&
+        driver->reported_pixel_w / driver->cell_w == cell_w &&
+        driver->reported_pixel_h / driver->cell_h == cell_h) {
+        driver->pixel_w = driver->reported_pixel_w;
+        driver->pixel_h = driver->reported_pixel_h;
+    } else {
+        driver->pixel_w = (int)(w + 0.5);
+        driver->pixel_h = (int)(h + 0.5);
+    }
+}
+
 static void
 sixelApplyTerminalSize(SIXEL_Driver *driver)
 {
@@ -1739,7 +1812,7 @@ sixelApplyTerminalSize(SIXEL_Driver *driver)
             driver->pixel_size_reported = TRUE;
         }
     }
-    if (!driver->pixel_size_reply &&
+    if (!sixelTmux && !driver->pixel_size_reply &&
         !(sixelIterm2Terminal && driver->pixel_size_reported) &&
         driver->cell_pixel_w > 0 && driver->cell_pixel_h > 0 &&
         driver->cell_w > 0 && driver->cell_h > 0 &&
@@ -1748,6 +1821,7 @@ sixelApplyTerminalSize(SIXEL_Driver *driver)
         driver->pixel_w = driver->cell_pixel_w * driver->cell_w * driver->output_scale;
         driver->pixel_h = driver->cell_pixel_h * driver->cell_h * driver->output_scale;
     }
+    sixelNormalizeTmuxPixels(driver);
     width = driver->auto_size && driver->pixel_w > 0 ? max(1, driver->pixel_w / scale) : driver->w;
     height = driver->auto_size && driver->pixel_h > 0 ? max(1, driver->pixel_h / scale) : driver->h;
 #ifdef RANDR
@@ -1764,6 +1838,16 @@ sixelApplyTerminalSize(SIXEL_Driver *driver)
 #endif
     SIXEL_Flip(driver);
     fflush(stdout);
+}
+
+/* Coalesce 16t and the Retina reply even when separate reads deliver them in
+ * reverse order. This timer runs only for tmux geometry replies, not frames. */
+static CARD32
+sixelTmuxSizeTimeout(OsTimerPtr timer, CARD32 now, void *arg)
+{
+    if (g_driver)
+        sixelApplyTerminalSize(g_driver);
+    return 0;
 }
 
 /* A self-pipe wakes the server without doing X server work in SIGWINCH. */
@@ -1795,6 +1879,8 @@ sixelResizeTimeout(OsTimerPtr timer, CARD32 now, void *arg)
 
     if (!driver)
         return 0;
+    if (sixelTmuxSizeTimer)
+        TimerCancel(sixelTmuxSizeTimer);
     /* Pixel and cell dimensions must belong to this terminal configuration.
      * In particular, do not reuse cell geometry after a font-size change. */
     driver->pixel_w = driver->pixel_h = 0;
@@ -1806,7 +1892,10 @@ sixelResizeTimeout(OsTimerPtr timer, CARD32 now, void *arg)
     driver->pixel_size_reported = FALSE;
     driver->pixel_size_reply = FALSE;
     sixelReadTerminalSize(driver);
-    if (sixelValidSize(driver->pixel_w, driver->pixel_h))
+    if (sixelTmux)
+        sixelTmuxSizeTimer = TimerSet(sixelTmuxSizeTimer, 0, 100,
+                                     sixelTmuxSizeTimeout, NULL);
+    else if (sixelValidSize(driver->pixel_w, driver->pixel_h))
         sixelApplyTerminalSize(driver);
     return 0;
 }
@@ -1872,6 +1961,10 @@ sixelStopResizeMonitor(void)
     if (sixelResizeTimer) {
         TimerFree(sixelResizeTimer);
         sixelResizeTimer = NULL;
+    }
+    if (sixelTmuxSizeTimer) {
+        TimerFree(sixelTmuxSizeTimer);
+        sixelTmuxSizeTimer = NULL;
     }
     if (sixelResizePipe[0] >= 0) {
         RemoveNotifyFd(sixelResizePipe[0]);
@@ -2025,7 +2118,7 @@ static void sixelPollInput(void)
                         fflush(stdout);
                     }
                 } else if (key->value == SIXEL_CELL_SIZE && sixelCellPending &&
-                           g_driver && !sixelTmux &&
+                           g_driver &&
                            sscanf(text, "1337;ReportCellSize=%lf;%lf;%lf%n",
                                   &h, &w, &scale, &used) == 3 &&
                            text[used] == 0 && isfinite(w) && isfinite(h) &&
@@ -2033,7 +2126,8 @@ static void sixelPollInput(void)
                            w <= SHRT_MAX && h <= SHRT_MAX &&
                            (scale == 1 || scale == 2)) {
                     sixelCellPending = FALSE;
-                    sixelDetectedScale = g_renderer == RENDERER_LIBSIXEL ? (int)scale : 1;
+                    if (!sixelTmux)
+                        sixelDetectedScale = g_renderer == RENDERER_LIBSIXEL ? (int)scale : 1;
                     g_driver->iterm_cell_w = w;
                     g_driver->iterm_cell_h = h;
                     g_driver->iterm_cell_scale = (int)scale;
@@ -2064,6 +2158,8 @@ static void sixelPollInput(void)
                     sixelValidSize(key->params[2], key->params[1])) {
                     switch (key->params[0]) {
                     case 4:
+                        if (sixelTmux)
+                            break;
                         if (sixelIterm2Terminal && g_driver->pixel_size_reported)
                             break;
                         g_driver->pixel_size_reported = TRUE;
@@ -2187,8 +2283,13 @@ static void sixelPollInput(void)
             }
         }
     }
-    if (g_driver && size_changed)
-        sixelApplyTerminalSize(g_driver);
+    if (g_driver && size_changed) {
+        if (sixelTmux)
+            sixelTmuxSizeTimer = TimerSet(sixelTmuxSizeTimer, 0, 100,
+                                         sixelTmuxSizeTimeout, NULL);
+        else
+            sixelApplyTerminalSize(g_driver);
+    }
 
 }
 
@@ -2209,8 +2310,8 @@ static int sixelInit(void)
     if (!sixelTmux) {
         sixelIdentityPending = TRUE;
         sixelTerminalControl("\033[>q");
-        sixelQueryCellSize();
     }
+    sixelQueryCellSize();
     if (!sixelTmux && !sixelScreen && !sixelDecMouse && !sixelIterm2Terminal) {
         sixelMouseModeQueryPending = TRUE;
         printf("\033[?1016$p");

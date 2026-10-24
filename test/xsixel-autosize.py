@@ -1045,8 +1045,108 @@ class TmuxPassthrough(unittest.TestCase):
         self.addCleanup(server.close)
         self.assertEqual(server.dimensions(), (604, 459))
         self.assertNotIn(b'\x1b[14t', server.output)
-        self.assertNotIn(b'\x1b[16t', server.output)
+        server.wait_output(b'\x1b\x1b[16t')
         self.assertNotIn(b'\x1b[?1016$p', server.output)
+        # Missing replies retain ioctl; matching cells retain its padding too.
+        time.sleep(.15)
+        self.assertEqual(server.dimensions(), (604, 459))
+        server.reply(b'\x1b[6;13;6t')
+        time.sleep(.15)
+        self.assertEqual(server.dimensions(), (604, 459))
+
+    def test_windows_ssh_pixels_corrected_and_follow_font_resize(self):
+        self.tmux('set-option', '-p', 'allow-passthrough', 'on')
+        server = Server(pixels=(522, 477), cells=(174, 53), env=self.env)
+        self.addCleanup(server.close)
+        server.wait_output(b'\x1b\x1b[16t')
+        server.reply(b'\x1b[6;20;10t')
+        server.wait_size(1740, 1060)
+        Autosize.mouse_events(self, server,
+            [b'\x1b[<0;174;53M', b'\x1b[<0;174;53m'],
+            [(4, 1, 1735, 1050), (5, 1, 1735, 1050)])
+        start = len(server.output)
+        server.resize_terminal((624, 450), cells=(156, 50))
+        server.wait_output(b'\x1b\x1b[16t', start)
+        server.reply(b'\x1b[6;20;10t')
+        server.wait_size(1560, 1000)
+        Autosize.mouse_events(self, server,
+            [b'\x1b[<0;156;50M', b'\x1b[<0;156;50m'],
+            [(4, 1, 1555, 990), (5, 1, 1555, 990)])
+
+    def test_outer_window_pixels_never_replace_pane_size(self):
+        self.tmux('set-option', '-p', 'allow-passthrough', 'on')
+        server = Server(pixels=(258, 477), cells=(86, 53), env=self.env)
+        self.addCleanup(server.close)
+        server.reply(b'\x1b[4;1060;1740t\x1b[6;20;10t')
+        server.wait_size(860, 1060)
+        server.reply(b'\x1b[4;1060;1740t')
+        time.sleep(.15)
+        self.assertEqual(server.dimensions(), (860, 1060))
+
+    def test_fixed_screen_is_preserved_with_corrected_terminal_cells(self):
+        self.tmux('set-option', '-p', 'allow-passthrough', 'on')
+        server = Server(pixels=(600, 480), cells=(120, 30), env=self.env,
+                        args=('-screen', '800x600'))
+        self.addCleanup(server.close)
+        server.reply(b'\x1b[6;20;10t')
+        time.sleep(.2)
+        self.assertEqual(server.dimensions(), (800, 600))
+
+    def test_retina_cells_do_not_enable_scaling_or_shrink_tmux(self):
+        self.tmux('set-option', '-p', 'allow-passthrough', 'on')
+        native = b'\x1b]1337;ReportCellSize=17;7;2\x07'
+        points = b'\x1b[6;17;7t'
+        for replies in ((native, points), (points, native)):
+            with self.subTest(replies=replies):
+                server = Server(pixels=(1120, 850), cells=(80, 25), env=self.env)
+                try:
+                    server.wait_output(b'1337;ReportCellSize')
+                    server.events()
+                    server.reply(replies[0])
+                    time.sleep(.02)
+                    server.reply(replies[1])
+                    time.sleep(.2)
+                    self.assertEqual(server.dimensions(), (1120, 850))
+                    self.assertEqual(server.events(), [])
+                    mode = subprocess.check_output(['xprop', '-display', server.name,
+                                                    '-root', '_XSIXEL_RENDER_MODE'])
+                    self.assertIn(b'"fast"', mode)
+                    start = len(server.output)
+                    subprocess.run(['xsetroot', '-display', server.name,
+                                    '-solid', 'red'], check=True)
+                    server.wait_output(b'q"1;1;1120;850', start)
+                    self.assertNotIn(b'\x1b[?80l', server.output[start:])
+                finally:
+                    server.close()
+
+    def test_retina_backing_cells_correct_stale_tmux_pixels(self):
+        self.tmux('set-option', '-p', 'allow-passthrough', 'on')
+        server = Server(pixels=(600, 480), cells=(80, 25), env=self.env)
+        self.addCleanup(server.close)
+        server.reply(b'\x1b]1337;ReportCellSize=17.5;7.25;2\x07\x1b[6;17;7t')
+        server.wait_size(1160, 875)
+        start = len(server.output)
+        server.resize_terminal((600, 480), cells=(80, 25))
+        server.wait_output(b'1337;ReportCellSize', start)
+        server.reply(b'\x1b]1337;ReportCellSize=17;7;1\x07\x1b[6;17;7t')
+        server.wait_size(560, 425)
+
+    def test_known_iterm2_missing_retina_reply_keeps_backing_pixels(self):
+        self.tmux('set-option', '-p', 'allow-passthrough', 'on')
+        env = dict(self.env, LC_TERMINAL='iTerm2')
+        server = Server(pixels=(1120, 850), cells=(80, 25), env=env)
+        self.addCleanup(server.close)
+        server.reply(b'\x1b[6;17;7t')
+        time.sleep(.2)
+        self.assertEqual(server.dimensions(), (1120, 850))
+
+    def test_oversized_cell_products_keep_tmux_fallback(self):
+        self.tmux('set-option', '-p', 'allow-passthrough', 'on')
+        server = Server(pixels=(800, 600), env=self.env)
+        self.addCleanup(server.close)
+        server.reply(b'\x1b[6;32767;32767t')
+        time.sleep(.2)
+        self.assertEqual(server.dimensions(), (800, 600))
 
     def test_mouse_cells_cover_screen_and_follow_resize(self):
         self.tmux('set-option', '-g', 'allow-passthrough', 'on')
@@ -1084,6 +1184,63 @@ class TmuxPassthrough(unittest.TestCase):
                 finally:
                     server.close()
                 self.assertIn(b'\x1bPtmux;\x1b\x1b[?80r\x1b\\', server.output)
+
+    def test_large_image_packets_fit_tmux_default_input_limit(self):
+        class RecordingServer(Server):
+            def drain(self):
+                try:
+                    while True:
+                        data = os.read(self.master, 65536)
+                        if not data:
+                            return
+                        self.output.extend(data)
+                except OSError:
+                    pass
+
+        self.tmux('set-option', '-p', 'allow-passthrough', 'on')
+        server = RecordingServer(pixels=(1920, 1200), env=self.env)
+        self.addCleanup(server.close)
+        time.sleep(.1)
+        start = len(server.output)
+        subprocess.run(['xsetroot', '-display', server.name, '-mod', '1', '1',
+                        '-fg', '#e0d080', '-bg', '#50a0b0'], check=True)
+        server.wait_output(b'q"1;1;1920;1200', start)
+        last_header = server.output.index(b'q"1;1;1920;1200', start)
+        server.wait_output(b'\x1b\x1b\\\x1b\\', last_header)
+        packets = re.findall(rb'\x1bPtmux;((?:\x1b\x1b|[^\x1b])*)\x1b\\',
+                             bytes(server.output[start:]), re.S)
+        self.assertGreater(len(packets), 1)
+        self.assertTrue(all(len(packet) + 9 <= 1048576 for packet in packets))
+        for packet in packets:
+            raw = packet.replace(b'\x1b\x1b', b'\x1b')
+            self.assertTrue(raw.startswith(b'\x1b[H\x1bP0;1q'))
+            self.assertTrue(raw.endswith(b'\x1b\\'))
+        decoded = b''.join(packet.replace(b'\x1b\x1b', b'\x1b') for packet in packets)
+        self.assertGreater(len(decoded), 1024 * 1024)
+        last = packets[-1].replace(b'\x1b\x1b', b'\x1b')
+        image = last[last.index(b'\x1bP'):]
+        self.assertTrue(image.endswith(b'\x1b\\'))
+        lib = C.CDLL(ctypes.util.find_library('sixel'))
+        lib.sixel_decode_raw.argtypes = [C.c_void_p, C.c_int, C.POINTER(C.c_void_p),
+            C.POINTER(C.c_int), C.POINTER(C.c_int), C.POINTER(C.c_void_p),
+            C.POINTER(C.c_int), C.c_void_p]
+        libc = C.CDLL(ctypes.util.find_library('c'))
+        libc.free.argtypes = [C.c_void_p]
+        pixels, palette = C.c_void_p(), C.c_void_p()
+        w, h, colors = C.c_int(), C.c_int(), C.c_int()
+        encoded = C.create_string_buffer(image)
+        try:
+            status = lib.sixel_decode_raw(encoded, len(image), C.byref(pixels),
+                C.byref(w), C.byref(h), C.byref(palette), C.byref(colors), None)
+            self.assertEqual(status, 0)
+            self.assertEqual((w.value, h.value), (1920, 1200))
+            indexed = C.cast(pixels, C.POINTER(C.c_ubyte))
+            # The bottom rows must survive reconstruction, not become blank.
+            bottom = {indexed[1198 * w.value + x] for x in range(100)}
+            self.assertGreater(len(bottom), 1)
+        finally:
+            libc.free(pixels)
+            libc.free(palette)
 
 
 class ScreenPassthrough(unittest.TestCase):
