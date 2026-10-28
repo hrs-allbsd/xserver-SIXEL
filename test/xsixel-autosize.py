@@ -12,6 +12,7 @@ import pty
 import re
 import resource
 import select
+import shlex
 import signal
 import shutil
 import struct
@@ -49,7 +50,8 @@ def library(name, functions):
 
 
 class Server:
-    def __init__(self, pixels=(0, 0), cells=(80, 30), args=(), memory_limit=False, env=None):
+    def __init__(self, pixels=(0, 0), cells=(80, 30), args=(), memory_limit=False, env=None,
+                 stderr_to_terminal=False):
         self.closed = False
         self.master, self.slave = pty.openpty()
         fcntl.ioctl(self.slave, termios.TIOCSWINSZ,
@@ -63,7 +65,8 @@ class Server:
             resource.setrlimit(resource.RLIMIT_AS, (256 * 1024**2, 256 * 1024**2))
         self.process = subprocess.Popen(
             [os.environ['XSIXEL'], '-displayfd', str(wfd), '-terminate', '-nolisten', 'tcp', '-ac', *args],
-            stdin=self.slave, stdout=self.slave, stderr=self.log, pass_fds=(wfd,),
+            stdin=self.slave, stdout=self.slave,
+            stderr=self.slave if stderr_to_terminal else self.log, pass_fds=(wfd,),
             start_new_session=True, preexec_fn=limit_memory if memory_limit else None,
             env=env if env is not None else {k: v for k, v in os.environ.items()
                                              if k not in ("TMUX", "TMUX_PANE", "STY", "TERM_PROGRAM", "LC_TERMINAL")})
@@ -1437,6 +1440,48 @@ class RenderModeControl(unittest.TestCase):
                         '-f', self.property, '8s', '-set', self.property, 'iterm2'],
                        check=True, capture_output=True)
         self.assertIn('"fast"', self.mode(server))
+
+
+class ExecuteCommand(unittest.TestCase):
+    def test_child_streams_and_status_stay_out_of_sixel_terminal(self):
+        with tempfile.TemporaryDirectory(prefix='xsixel exec logs ') as tmp:
+            script = ("import os,sys; "
+                      "print('XSIXEL_CHILD_DISPLAY=' + os.environ['DISPLAY'], flush=True); "
+                      "sys.stderr.write('XSIXEL_CHILD_ERROR=\\x1b[2J\\n'); "
+                      "sys.exit(7)")
+            commands = [(shlex.quote(shutil.which('python3')) + ' -c ' + shlex.quote(script), 7),
+                        ('exec ' + shlex.quote(str(Path(tmp) / 'missing-command')), 127)]
+            for command, status in commands:
+                with self.subTest(status=status):
+                    env = {k: v for k, v in os.environ.items() if k not in
+                           ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL')}
+                    env['TMPDIR'] = tmp
+                    before = set(Path(tmp).glob('Xsixel-*-exec-*'))
+                    server = Server(pixels=(640, 480), args=('-exec', command),
+                                    env=env, stderr_to_terminal=True)
+                    try:
+                        end = time.monotonic() + 5
+                        data = b''
+                        while time.monotonic() < end:
+                            logs = set(Path(tmp).glob('Xsixel-*-exec-*')) - before
+                            if logs:
+                                self.assertEqual(len(logs), 1)
+                                log = next(iter(logs))
+                                data = log.read_bytes()
+                                if f'Child command exited with status {status}\n'.encode() in data:
+                                    break
+                            time.sleep(.02)
+                        self.assertIn(f'Child command exited with status {status}\n'.encode(), data)
+                        self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+                        if status == 7:
+                            self.assertIn(('XSIXEL_CHILD_DISPLAY=' + server.name + '\n').encode(), data)
+                            self.assertIn(b'XSIXEL_CHILD_ERROR=\x1b[2J\n', data)
+                        self.assertNotIn(b'Starting child command:', server.output)
+                        self.assertNotIn(b'XSIXEL_CHILD_', server.output)
+                        self.assertNotIn(b'Child command exited', server.output)
+                        self.assertEqual(server.dimensions(), (640, 480))
+                    finally:
+                        server.close()
 
 
 if __name__ == '__main__':
