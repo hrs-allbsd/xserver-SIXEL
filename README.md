@@ -109,6 +109,20 @@ Run Xsixel in a SIXEL-capable terminal. The optional Chafa renderer requires
 Chafa development files and `-Dchafa=true`; select it at runtime with
 `-backend chafa`. The default renderer is libsixel.
 
+mlterm 3.9.4 with the XQuartz backend on macOS has also been checked over SSH,
+both directly and through tmux and GNU screen passthrough. No mlterm-specific
+Xsixel option is needed. With this version Xsixel uses SGR cell mouse reports,
+so pointer movement is quantized to character cells. The multiplexer settings
+described below still apply.
+
+With `-exec`, child-command stdout, stderr and exit diagnostics are saved in a
+private log instead of being written over the terminal image. This also prevents
+mlterm from clearing part of the image when ratpoison starts. Each launch creates
+a separate `Xsixel-N-exec-XXXXXX` file in `$TMPDIR` (or `/tmp` when unset), where
+`N` is the display number and the final characters are unique. The file is
+readable and writable only by its owner and remains available after the command
+exits. No stderr redirection is needed for `Xsixel :15 -exec ratpoison`.
+
 Inside tmux, Xsixel detects `TMUX` and automatically sends SIXEL images through
 tmux passthrough, regardless of whether tmux was built with SIXEL support.
 Enable passthrough and focus notifications before starting Xsixel:
