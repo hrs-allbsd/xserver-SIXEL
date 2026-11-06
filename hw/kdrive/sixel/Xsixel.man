@@ -1,0 +1,359 @@
+.\" Copyright (c) 2026 Hiroki Sato <hrs@allbsd.org>
+.\"
+.\" Permission to use, copy, modify, and distribute this software for any
+.\" purpose with or without fee is hereby granted, provided that the above
+.\" copyright notice and this permission notice appear in all copies.
+.\"
+.\" THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+.\" WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+.\" MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+.\" ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+.\" WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+.\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+.\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+.TH XSIXEL 1 "November 7, 2026" "XLibre @version@" "User Commands"
+.SH NAME
+Xsixel \- X server displaying a desktop in a SIXEL terminal
+.SH SYNOPSIS
+.B Xsixel
+.RI [ :display ]
+.RI [ option " ...]"
+.SH DESCRIPTION
+.B Xsixel
+is an XLibre KDrive X server that renders an X desktop as SIXEL images
+in a terminal and receives keyboard and mouse input from that terminal.
+Run it in the foreground with standard input and output attached to a
+SIXEL-capable terminal, locally or over SSH.
+X applications connect to its display in the usual way.
+For example,
+.B Xsixel :9 \-exec ratpoison
+starts a desktop on display
+.BR :9 .
+No host X server is required for SIXEL output.
+.PP
+The default renderer uses libsixel and updates damaged areas of the desktop.
+An optional Chafa renderer is available in builds configured with
+.BR \-Dchafa=true .
+Normal shutdown restores the terminal display and input modes.
+.SH OPTIONS
+See
+.BR Xserver (1)
+and
+.BR Xkdrive (1)
+for common server options.
+The following options control the terminal backend:
+.TP
+.BI \-screen " width" x height
+Set a fixed logical X desktop size in pixels.
+Without this option, Xsixel determines the size from terminal pixel and
+cell dimensions and follows terminal resizes through RandR.
+It initially uses the terminal's reported pixel size, or 640x480 if
+unavailable, and corrects it as terminal query replies arrive.
+Explicit dimensions remain fixed when the terminal changes size.
+.TP
+.BI \-exec " command"
+After server startup, run
+.I command
+using
+.BR /bin/sh\ \-c ,
+with
+.B DISPLAY
+set to the new server's display.
+Quote commands containing spaces so they form one argument.
+Command output and exit diagnostics go to a private log; see
+.BR FILES .
+.IP
+By default, Xsixel exits when this shell command finishes, including
+nonzero exit or termination by a signal, even if other X connections remain.
+Keep the session application in the foreground:
+backgrounding it allows the shell to finish early.
+The command's exit status is recorded in the log rather than used as
+Xsixel's exit status.
+.TP
+.B \-keep
+.TQ
+.B \-keep-server
+Keep Xsixel running after the
+.B \-exec
+command finishes.
+The two names are equivalent and have no effect without
+.BR \-exec .
+An explicit
+.B \-terminate
+still terminates the server when the last X client disconnects.
+.TP
+.BI \-mouse-protocol " sgr|dec"
+Select terminal mouse reporting.
+The default,
+.BR sgr ,
+requests pixel coordinates when supported and falls back to character-cell
+coordinates when the terminal reports pixel mode as unavailable.
+tmux and GNU screen use cell coordinates.
+Cell reporting limits pointer precision to character cells.
+The
+.B dec
+alternative requires DEC locator support in the terminal;
+use the default SGR protocol in multiplexers.
+.TP
+.B \-iterm2
+Force iTerm2 compatibility rendering when automatic identification is
+unavailable.
+Normally iTerm2 is detected from the startup environment or a terminal
+identity query, including over SSH and through GNU screen.
+.TP
+.BI \-iterm2-scale " auto|1|2"
+Enable iTerm2 compatibility and select image enlargement.
+The default,
+.BR auto ,
+selects scale 1 or 2 from iTerm2's cell-size and Retina-scale reply;
+without a usable reply it keeps scale 1.
+An explicit 1 or 2 overrides the detected scale.
+At scale 2, each logical X pixel becomes a 2x2 block of image pixels.
+For example, a 1120x850 image area displays a 560x425 logical desktop.
+.B \-screen
+always specifies logical dimensions.
+Scale 2 requires the libsixel backend.
+tmux always uses scale 1.
+.TP
+.B \-iterm2-full-redraw
+Enable iTerm2 compatibility and send full images instead of partial row
+updates.
+Use this when sharing a GNU screen session between viewers with different
+character-cell dimensions.
+The rendering mode and scale apply to all viewers of the same Xsixel server.
+A viewer attaching after startup is not identified automatically;
+specify a scale explicitly if necessary.
+.TP
+.BI \-backend " libsixel|chafa"
+Select the renderer.
+The default is
+.BR libsixel .
+.B chafa
+is accepted only when Chafa support was enabled at build time.
+Chafa uses full redraws and does not support scale 2.
+.TP
+.B \-help
+Display server command-line help, including common KDrive options.
+.SH TERMINAL SIZE AND INPUT
+Automatic sizing uses terminal queries at startup and after resize
+notifications, without waiting for replies before starting the server.
+Resize notifications are coalesced for 100 milliseconds.
+Inside tmux, the outer terminal's cell dimensions are combined with the
+pane's own rows and columns.
+If size reports are missing or invalid, the current size is retained.
+.PP
+iTerm2 Retina image dimensions and mouse coordinates can use different
+units; automatic scale detection accounts for this.
+Windows Terminal's reported SIXEL pixels are virtual pixels and need not
+equal physical display pixels.
+.PP
+Mouse motion, dragging, the first three buttons, and vertical and horizontal
+wheel events are supported by SGR reporting.
+If an outer xterm suppresses mouse events, start it with an empty
+.B disallowedMouseOps
+resource, as shown in
+.BR EXAMPLES .
+.PP
+When built with libX11 and libXfixes, Xsixel can hide the outer X terminal's
+pointer using its original
+.B DISPLAY
+and
+.BR WINDOWID .
+The pointer is restored on leaving that window and on server exit.
+Otherwise it requests terminal pointer hiding, which some terminals ignore.
+.SH MULTIPLEXERS
+.SS tmux
+When
+.B TMUX
+is set, Xsixel automatically uses passthrough to the outer terminal.
+tmux does not need to be built with SIXEL support.
+Before starting Xsixel, enable passthrough for the pane and focus events:
+.PP
+.nf
+tmux set-option \-p allow-passthrough on
+tmux set-option \-g focus-events on
+.fi
+.PP
+Xsixel checks both settings and exits with setup instructions if either
+is disabled; it does not change the configuration itself.
+Passthrough values
+.B on
+and
+.B all
+are accepted.
+Use a single pane or zoom it with
+.BR "Ctrl-b z" ,
+preferably with the status line disabled:
+.PP
+.nf
+tmux set-option status off
+.fi
+.PP
+Returning to the Xsixel window triggers a full redraw through focus events.
+Automatic terminal identification does not switch tmux to iTerm2 rendering;
+its iTerm2 cell-size query is used only for geometry.
+.SS GNU screen
+When
+.B STY
+is set, Xsixel automatically uses GNU screen's DCS passthrough.
+No SIXEL build option or passthrough setting is required in screen.
+Use one full-screen region without hardstatus or caption lines.
+Xsixel resends a full image periodically, restoring the display within
+about two seconds after window switching or reattachment.
+For example:
+.PP
+.nf
+screen Xsixel :9 \-exec ratpoison
+.fi
+.PP
+GNU screen 5.0.1 does not forward pixel-only size changes when rows and
+columns remain unchanged, such as some font-size changes.
+It requires a screen-side pixel-resize fix for Xsixel to follow those changes.
+.SS Limitations
+The outer terminal must support SIXEL and mouse reporting.
+Split-pane or split-region clipping and nested multiplexers are unsupported.
+If both
+.B TMUX
+and
+.B STY
+are set, tmux takes precedence.
+.SH RUNTIME RENDERING MODE
+With the libsixel backend, the root-window property
+.B _XSIXEL_RENDER_MODE
+selects the drawing policy.
+The initial value reflects startup options and automatic iTerm2 detection.
+Its type must be
+.BR STRING ,
+format 8, with the exact value
+.B fast
+or
+.BR iterm2 .
+.B fast
+uses cropped damage updates.
+.B iterm2
+uses opaque, full-width character-row updates when cell geometry permits,
+otherwise full images, to avoid partial-image artifacts in iTerm2.
+.PP
+Read the current mode or change it using
+.BR xprop (1):
+.PP
+.nf
+xprop \-display :9 \-root _XSIXEL_RENDER_MODE
+xprop \-display :9 \-root \-f _XSIXEL_RENDER_MODE 8s \e
+    \-set _XSIXEL_RENDER_MODE iterm2
+xprop \-display :9 \-root \-f _XSIXEL_RENDER_MODE 8s \e
+    \-set _XSIXEL_RENDER_MODE fast
+.fi
+.PP
+A mode change schedules a full redraw; writing the same value does not.
+Invalid values, deletion and property rotation are rejected.
+Properties on ordinary client windows have no effect.
+This control changes rendering policy, not terminal identity or scale,
+and applies to every viewer until server restart.
+Use
+.B xrefresh \-display :9
+for an explicit full redraw without changing modes.
+.SH ENVIRONMENT
+.TP
+.B TMUX
+Select tmux passthrough when nonempty.
+.TP
+.B TMUX_PANE
+Identify the current tmux pane when checking its passthrough setting.
+This variable is normally supplied by tmux together with
+.BR TMUX .
+.TP
+.B STY
+Select GNU screen passthrough when nonempty and tmux is not selected.
+.TP
+.B TERM_PROGRAM
+The value
+.B iTerm.app
+identifies iTerm2 at startup.
+.TP
+.B LC_TERMINAL
+The value
+.B iTerm2
+also identifies iTerm2 at startup.
+These variables are optional when terminal identity queries work.
+.TP
+.B DISPLAY, WINDOWID
+Identify the outer X terminal for host-pointer hiding when that support
+is available.
+The
+.B \-exec
+command receives the new Xsixel display instead of the original
+.BR DISPLAY .
+.TP
+.B TMPDIR
+Directory for private command logs.
+If unset or empty,
+.B /tmp
+is used.
+.SH FILES
+.TP
+.I $TMPDIR/Xsixel-N-exec-XXXXXX
+Private log for each
+.B \-exec
+launch, where
+.I N
+is the display number and the final characters are unique.
+It contains command stdout, stderr and exit diagnostics, is readable and
+writable only by its owner, and remains available after command completion.
+.SH EXAMPLES
+Start a window manager, with automatic desktop size and iTerm2 detection:
+.PP
+.nf
+Xsixel :9 \-exec ratpoison
+.fi
+.PP
+Connect an application from another shell:
+.PP
+.nf
+xterm \-display :9
+.fi
+.PP
+Keep the server after its initial application exits:
+.PP
+.nf
+Xsixel :9 \-keep \-exec xterm
+.fi
+.PP
+Use a fixed logical desktop with explicit Retina enlargement:
+.PP
+.nf
+Xsixel :9 \-screen 560x425 \-iterm2-scale 2 \-exec ratpoison
+.fi
+.PP
+Start an outer SIXEL-capable xterm with mouse reporting enabled and a
+larger graphics limit, then run Xsixel inside it:
+.PP
+.nf
+xterm \-xrm 'XTerm*decTerminalID: vt340' \e
+    \-xrm 'XTerm*numColorRegisters: 256' \e
+    \-xrm 'XTerm*maxGraphicSize: 4096x4096' \e
+    \-xrm 'XTerm*disallowedMouseOps:'
+.fi
+.SH CAVEATS
+xterm's graphics-size limit is independent of its window size and defaults
+to 1000x1000.
+If the X desktop has the correct dimensions but its right or bottom portion
+is clipped, increase
+.B maxGraphicSize
+when starting the outer xterm.
+.PP
+tmux can omit resize notifications when font pixels change without a
+change in pane rows or columns.
+An iTerm2 with tmux redraw defect after terminal resizing is also known;
+correct geometry detection alone does not ensure an intact image in that case.
+.SH SEE ALSO
+.BR X (7),
+.BR Xserver (1),
+.BR Xkdrive (1),
+.BR ratpoison (1),
+.BR screen (1),
+.BR tmux (1),
+.BR xinit (1),
+.BR xprop (1),
+.BR xrefresh (1),
+.BR xterm (1)

@@ -109,6 +109,10 @@ Run Xsixel in a SIXEL-capable terminal. The optional Chafa renderer requires
 Chafa development files and `-Dchafa=true`; select it at runtime with
 `-backend chafa`. The default renderer is libsixel.
 
+The `Xsixel(1)` manual is installed with the server, including with
+`-Ddocs=false`. Run `man Xsixel` for options, terminal setup, and examples;
+the source is [`hw/kdrive/sixel/Xsixel.man`](hw/kdrive/sixel/Xsixel.man).
+
 mlterm 3.9.4 with the XQuartz backend on macOS has also been checked over SSH,
 both directly and through tmux and GNU screen passthrough. No mlterm-specific
 Xsixel option is needed. With this version Xsixel uses SGR cell mouse reports,

@@ -31,3 +31,12 @@ xsixel_server = executable(
     ],
     install: true,
 )
+
+xsixel_man_config = configuration_data()
+xsixel_man_config.set('version', meson.project_version())
+xsixel_man = configure_file(
+    input: 'Xsixel.man',
+    output: 'Xsixel.1',
+    configuration: xsixel_man_config,
+)
+install_man(xsixel_man)
