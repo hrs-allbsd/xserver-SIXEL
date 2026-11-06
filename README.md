@@ -170,9 +170,12 @@ Use one full-screen region without a hardstatus or caption line. Split-region
 clipping and nested multiplexers are not supported. Window
 switching and reattachment restore the image automatically within about two
 seconds. In screen only, Xsixel periodically resends a full frame; screen
-forwards it to displays showing that window. Frames are also encoded while the
-window is hidden, since screen provides no focus notifications. This adds a
-periodic encoding cost in screen only. No terminal status queries are used:
+forwards it to displays showing that window. Unchanged full frames reuse a
+cached image, avoiding repeated conversion and encoding while the screen is
+idle. Pixel updates, resizing and render-mode changes invalidate the cache.
+The optional cache is limited to 16 MiB; larger frames are encoded on each
+refresh. Changed frames are also encoded while the window is hidden, since
+screen provides no focus notifications. No terminal status queries are used:
 their responses can interfere with screen's command-prefix input. Use
 `xrefresh -display :9` if an immediate redraw is needed.
 

@@ -1299,6 +1299,36 @@ class ScreenPassthrough(unittest.TestCase):
         self.assertGreater(bytes(server.output).count(full), initial)
         self.assertNotIn(b'\x1b[5n', server.output)
 
+    def test_periodic_frame_replay_tracks_damage_and_resize(self):
+        server = self.server(pixels=(320, 240), cells=(40, 20))
+        def images():
+            raw = b''.join(re.findall(rb'\x1bP(.*?)\x1b\\', bytes(server.output), re.S))
+            return re.findall(rb'\x1bP0;1q.*?\x1b\\', raw, re.S)
+        subprocess.run(['xsetroot', '-display', server.name, '-solid', 'red'], check=True)
+        time.sleep(.15)
+        initial = len(images())
+        end = time.monotonic() + 5
+        while len(images()) < initial + 2 and time.monotonic() < end:
+            time.sleep(.02)
+        frames = images()
+        self.assertGreaterEqual(len(frames), initial + 2)
+        self.assertEqual(frames[-1], frames[-2], 'unchanged full frames must replay identically')
+        red = frames[-1]
+        subprocess.run(['xsetroot', '-display', server.name, '-solid', 'blue'], check=True)
+        time.sleep(.15)
+        self.assertNotEqual(images()[-1], red, 'damage must invalidate the retained frame')
+        blue = images()[-1]
+        initial = len(images())
+        end = time.monotonic() + 3
+        while len(images()) == initial and time.monotonic() < end:
+            time.sleep(.02)
+        self.assertGreater(len(images()), initial)
+        self.assertEqual(images()[-1], blue, 'periodic redraw must retain the new pixels')
+        server.resize_terminal((400, 300), cells=(40, 20))
+        server.wait_size(400, 300)
+        time.sleep(.2)
+        self.assertIn(b'q"1;1;400;300', images()[-1])
+
     def test_ioctl_padding_is_excluded_on_startup_and_resize(self):
         server = self.server(pixels=(604, 459), cells=(100, 35))
         self.assertEqual(server.dimensions(), (600, 455))

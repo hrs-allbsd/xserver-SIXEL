@@ -307,6 +307,9 @@ typedef struct
     unsigned char *encoded;
     size_t encoded_size, encoded_capacity;
     Bool encode_failed;
+    unsigned char *screen_frame;
+    size_t screen_frame_size;
+    Bool screen_frame_valid;
 #endif
     /* chafa backend */
 #ifdef HAVE_CHAFA
@@ -783,6 +786,7 @@ sixelRenderRectPart(SIXEL_Driver *driver, BoxPtr damage, Bool part)
     int x2 = min(driver->w, damage->x2), y2 = min(driver->h, damage->y2);
     int x, y, width, height, cw, ch, row = 0, col = 0;
     Bool patch = sixelPatchCells(driver, &cw, &ch);
+    Bool full;
     size_t body, end, chunk, i;
     SIXELSTATUS status;
     FILE *out = stdout;
@@ -815,6 +819,7 @@ sixelRenderRectPart(SIXEL_Driver *driver, BoxPtr damage, Bool part)
     }
     width = x2 - x1;
     height = y2 - y1;
+    full = x1 == 0 && y1 == 0 && x2 == driver->w && y2 == driver->h;
     for (y = y1; y < y2; y++) {
         unsigned char *src = driver->buffer + (size_t)y * driver->pitch + x1 * 4;
         unsigned char *dst = driver->bitmap + (size_t)(y - y1) * width * 3;
@@ -949,7 +954,15 @@ sixelRenderRectPart(SIXEL_Driver *driver, BoxPtr damage, Bool part)
             return FALSE;
         }
         sixelScreenWrite(screen_data, screen_length);
-        free(screen_data);
+        /* Retain the complete positioning/mode envelope as well as the image.
+         * Bound the optional cache; large frames still use the existing path. */
+        if (full && screen_length <= 16 * 1024 * 1024) {
+            free(driver->screen_frame);
+            driver->screen_frame = (unsigned char *)screen_data;
+            driver->screen_frame_size = screen_length;
+            driver->screen_frame_valid = TRUE;
+        } else
+            free(screen_data);
     }
     return TRUE;
 }
@@ -1051,7 +1064,9 @@ static int sixelRenderFrame(SIXEL_Driver *driver)
 #ifdef HAVE_LIBSIXEL
     if (g_renderer == RENDERER_LIBSIXEL) {
         BoxRec full = {0, 0, driver->w, driver->h};
-        if (!sixelRenderRect(driver, &full))
+        if (sixelScreen && driver->screen_frame_valid)
+            sixelScreenWrite((char *)driver->screen_frame, driver->screen_frame_size);
+        else if (!sixelRenderRect(driver, &full))
             ErrorF("Xsixel: could not encode full frame\n");
     }
 #endif
@@ -1226,6 +1241,9 @@ sixelRenderModeProperty(CallbackListPtr *list, void *closure, void *data)
         request->len, request->value, request->sendevent);
     if (request->status == Success && sixelIterm2Compat != compat) {
         sixelIterm2Compat = compat;
+#ifdef HAVE_LIBSIXEL
+        g_driver->screen_frame_valid = FALSE;
+#endif
         SIXEL_Flip(g_driver);
     }
 }
@@ -1443,6 +1461,9 @@ static void sixelShadowUpdate(ScreenPtr pScreen, shadowBufPtr pBuf)
     KdScreenPriv(pScreen);
     KdScreenInfo *screen = pScreenPriv->screen;
     SIXEL_Driver *driver = screen->driver;
+#ifdef HAVE_LIBSIXEL
+    driver->screen_frame_valid = FALSE;
+#endif
     if (driver->shadow)
         shadowUpdatePacked(pScreen, pBuf);
     RegionUnion(&sixelPendingDamage, &sixelPendingDamage, &pBuf->pDamage->damage);
@@ -1539,6 +1560,9 @@ static Bool sixelRandRSetConfig(ScreenPtr pScreen,
     }
     next.randr = KdAddRotation(screen->randr, randr);
     next.output_scale = sixelOutputScale();
+#ifdef HAVE_LIBSIXEL
+    next.screen_frame_valid = FALSE;
+#endif
     if (!sixelAllocateBuffers(&next, width, height))
         return FALSE;
 
@@ -2162,6 +2186,9 @@ static void sixelPollInput(void)
                     sixelIdentityPending = FALSE;
                     if (!strncmp(text, ">|iTerm2 ", 9) && !sixelTmux) {
                         sixelIterm2Terminal = sixelIterm2Compat = TRUE;
+#ifdef HAVE_LIBSIXEL
+                        g_driver->screen_frame_valid = FALSE;
+#endif
                         /* iTerm2 3.7.6 reports 1016 as permanently disabled in
                          * DECRQM despite implementing it. Identity is stronger
                          * evidence here; retain native pixel mouse precision. */
@@ -2441,6 +2468,7 @@ static void sixelFini(void)
         if (g_driver->output)
             sixel_output_unref(g_driver->output);
         free(g_driver->encoded);
+        free(g_driver->screen_frame);
 #endif
         free(g_driver->buffer);
         free(g_driver->bitmap);
