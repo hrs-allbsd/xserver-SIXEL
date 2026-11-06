@@ -244,6 +244,11 @@ and the output image is 1120x850. Each source pixel becomes an exact 2x2 block,
 so bitmap fonts, decorations, and cursors retain their apparent size. Explicit
 `-screen` dimensions specify the logical X desktop. The RGB conversion buffer
 is reused between frames and is reallocated only when the framebuffer changes.
+For iTerm2 at scale 2 outside tmux, Xsixel maps source pixels to the fixed
+256-colour palette before enlarging their indices. A 64 KiB colour lookup cache
+avoids repeated palette searches. This preserves exact 2x2 pixel replication
+while avoiding RGB conversion and quantization of four identical output pixels.
+If the optional cache cannot be allocated, the RGB enlargement path is used.
 
 In iTerm2 compatibility mode, updates with known, integral cell geometry are
 expanded to whole character rows spanning the desktop width. Xsixel positions

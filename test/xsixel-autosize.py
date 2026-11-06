@@ -1532,6 +1532,115 @@ class DamagePlanning(unittest.TestCase):
             self.assertIn(f'\x1b[?80l\x1b[{i * 2 + 1};1H'.encode(), data)
 
 
+class RetinaQuantization(unittest.TestCase):
+    def test_enlargement_matches_rgb_encoder_across_repeated_patches(self):
+        lib = library('sixel', [
+            ('sixel_dither_get', C.c_void_p, [C.c_int]),
+            ('sixel_dither_unref', None, [C.c_void_p]),
+            ('sixel_dither_set_diffusion_type', None, [C.c_void_p, C.c_int]),
+            ('sixel_output_unref', None, [C.c_void_p]),
+            ('sixel_encode', C.c_int, [C.c_void_p, C.c_int, C.c_int, C.c_int,
+                                      C.c_void_p, C.c_void_p]),
+            ('sixel_decode_raw', C.c_int, [C.c_void_p, C.c_int, C.POINTER(C.c_void_p),
+                C.POINTER(C.c_int), C.POINTER(C.c_int), C.POINTER(C.c_void_p),
+                C.POINTER(C.c_int), C.c_void_p])])
+        libc = library('c', [('free', None, [C.c_void_p])])
+        callback_type = C.CFUNCTYPE(C.c_int, C.c_void_p, C.c_int, C.c_void_p)
+        def decode(packet):
+            pixels, palette = C.c_void_p(), C.c_void_p()
+            w, h, colors = C.c_int(), C.c_int(), C.c_int()
+            self.assertEqual(lib.sixel_decode_raw(C.create_string_buffer(packet), len(packet),
+                C.byref(pixels), C.byref(w), C.byref(h), C.byref(palette),
+                C.byref(colors), None), 0)
+            try:
+                indexes = C.string_at(pixels, w.value * h.value)
+                rgb = C.string_at(palette, colors.value * 3)
+                return w.value, h.value, b''.join(rgb[i*3:i*3+3] for i in indexes)
+            finally:
+                libc.free(pixels)
+                libc.free(palette)
+        for screen in (False, True):
+            with self.subTest(screen=screen):
+                env = {k: v for k, v in os.environ.items() if k not in
+                       ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL')}
+                if screen:
+                    env['STY'] = 'retina-palette-test'
+                server = Server(pixels=(320, 240), env=env, args=('-iterm2-scale', '2'))
+                self.addCleanup(server.close)
+                self.assertEqual(server.dimensions(), (160, 120))
+                x = server.x11
+                for name, ret, args in [
+                    ('XDefaultVisual', C.c_void_p, [C.c_void_p, C.c_int]),
+                    ('XCreateImage', C.c_void_p, [C.c_void_p, C.c_void_p, C.c_uint,
+                        C.c_int, C.c_int, C.c_void_p, C.c_uint, C.c_uint, C.c_int, C.c_int]),
+                    ('XCreateGC', C.c_void_p, [C.c_void_p, C.c_ulong, C.c_ulong, C.c_void_p]),
+                    ('XPutImage', C.c_int, [C.c_void_p, C.c_ulong, C.c_void_p, C.c_void_p,
+                        C.c_int, C.c_int, C.c_int, C.c_int, C.c_uint, C.c_uint]),
+                    ('XFreeGC', C.c_int, [C.c_void_p, C.c_void_p])]:
+                    f = getattr(x, name); f.restype = ret; f.argtypes = args
+                class ImageHead(C.Structure):
+                    _fields_ = [('width', C.c_int), ('height', C.c_int),
+                                ('offset', C.c_int), ('format', C.c_int), ('data', C.c_void_p)]
+                reference = bytearray()
+                @callback_type
+                def write(data, size, unused):
+                    reference.extend(C.string_at(data, size))
+                    return size
+                lib.sixel_output_new.argtypes = [C.POINTER(C.c_void_p), callback_type,
+                                                C.c_void_p, C.c_void_p]
+                output = C.c_void_p()
+                self.assertEqual(lib.sixel_output_new(C.byref(output), write, None, None), 0)
+                dither = lib.sixel_dither_get(3)  # BUILTIN_XTERM256, RGB888 default.
+                lib.sixel_dither_set_diffusion_type(dither, 1)  # DIFFUSE_NONE.
+                gc = x.XCreateGC(server.display, server.root, 0, None)
+                try:
+                    time.sleep(.15)
+                    for phase in range(2):
+                        patch = bytearray()
+                        frame = bytearray(320 * 240 * 3)
+                        for yy in range(28):
+                            for xx in range(40):
+                                # Exercise near colours sharing RGB555 cache buckets.
+                                rgb = bytes(16 + (xx*a + yy*b + phase*3) % 216
+                                            for a,b in [(37,23),(17,43),(53,11)])
+                                patch.extend((rgb[2], rgb[1], rgb[0], 0))
+                                for dy in range(2):
+                                    at = ((20+yy)*2+dy)*320*3 + (20+xx)*6
+                                    frame[at:at+6] = rgb * 2
+                        data = C.create_string_buffer(bytes(patch))
+                        image = x.XCreateImage(server.display, x.XDefaultVisual(server.display, 0),
+                                               24, 2, 0, data, 40, 28, 32, 160)
+                        self.assertTrue(image)
+                        start = len(server.output)
+                        try:
+                            x.XPutImage(server.display, server.root, gc, image, 0, 0, 20, 20, 40, 28)
+                            x.XSync(server.display, False)
+                        finally:
+                            C.cast(image, C.POINTER(ImageHead)).contents.data = None
+                            x.XDestroyImage(image)
+                        server.wait_output(b'q"1;1;320;240', start)
+                        time.sleep(.1)
+                        raw = bytes(server.output[start:])
+                        if screen:
+                            raw = b''.join(re.findall(rb'\x1bP(.*?)\x1b\\', raw, re.S))
+                        packets = re.findall(rb'\x1bP0;1q.*?\x1b\\', raw, re.S)
+                        self.assertTrue(packets)
+                        reference.clear()
+                        self.assertEqual(lib.sixel_encode(C.create_string_buffer(bytes(frame)),
+                                          320, 240, 3, dither, output), 0)
+                        w,h,actual = decode(packets[-1])
+                        rw,rh,expected = decode(bytes(reference))
+                        self.assertEqual((w,h), (rw,rh))
+                        for yy in range(40, 96):
+                            at = (yy * w + 40) * 3
+                            self.assertEqual(actual[at:at+80*3], expected[at:at+80*3])
+                finally:
+                    x.XFreeGC(server.display, gc)
+                    lib.sixel_dither_unref(dither)
+                    lib.sixel_output_unref(output)
+                    server.close()
+
+
 class ExecuteCommand(unittest.TestCase):
     def test_child_streams_and_status_stay_out_of_sixel_terminal(self):
         with tempfile.TemporaryDirectory(prefix='xsixel exec logs ') as tmp:

@@ -310,6 +310,7 @@ typedef struct
     unsigned char *screen_frame;
     size_t screen_frame_size;
     Bool screen_frame_valid;
+    unsigned short *retina_palette_cache;
 #endif
     /* chafa backend */
 #ifdef HAVE_CHAFA
@@ -779,6 +780,42 @@ sixelPatchCells(SIXEL_Driver *driver, int *cw, int *ch)
            (int64_t)*ch * driver->cell_h == driver->h;
 }
 
+static void
+sixelRetinaPixels(SIXEL_Driver *driver, int x1, int y1, int width, int height)
+{
+    const unsigned char *palette = sixel_dither_get_palette(driver->dither);
+    int colors = sixel_dither_get_num_of_palette_colors(driver->dither);
+
+    for (int y = 0; y < height; y++) {
+        const unsigned char *src = driver->buffer +
+            (size_t)(y1 + y) * driver->pitch + x1 * 4;
+        unsigned char *row = driver->bitmap + (size_t)y * width * 4;
+        for (int x = 0; x < width; x++, src += 4) {
+            /* Match the RGB555 bucket resolution of libsixel's built-in
+             * palette lookup. First use chooses the nearest palette entry;
+             * subsequent patches keep that choice, including at cell edges. */
+            unsigned int key = (src[2] >> 3) << 10 |
+                               (src[1] >> 3) << 5 | (src[0] >> 3);
+            unsigned short *cached = &driver->retina_palette_cache[key];
+            if (!*cached) {
+                int distance = INT_MAX;
+                for (int i = 0; i < colors; i++) {
+                    int r = src[2] - palette[i * 3];
+                    int g = src[1] - palette[i * 3 + 1];
+                    int b = src[0] - palette[i * 3 + 2];
+                    int d = r * r + g * g + b * b;
+                    if (d < distance) {
+                        distance = d;
+                        *cached = i + 1;
+                    }
+                }
+            }
+            row[x * 2] = row[x * 2 + 1] = *cached - 1;
+        }
+        memcpy(row + width * 2, row, width * 2);
+    }
+}
+
 static Bool
 sixelRenderRectPart(SIXEL_Driver *driver, BoxPtr damage, Bool part)
 {
@@ -787,6 +824,7 @@ sixelRenderRectPart(SIXEL_Driver *driver, BoxPtr damage, Bool part)
     int x, y, width, height, cw, ch, row = 0, col = 0;
     Bool patch = sixelPatchCells(driver, &cw, &ch);
     Bool full;
+    Bool indexed = FALSE;
     size_t body, end, chunk, i;
     SIXELSTATUS status;
     FILE *out = stdout;
@@ -820,7 +858,17 @@ sixelRenderRectPart(SIXEL_Driver *driver, BoxPtr damage, Bool part)
     width = x2 - x1;
     height = y2 - y1;
     full = x1 == 0 && y1 == 0 && x2 == driver->w && y2 == driver->h;
-    for (y = y1; y < y2; y++) {
+    /* Without diffusion, quantizing identical enlarged pixels four times is
+     * redundant. Use only public libsixel palette/PAL8 APIs; allocation failure
+     * retains the RGB path. Other terminals and tmux keep their current dither. */
+    if (driver->output_scale == 2 && sixelIterm2Terminal && !sixelTmux) {
+        if (!driver->retina_palette_cache)
+            driver->retina_palette_cache = calloc(32768, sizeof(unsigned short));
+        indexed = driver->retina_palette_cache != NULL;
+    }
+    if (indexed)
+        sixelRetinaPixels(driver, x1, y1, width, height);
+    for (y = y1; !indexed && y < y2; y++) {
         unsigned char *src = driver->buffer + (size_t)y * driver->pitch + x1 * 4;
         unsigned char *dst = driver->bitmap + (size_t)(y - y1) * width * 3;
         for (x = 0; x < width; x++, src += 4, dst += 3) {
@@ -832,7 +880,7 @@ sixelRenderRectPart(SIXEL_Driver *driver, BoxPtr damage, Bool part)
     if (driver->output_scale == 2) {
         /* Expand backwards in the reusable RGB buffer, preserving source pixels
          * until read. Integer replication keeps bitmap fonts and cursors crisp. */
-        for (y = height - 1; y >= 0; y--) {
+        for (y = height - 1; !indexed && y >= 0; y--) {
             unsigned char *src = driver->bitmap + (size_t)y * width * 3;
             unsigned char *dst = driver->bitmap + (size_t)(y * 2) * width * 6;
             for (x = width - 1; x >= 0; x--) {
@@ -857,8 +905,12 @@ sixelRenderRectPart(SIXEL_Driver *driver, BoxPtr damage, Bool part)
      * position-independent mapping for iTerm2 full frames and patches alike. */
     if (sixelIterm2Terminal && !sixelTmux)
         sixel_dither_set_diffusion_type(driver->dither, SIXEL_DIFFUSE_NONE);
+    if (indexed)
+        sixel_dither_set_pixelformat(driver->dither, SIXEL_PIXELFORMAT_PAL8);
     status = sixel_encode(driver->bitmap, width, height, 3,
                           driver->dither, driver->output);
+    if (indexed)
+        sixel_dither_set_pixelformat(driver->dither, SIXEL_PIXELFORMAT_RGB888);
     if (SIXEL_FAILED(status) || driver->encode_failed)
         return FALSE;
     /* Keep libsixel's palette and pixel data, replacing only the envelope and
@@ -2469,6 +2521,7 @@ static void sixelFini(void)
             sixel_output_unref(g_driver->output);
         free(g_driver->encoded);
         free(g_driver->screen_frame);
+        free(g_driver->retina_palette_cache);
 #endif
         free(g_driver->buffer);
         free(g_driver->bitmap);
