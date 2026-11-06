@@ -959,6 +959,82 @@ sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
 {
     return sixelRenderRectPart(driver, damage, FALSE);
 }
+
+/* Count both converted pixels and the fixed cost of another palette/image.
+ * This is a work estimate, not a prediction of compressed SIXEL byte size. */
+static int64_t
+sixelRectCost(SIXEL_Driver *driver, const BoxRec *box)
+{
+    return (int64_t)(box->x2 - box->x1) * (box->y2 - box->y1) *
+           driver->output_scale * driver->output_scale + 4096;
+}
+
+static BoxRec
+sixelRectUnion(const BoxRec *a, const BoxRec *b)
+{
+    return (BoxRec){min(a->x1, b->x1), min(a->y1, b->y1),
+                    max(a->x2, b->x2), max(a->y2, b->y2)};
+}
+
+static Bool
+sixelRenderDamage(SIXEL_Driver *driver, RegionPtr damage)
+{
+    enum { MAX_IMAGES = 64 };
+    BoxRec boxes[MAX_IMAGES], extent = *RegionExtents(damage);
+    BoxPtr rects = RegionRects(damage);
+    int count = 0, cw, ch, n = RegionNumRects(damage);
+    Bool patch = sixelPatchCells(driver, &cw, &ch);
+    int64_t cost = 0;
+
+    /* Unknown iTerm2 geometry still needs the full-image compatibility path. */
+    if (!patch && (sixelIterm2Compat || driver->output_scale > 1))
+        return sixelRenderRect(driver, &extent);
+    if (!patch)
+        ch = 6;
+    extent.y1 = max(0, extent.y1 / ch * ch);
+    extent.y2 = min(driver->h, (extent.y2 + ch - 1) / ch * ch);
+    if (patch) {
+        extent.x1 = 0;
+        extent.x2 = driver->w;
+    }
+    for (int i = 0; i < n; i++) {
+        BoxRec box = rects[i];
+        int best = -1;
+        int64_t saving = -1;
+        box.y1 = max(0, box.y1 / ch * ch);
+        box.y2 = min(driver->h, (box.y2 + ch - 1) / ch * ch);
+        if (patch) {
+            box.x1 = 0;
+            box.x2 = driver->w;
+        }
+        /* Merge only when the saved image overhead pays for the extra area. */
+        for (int j = 0; j < count; j++) {
+            BoxRec merged = sixelRectUnion(&box, &boxes[j]);
+            int64_t s = sixelRectCost(driver, &box) +
+                        sixelRectCost(driver, &boxes[j]) -
+                        sixelRectCost(driver, &merged);
+            if (s > saving) {
+                saving = s;
+                best = j;
+            }
+        }
+        if (best >= 0)
+            boxes[best] = sixelRectUnion(&boxes[best], &box);
+        else if (count < MAX_IMAGES)
+            boxes[count++] = box;
+        else
+            return sixelRenderRect(driver, &extent);
+    }
+    for (int i = 0; i < count; i++)
+        cost += sixelRectCost(driver, &boxes[i]);
+    if (cost >= sixelRectCost(driver, &extent))
+        return sixelRenderRect(driver, &extent);
+    for (int i = 0; i < count; i++) {
+        if (!sixelRenderRect(driver, &boxes[i]))
+            return FALSE;
+    }
+    return TRUE;
+}
 #endif
 
 static int sixelRenderFrame(SIXEL_Driver *driver)
@@ -1046,25 +1122,7 @@ sixelFrameTimeout(OsTimerPtr timer, CARD32 now, void *arg)
         } else if (RegionNotEmpty(&sixelPendingDamage)) {
 #ifdef HAVE_LIBSIXEL
             if (g_renderer == RENDERER_LIBSIXEL) {
-                int cw, ch, n = RegionNumRects(&sixelPendingDamage);
-                if (sixelPatchCells(g_driver, &cw, &ch) && n <= 16) {
-                    BoxPtr rects = RegionRects(&sixelPendingDamage);
-                    BoxRec rows = {0, 0, g_driver->w, 0};
-                    for (int i = 0; i < n; i++) {
-                        int y1 = rects[i].y1 / ch * ch;
-                        int y2 = min(g_driver->h, (rects[i].y2 + ch - 1) / ch * ch);
-                        if (rows.y2 > 0 && y1 > rows.y2) {
-                            if (!sixelRenderRect(g_driver, &rows))
-                                ErrorF("Xsixel: could not encode damaged cell rows\n");
-                            rows.y2 = 0;
-                        }
-                        if (!rows.y2)
-                            rows.y1 = y1;
-                        rows.y2 = max(rows.y2, y2);
-                    }
-                    if (rows.y2 && !sixelRenderRect(g_driver, &rows))
-                        ErrorF("Xsixel: could not encode damaged cell rows\n");
-                } else if (!sixelRenderRect(g_driver, RegionExtents(&sixelPendingDamage)))
+                if (!sixelRenderDamage(g_driver, &sixelPendingDamage))
                     ErrorF("Xsixel: could not encode damaged region\n");
             } else
 #endif

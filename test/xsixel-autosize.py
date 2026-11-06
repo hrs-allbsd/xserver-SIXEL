@@ -1442,6 +1442,66 @@ class RenderModeControl(unittest.TestCase):
         self.assertIn('"fast"', self.mode(server))
 
 
+class DamagePlanning(unittest.TestCase):
+    def fill(self, server, rectangles):
+        x = server.x11
+        x.XCreateGC.restype = C.c_void_p
+        x.XCreateGC.argtypes = [C.c_void_p, C.c_ulong, C.c_ulong, C.c_void_p]
+        x.XSetForeground.argtypes = [C.c_void_p, C.c_void_p, C.c_ulong]
+        x.XFillRectangle.argtypes = [C.c_void_p, C.c_ulong, C.c_void_p,
+                                    C.c_int, C.c_int, C.c_uint, C.c_uint]
+        x.XFreeGC.argtypes = [C.c_void_p, C.c_void_p]
+        x.XNoOp.argtypes = [C.c_void_p]
+        gc = x.XCreateGC(server.display, server.root, 0, None)
+        x.XSetForeground(server.display, gc, 0xff0000)
+        # XFillRectangles reports only its bounding box to Damage. Queue separate
+        # requests in one Xlib flush to preserve the sparse update geometry.
+        for rectangle in rectangles:
+            x.XFillRectangle(server.display, server.root, gc, *rectangle)
+            x.XNoOp(server.display)  # Prevent Xlib coalescing the fill requests.
+        x.XFreeGC(server.display, gc)
+        x.XSync(server.display, False)
+
+    def packets(self, server, start):
+        server.wait_output(b'\x1bP0;1q', start)
+        time.sleep(.15)
+        return re.findall(rb'\x1bP0;1q.*?\x1b\\', bytes(server.output[start:]), re.S)
+
+    def test_sparse_changes_split_but_nearby_changes_merge(self):
+        server = Server(pixels=(1200, 900))
+        self.addCleanup(server.close)
+        server.wait_output(b'q"1;1;1200;900')
+        time.sleep(.1)
+        start = len(server.output)
+        self.fill(server, [(20, 24, 8, 12), (1120, 816, 8, 12)])
+        packets = self.packets(server, start)
+        self.assertEqual(len(packets), 2)
+        self.assertTrue(any(b'q"1;1;28;36' in p for p in packets))
+        self.assertTrue(any(b'q"1;1;1128;828' in p for p in packets))
+        self.assertLess(sum(map(len, packets)), 12000)
+        start = len(server.output)
+        self.fill(server, [(20, 48, 8, 12), (40, 48, 8, 12)])
+        packets = self.packets(server, start)
+        self.assertEqual(len(packets), 1)
+        self.assertIn(b'q"1;1;48;60', packets[0])
+
+    def test_iterm2_many_sparse_rows_keep_cell_alignment(self):
+        server = Server(pixels=(1120, 1700), cells=(80, 50))
+        self.addCleanup(server.close)
+        Iterm2Detection.identify(self, server)
+        Iterm2Detection.cell_reply(self, server)
+        server.wait_size(560, 850)
+        time.sleep(.2)
+        start = len(server.output)
+        self.fill(server, [(40, i * 34 + 2, 5, 3) for i in range(17)])
+        packets = self.packets(server, start)
+        self.assertEqual(len(packets), 17)
+        self.assertTrue(all(b'q"1;1;1120;34' in p for p in packets))
+        data = bytes(server.output[start:])
+        for i in range(17):
+            self.assertIn(f'\x1b[?80l\x1b[{i * 2 + 1};1H'.encode(), data)
+
+
 class ExecuteCommand(unittest.TestCase):
     def test_child_streams_and_status_stay_out_of_sixel_terminal(self):
         with tempfile.TemporaryDirectory(prefix='xsixel exec logs ') as tmp:
