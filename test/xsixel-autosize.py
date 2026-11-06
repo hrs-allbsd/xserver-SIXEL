@@ -15,6 +15,7 @@ import select
 import shlex
 import signal
 import shutil
+import socket
 import struct
 import subprocess
 import tempfile
@@ -51,9 +52,10 @@ def library(name, functions):
 
 class Server:
     def __init__(self, pixels=(0, 0), cells=(80, 30), args=(), memory_limit=False, env=None,
-                 stderr_to_terminal=False):
+                 stderr_to_terminal=False, terminate_on_disconnect=True):
         self.closed = False
         self.master, self.slave = pty.openpty()
+        self.original_termios = termios.tcgetattr(self.slave)
         fcntl.ioctl(self.slave, termios.TIOCSWINSZ,
                     struct.pack('HHHH', cells[1], cells[0], *pixels))
         self.output = bytearray()
@@ -64,7 +66,9 @@ class Server:
         def limit_memory():
             resource.setrlimit(resource.RLIMIT_AS, (256 * 1024**2, 256 * 1024**2))
         self.process = subprocess.Popen(
-            [os.environ['XSIXEL'], '-displayfd', str(wfd), '-terminate', '-nolisten', 'tcp', '-ac', *args],
+            [os.environ['XSIXEL'], '-displayfd', str(wfd),
+             *(['-terminate'] if terminate_on_disconnect else []),
+             '-nolisten', 'tcp', '-ac', *args],
             stdin=self.slave, stdout=self.slave,
             stderr=self.slave if stderr_to_terminal else self.log, pass_fds=(wfd,),
             start_new_session=True, preexec_fn=limit_memory if memory_limit else None,
@@ -1656,7 +1660,7 @@ class ExecuteCommand(unittest.TestCase):
                            ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL')}
                     env['TMPDIR'] = tmp
                     before = set(Path(tmp).glob('Xsixel-*-exec-*'))
-                    server = Server(pixels=(640, 480), args=('-exec', command),
+                    server = Server(pixels=(640, 480), args=('-keep', '-exec', command),
                                     env=env, stderr_to_terminal=True)
                     try:
                         end = time.monotonic() + 5
@@ -1681,6 +1685,89 @@ class ExecuteCommand(unittest.TestCase):
                         self.assertEqual(server.dimensions(), (640, 480))
                     finally:
                         server.close()
+
+    def test_command_exit_stops_server_with_a_windowless_client(self):
+        for finish in ('raise SystemExit(0)', 'raise SystemExit(7)',
+                       'os.kill(os.getpid(), signal.SIGTERM)'):
+            with self.subTest(finish=finish), tempfile.TemporaryDirectory() as tmp:
+                gate = Path(tmp) / 'finish'
+                script = ('import os, signal, time\nfrom pathlib import Path\n'
+                          f'while not Path({str(gate)!r}).exists(): time.sleep(.01)\n' + finish)
+                command = 'exec ' + shlex.join([shutil.which('python3'), '-c', script])
+                server = Server(pixels=(640, 480), args=('-exec', command),
+                                stderr_to_terminal=True, terminate_on_disconnect=False)
+                self.addCleanup(server.close)
+                # Keep a real X connection with no windows, like dbus-launch.
+                with socket.socket(socket.AF_UNIX) as client:
+                    client.settimeout(5)
+                    client.connect('/tmp/.X11-unix/X' + server.name[1:])
+                    client.sendall(struct.pack('<BBHHHHH', ord('l'), 0, 11, 0, 0, 0, 0))
+                    header = client.recv(8, socket.MSG_WAITALL)
+                    self.assertEqual(header[0], 1)
+                    size = struct.unpack_from('<H', header, 6)[0] * 4
+                    self.assertEqual(len(client.recv(size, socket.MSG_WAITALL)), size)
+                    server.x11.XCloseDisplay(server.display)
+                    server.display = None
+                    self.assertIsNone(server.process.poll())
+                    gate.touch()
+                    self.assertEqual(server.process.wait(timeout=5), 0)
+                    self.assertEqual(client.recv(1), b'')
+                server.wait_output(b'\x1b[?1003l\x1b[?1016l\x1b[?1006l')
+                server.wait_output(b'\x1b[?25h\x1b[?1004l')
+                self.assertEqual(termios.tcgetattr(server.slave), server.original_termios)
+
+    def test_keep_aliases_leave_server_running_after_command_exit(self):
+        for keep in ('-keep', '-keep-server'):
+            for before in (True, False):
+                with self.subTest(keep=keep, before=before):
+                    args = (keep, '-exec', 'exit 7') if before else ('-exec', 'exit 7', keep)
+                    server = Server(pixels=(640, 480), args=args,
+                                    terminate_on_disconnect=False)
+                    self.addCleanup(server.close)
+                    time.sleep(.15)
+                    self.assertIsNone(server.process.poll())
+                    self.assertEqual(server.dimensions(), (640, 480))
+                    server.close()
+
+    def test_immediate_or_missing_command_still_restores_terminal(self):
+        # Completion can precede the first main-loop dispatch or X connection.
+        for command in ('exit 0', 'exit 7', 'exec /xsixel-missing-command'):
+            with self.subTest(command=command):
+                master, slave = pty.openpty()
+                original = termios.tcgetattr(slave)
+                def drain():
+                    try:
+                        while os.read(master, 65536):
+                            pass
+                    except OSError:
+                        pass
+                reader = threading.Thread(target=drain, daemon=True)
+                reader.start()
+                with tempfile.TemporaryFile() as log:
+                    env = {k: v for k, v in os.environ.items() if k not in
+                           ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL')}
+                    process = subprocess.Popen([os.environ['XSIXEL'], '-displayfd', '2',
+                        '-nolisten', 'tcp', '-ac', '-exec', command],
+                        stdin=slave, stdout=slave, stderr=log, env=env, start_new_session=True)
+                    try:
+                        self.assertEqual(process.wait(timeout=5), 0)
+                        self.assertEqual(termios.tcgetattr(slave), original)
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                            process.wait()
+                        os.close(slave)
+                        reader.join(timeout=1)
+                        os.close(master)
+
+    def test_keep_without_exec_does_not_disable_explicit_terminate(self):
+        for keep in ('-keep', '-keep-server'):
+            with self.subTest(keep=keep):
+                server = Server(args=(keep,))
+                self.addCleanup(server.close)
+                server.x11.XCloseDisplay(server.display)
+                server.display = None
+                self.assertEqual(server.process.wait(timeout=5), 0)
 
 
 if __name__ == '__main__':

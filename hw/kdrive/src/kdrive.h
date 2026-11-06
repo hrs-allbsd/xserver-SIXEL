@@ -490,6 +490,12 @@ KdScreenInfo *KdScreenInfoAdd(KdCardInfo * ci, void *closure);
 void
  KdScreenInfoDispose(KdScreenInfo * si);
 
+/* kexeccmd.c */
+extern char *kdExecuteCommand;
+extern Bool kdKeepServer;
+void KdExecuteChildCommand(void);
+void KdStopChildCommand(void);
+
 /* kinput.c */
 void
  KdInitInput(void);

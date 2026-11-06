@@ -127,6 +127,19 @@ a separate `Xsixel-N-exec-XXXXXX` file in `$TMPDIR` (or `/tmp` when unset), wher
 readable and writable only by its owner and remains available after the command
 exits. No stderr redirection is needed for `Xsixel :15 -exec ratpoison`.
 
+By default, Xsixel exits when the `-exec` command finishes, including a nonzero
+exit or termination by a signal. Remaining X connections do not keep the server
+alive. Normal shutdown restores the terminal's display and input modes, so
+`Xsixel :10 -exec "swm /usr/local/bin/firefox"` can follow the session command's
+lifetime without `-terminate`.
+
+Use `-keep` (or its more explicit alias `-keep-server`) to leave Xsixel running
+after the command exits, for example `Xsixel :10 -keep -exec xterm`. Without
+`-exec`, these options have no effect. Explicit `-terminate` still retains its
+usual meaning: exit when the last X client disconnects. Commands are run with
+`/bin/sh -c`; keep the session command in the foreground, since a command that
+backgrounds its application finishes when that shell exits.
+
 Inside tmux, Xsixel detects `TMUX` and automatically sends SIXEL images through
 tmux passthrough, regardless of whether tmux was built with SIXEL support.
 Enable passthrough and focus notifications before starting Xsixel:

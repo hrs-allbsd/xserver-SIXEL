@@ -10,16 +10,42 @@
 #include "kdrive.h"
 #include "opaque.h"
 
-extern char *kdExecuteCommand;
-void KdExecuteChildCommand(void);
-
 extern char **environ;
+
+static int child_notify_fd = -1;
 
 struct child_command {
     int logfd;
+    int notifyfd;
     char *command;
     char **env;
 };
+
+void
+KdStopChildCommand(void)
+{
+    if (child_notify_fd >= 0) {
+        RemoveNotifyFd(child_notify_fd);
+        close(child_notify_fd);
+        child_notify_fd = -1;
+    }
+}
+
+static void
+child_command_finished(int fd, int ready, void *data)
+{
+    char byte;
+    ssize_t result;
+
+    do {
+        result = read(fd, &byte, 1);
+    } while (result < 0 && errno == EINTR);
+    if (result == 0) {
+        KdStopChildCommand();
+        /* Only the main thread touches dispatch state and terminal cleanup. */
+        GiveUp(0);
+    }
+}
 
 static void
 free_child_command(struct child_command *child)
@@ -72,6 +98,10 @@ static void *child_command(void *unused)
             dprintf(child->logfd, "Child command terminated by signal %d\n", WTERMSIG(status));
     }
     close(child->logfd);
+    /* Closing the sole writer wakes the main loop with EOF. No signal or
+     * cross-thread access to the X server is needed, even during shutdown. */
+    if (child->notifyfd >= 0)
+        close(child->notifyfd);
     free_child_command(child);
     return NULL;
 }
@@ -91,6 +121,7 @@ void KdExecuteChildCommand(void)
     child = calloc(1, sizeof(*child));
     if (!child)
         FatalError("Xsixel: cannot allocate child command\n");
+    child->notifyfd = -1;
     child->command = strdup(kdExecuteCommand);
     while (environ[count])
         count++;
@@ -126,6 +157,23 @@ void KdExecuteChildCommand(void)
     }
     if (child->logfd < 0)
         FatalError("Xsixel: cannot duplicate child log descriptor\n");
+    if (!kdKeepServer) {
+        int notify[2];
+
+        if (pipe(notify) < 0)
+            FatalError("Xsixel: cannot create child completion pipe\n");
+        for (int i = 0; i < 2; i++) {
+            int flags = fcntl(notify[i], F_GETFL);
+            if (flags < 0 ||
+                fcntl(notify[i], F_SETFL, flags | O_NONBLOCK) < 0 ||
+                fcntl(notify[i], F_SETFD, FD_CLOEXEC) < 0)
+                FatalError("Xsixel: cannot configure child completion pipe\n");
+        }
+        child_notify_fd = notify[0];
+        child->notifyfd = notify[1];
+        if (!SetNotifyFd(child_notify_fd, child_command_finished, X_NOTIFY_READ, NULL))
+            FatalError("Xsixel: cannot monitor child command completion\n");
+    }
     error = pthread_create(&thread_id, NULL, child_command, child);
     if (error)
         FatalError("Xsixel: cannot start child command thread: %s\n", strerror(error));

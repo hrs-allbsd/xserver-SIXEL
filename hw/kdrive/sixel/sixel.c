@@ -205,7 +205,7 @@ sixelTerminalControl(const char *s)
 static Bool sixelDecMouse = FALSE;
 
 char *kdExecuteCommand = NULL;
-void KdExecuteChildCommand(void);
+Bool kdKeepServer = FALSE;
 extern Bool kdRawPointerCoordinates;
 
 static void sixelFini(void);
@@ -1828,7 +1828,8 @@ void ddxBeforeReset(void)
 void ddxUseMsg(void)
 {
     KdUseMsg();
-    ErrorF("-exec command    Execute command after server started\n");
+    ErrorF("-exec command    Execute command after server started; exit when it finishes\n");
+    ErrorF("-keep, -keep-server      Keep server running after the -exec command exits\n");
     ErrorF("-mouse-protocol {sgr|dec}  Select terminal mouse reporting (default: sgr pixels)\n");
     ErrorF("-iterm2                  Force iTerm2 compatibility (also detected from startup environment)\n");
     ErrorF("-iterm2-scale {auto|1|2}  iTerm2 image enlargement (default: auto; libsixel only)\n");
@@ -1838,6 +1839,10 @@ void ddxUseMsg(void)
 
 int ddxProcessArgument(int argc, char **argv, int i)
 {
+    if (!strcmp(argv[i], "-keep") || !strcmp(argv[i], "-keep-server")) {
+        kdKeepServer = TRUE;
+        return 1;
+    }
     if (!strcmp(argv[i], "-iterm2-full-redraw")) {
         sixelIterm2FullRedraw = TRUE;
         sixelIterm2Compat = sixelIterm2Terminal = TRUE;
@@ -2539,6 +2544,7 @@ sixelBell(int volume, int pitch, int duration)
 
 void CloseInput(void)
 {
+    KdStopChildCommand();
     KdCloseInput();
     sixelFini();
 }
