@@ -109,6 +109,10 @@ Run Xsixel in a SIXEL-capable terminal. The optional Chafa renderer requires
 Chafa development files and `-Dchafa=true`; select it at runtime with
 `-backend chafa`. The default renderer is libsixel.
 
+When Xsixel exits normally, it erases the terminal image and moves the text
+cursor to the top-left before restoring terminal modes. With `-keep`, command
+completion alone does not erase the image; it is erased when Xsixel itself exits.
+
 The `Xsixel(1)` manual is installed with the server, including with
 `-Ddocs=false`. Run `man Xsixel` for options, terminal setup, and examples;
 the source is [`hw/kdrive/sixel/Xsixel.man`](hw/kdrive/sixel/Xsixel.man).

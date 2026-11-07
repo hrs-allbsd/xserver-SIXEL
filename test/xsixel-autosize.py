@@ -393,6 +393,22 @@ class Autosize(unittest.TestCase):
         self.assertIn(b'\x1b[?25h', server.output)
         self.assertLess(server.output.rfind(b'\x1bP'), server.output.rfind(b'\x1b[?80r'))
 
+    def test_exit_erases_final_image_before_restoring_terminal(self):
+        for args in ((), ('-iterm2',), ('-mouse-protocol', 'dec')):
+            with self.subTest(args=args):
+                server = self.server(pixels=(320, 240), args=args)
+                subprocess.run(['xsetroot', '-display', server.name, '-solid', 'red'],
+                               check=True)
+                server.wait_output(b'\x1bP')
+                server.close()
+                output = bytes(server.output)
+                erase = output.rfind(b'\x1b[H\x1b[2J')
+                self.assertGreater(erase, output.rfind(b'\x1bP'))
+                self.assertLess(erase, output.rfind(b'\x1b[?80r'))
+                self.assertLess(erase, output.rfind(b'\x1b[?25h'))
+                self.assertNotIn(b'\x1b[3J', output)
+                self.assertNotIn(b'\x1bc', output)
+
     def test_small_damage_uses_transparent_pixel_offset(self):
         server = self.server(pixels=(800, 600))
         server.wait_output(b'\x1bP')
@@ -1191,6 +1207,11 @@ class TmuxPassthrough(unittest.TestCase):
                 finally:
                     server.close()
                 self.assertIn(b'\x1bPtmux;\x1b\x1b[?80r\x1b\\', server.output)
+                erase = b'\x1b[H\x1b[2J\x1bPtmux;\x1b\x1b[H\x1b\x1b[2J\x1b\\'
+                self.assertIn(erase, server.output)
+                tail = bytes(server.output).split(erase)[-1]
+                self.assertTrue(tail.startswith(b'\x1bPtmux;\x1b\x1b[?80r'))
+                self.assertNotIn(b'\x1b\x1bP0;', tail)
 
     def test_large_image_packets_fit_tmux_default_input_limit(self):
         class RecordingServer(Server):
@@ -1276,6 +1297,10 @@ class ScreenPassthrough(unittest.TestCase):
         images = re.findall(rb'\x1bP0;1q(.*?)\x1b\\', decoded, re.S)
         self.assertTrue(images)
         self.assertTrue(all(image.startswith(b'"1;1;') for image in images))
+        erase = decoded.rfind(b'\x1b[H\x1b[2J')
+        self.assertGreater(erase, decoded.rfind(b'\x1bP0;1q'))
+        self.assertLess(erase, decoded.rfind(b'\x1b[?80r'))
+        self.assertIn(b'\x1b[H\x1b[2J\x1bP\x1b[H\x1b[2J\x1b\\', server.output)
 
     def test_iterm2_identity_forwarded_through_screen(self):
         env = {k: v for k, v in os.environ.items() if k not in
@@ -1714,6 +1739,9 @@ class ExecuteCommand(unittest.TestCase):
                     self.assertEqual(client.recv(1), b'')
                 server.wait_output(b'\x1b[?1003l\x1b[?1016l\x1b[?1006l')
                 server.wait_output(b'\x1b[?25h\x1b[?1004l')
+                erase = server.output.rfind(b'\x1b[H\x1b[2J')
+                self.assertGreater(erase, server.output.rfind(b'\x1bP'))
+                self.assertLess(erase, server.output.rfind(b'\x1b[?80r'))
                 self.assertEqual(termios.tcgetattr(server.slave), server.original_termios)
 
     def test_keep_aliases_leave_server_running_after_command_exit(self):

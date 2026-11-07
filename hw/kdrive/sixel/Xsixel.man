@@ -34,7 +34,13 @@ No host X server is required for SIXEL output.
 The default renderer uses libsixel and updates damaged areas of the desktop.
 An optional Chafa renderer is available in builds configured with
 .BR \-Dchafa=true .
-Normal shutdown restores the terminal display and input modes.
+Normal shutdown erases the displayed image, moves the text cursor to the
+top-left corner, and restores the terminal display and input modes.
+This also applies when the
+.B \-exec
+command finishes; with
+.BR \-keep ,
+command completion alone does not erase the image.
 .SH OPTIONS
 See
 .BR Xserver (1)

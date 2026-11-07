@@ -2493,10 +2493,16 @@ static void sixelFini(void)
         printf("\033[0'z\033[2;4'{");
     else
         printf("\033[?1003l\033[?1016l\033[?1006l");
+    /* Stop all frame producers before erasing the final image. Multiplexer
+     * passthrough graphics live outside its text grid, so clear both. */
+    printf("\033[H\033[2J");
+    if (sixelTmux || sixelScreen)
+        sixelTerminalControl("\033[H\033[2J");
     sixelTerminalControl("\033[?80r");
     printf("\033[>0p");
     printf("\033[?25h");
     printf("\033[?1004l");
+    fflush(stdout);
 
     FD_ZERO(&fdset);
     FD_SET(STDIN_FILENO, &fdset);
