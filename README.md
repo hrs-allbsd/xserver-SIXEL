@@ -164,7 +164,8 @@ Xsixel checks both settings at startup and exits with setup instructions if
 either is off. Passthrough accepts `on` and `all`. Focus notifications trigger a
 full redraw when returning to the Xsixel window. The outer terminal must
 support SIXEL. No tmux configuration is changed automatically.
-Images exceeding tmux's default 1 MiB input-string limit are subdivided into
+Except in Konsole mode (described below), images exceeding tmux's default
+1 MiB input-string limit are subdivided into
 independent SIXEL images. Images that fit and small damage updates retain the
 direct streaming path.
 
@@ -234,8 +235,9 @@ tmux uses its own envelope and splits only large images.
 Xsixel detects iTerm2 from `TERM_PROGRAM=iTerm.app` or `LC_TERMINAL=iTerm2`,
 and also asks the outer terminal for its identity once at startup (`CSI > q`).
 The terminal query works over SSH even when those environment variables are
-absent, and uses passthrough inside GNU screen. tmux does not receive the
-identity query or automatically change rendering modes; its cell-size probe is
+absent, and uses passthrough inside GNU screen. tmux forwards the
+identity query for Konsole detection but does not automatically select iTerm2
+rendering; its cell-size probe is
 used only for pane geometry, as described below. Startup does not wait for
 an answer: other terminals, and terminals that do not answer, retain their
 existing behavior.
@@ -313,14 +315,48 @@ xprop -display :9 -root -f _XSIXEL_RENDER_MODE 8s -set _XSIXEL_RENDER_MODE fast
 xprop -display :9 -root _XSIXEL_RENDER_MODE
 ```
 
-The initial value reflects `-iterm2` and startup environment detection. A change
+The initial value reflects startup options and terminal detection. A change
 immediately schedules a full redraw; subsequent damage uses the selected mode.
-Writing the same value does not force a redraw. Only `fast` and `iterm2` are
+Writing the same value does not force a redraw. Only `fast`, `iterm2`, and `konsole` are
 accepted; invalid values, other types, deletion, and property rotation are
 rejected so the readable property always matches the active mode. Settings on
 ordinary client windows do not affect the server. Runtime changes apply to all
 viewers and last until Xsixel restarts. Change notifications drive this control;
 there is no additional polling or property lookup in the frame rendering path.
+
+Konsole is detected from `KONSOLE_VERSION` or its startup identity reply,
+including over SSH and through tmux or GNU screen. Use `-konsole` when the
+identity is unavailable, or switch an existing server with:
+
+```sh
+xprop -display :9 -root -f _XSIXEL_RENDER_MODE 8s -set _XSIXEL_RENDER_MODE konsole
+```
+
+Konsole mode sends opaque images containing the actual framebuffer from the
+upper-left corner through the changed area. Bounds cover whole character
+cells, and the height also covers complete six-pixel SIXEL bands. This avoids Konsole's opaque treatment of transparent SIXEL gaps and
+its replacement of image placements by covered cells. Unknown or fractional
+cell geometry uses full images. Color conversion disables error diffusion so
+the unchanged background keeps its colors across updates. This mode does not
+select iTerm2 geometry, Retina scaling, or pixel-input workarounds. Explicit
+rendering options and runtime property writes take precedence over detection.
+
+A Konsole image must fit in one tmux passthrough packet. Xsixel queries the
+server's `input-buffer-size` once when this mode is selected, using the fixed
+1 MiB limit if the option is unavailable. If an encoded image exceeds that
+capacity, Xsixel restores the terminal and exits with configuration guidance.
+For tmux versions providing this option, increase the server limit and restart
+Xsixel, for example:
+
+```sh
+tmux set-option -s input-buffer-size 8388608
+```
+
+Use a larger value if the diagnostic requests it. To persist the setting, add
+`set -s input-buffer-size 8388608` to `~/.tmux.conf`. Older tmux versions need
+an upgrade or a direct/GNU screen session for such images. Xsixel never changes
+tmux configuration automatically. The normal terminal and iTerm2 rendering
+paths retain their existing update algorithms.
 
 Mouse input defaults to SGR pixel reporting (terminal modes 1003, 1006, and
 1016), so xterm does not need DEC locator support. Motion, dragging, the first

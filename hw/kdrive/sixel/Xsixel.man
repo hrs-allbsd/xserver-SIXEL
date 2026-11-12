@@ -107,6 +107,16 @@ unavailable.
 Normally iTerm2 is detected from the startup environment or a terminal
 identity query, including over SSH and through GNU screen.
 .TP
+.B \-konsole
+Force Konsole rendering when automatic identification is unavailable.
+Konsole is detected from
+.B KONSOLE_VERSION
+or its startup identity reply, including through tmux and GNU screen.
+Opaque images include the framebuffer from its origin through the damage,
+rounded up to whole cells and complete six-pixel bands in height.
+Unknown geometry uses full images.
+This option does not enable iTerm2 geometry or Retina scaling.
+.TP
 .BI \-iterm2-scale " auto|1|2"
 Enable iTerm2 compatibility and select image enlargement.
 The default,
@@ -198,6 +208,23 @@ tmux set-option status off
 Returning to the Xsixel window triggers a full redraw through focus events.
 Automatic terminal identification does not switch tmux to iTerm2 rendering;
 its iTerm2 cell-size query is used only for geometry.
+.PP
+Konsole images must fit in one passthrough packet.  In Konsole mode,
+Xsixel checks the server's
+.B input-buffer-size
+once, falling back to the fixed 1 MiB capacity of older tmux versions.
+If an encoded image exceeds the capacity, Xsixel restores the terminal and
+exits with instructions to increase the limit and restart, for example:
+.PP
+.nf
+tmux set-option \-s input-buffer-size 8388608
+.fi
+.PP
+Use the value requested by the diagnostic.  To persist it, add
+.B set \-s input-buffer-size 8388608
+to the tmux configuration.  Older tmux versions without this option need
+an upgrade, or a direct/GNU screen session for large Konsole images.
+No tmux settings are changed automatically.
 .SS GNU screen
 When
 .B STY
@@ -227,18 +254,23 @@ are set, tmux takes precedence.
 With the libsixel backend, the root-window property
 .B _XSIXEL_RENDER_MODE
 selects the drawing policy.
-The initial value reflects startup options and automatic iTerm2 detection.
+The initial value reflects startup options and terminal identification.
 Its type must be
 .BR STRING ,
 format 8, with the exact value
-.B fast
+.BR fast ,
+.BR iterm2 ,
 or
-.BR iterm2 .
+.BR konsole .
 .B fast
 uses cropped damage updates.
 .B iterm2
 uses opaque, full-width character-row updates when cell geometry permits,
 otherwise full images, to avoid partial-image artifacts in iTerm2.
+.B konsole
+uses opaque prefixes from the origin, aligned to whole cells, and disables
+error diffusion to preserve background colors between updates.
+Explicit rendering options and property writes override automatic detection.
 .PP
 Read the current mode or change it using
 .BR xprop (1):
@@ -260,6 +292,10 @@ Use
 .B xrefresh \-display :9
 for an explicit full redraw without changing modes.
 .SH ENVIRONMENT
+.TP
+.B KONSOLE_VERSION
+Identify Konsole when nonempty.  A startup terminal identity query can also
+select this compatibility mode when SSH omits the environment hint.
 .TP
 .B TMUX
 Select tmux passthrough when nonempty.

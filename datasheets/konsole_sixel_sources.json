@@ -1,0 +1,76 @@
+{
+  "reviewed_utc": "2026-11-12T20:06:29.531884+00:00",
+  "references": [
+    {
+      "title": "Konsole 26.08.2 implementation source",
+      "url": "https://raw.githubusercontent.com/KDE/konsole/v26.08.2/src/Screen.cpp",
+      "saved_path": "datasheets/Konsole_26.08.2_Screen.cpp",
+      "revision": "v26.08.2",
+      "sha256": "1de9bfa89c1b2833f928711c5fe4a6f904df46dbdafcce8155260cbd00a292c4",
+      "sections": [
+        "Screen::addPlacement() and covered-placement removal"
+      ]
+    },
+    {
+      "title": "Konsole 26.08.2 implementation source",
+      "url": "https://raw.githubusercontent.com/KDE/konsole/v26.08.2/src/Screen.h",
+      "saved_path": "datasheets/Konsole_26.08.2_Screen.h",
+      "revision": "v26.08.2",
+      "sha256": "04742251537016213cc015d3f4f7bace79dcf5c0d50ed6698f36a80ecc90c045",
+      "sections": [
+        "Screen::addPlacement() and covered-placement removal"
+      ]
+    },
+    {
+      "title": "Konsole 26.08.2 implementation source",
+      "url": "https://raw.githubusercontent.com/KDE/konsole/v26.08.2/src/Vt102Emulation.cpp",
+      "saved_path": "datasheets/Konsole_26.08.2_Vt102Emulation.cpp",
+      "revision": "v26.08.2",
+      "sha256": "17f63f0cacbb9de98735d686c2ca74de7ca41a584eecc41808dedaa459054875",
+      "sections": [
+        "Vt102Emulation::hook(), SixelModeEnable(), processSixel(), SixelCharacterAdd(), SixelModeDisable(), reportVersion()"
+      ]
+    },
+    {
+      "title": "Konsole 26.08.2 implementation source",
+      "url": "https://raw.githubusercontent.com/KDE/konsole/v26.08.2/src/Vt102Emulation.h",
+      "saved_path": "datasheets/Konsole_26.08.2_Vt102Emulation.h",
+      "revision": "v26.08.2",
+      "sha256": "14b0d0259742e1c20edf132dd1f964000401e76aaeeec107702975484ecc8b5e",
+      "sections": [
+        "SIXEL fields and preservation flag"
+      ]
+    },
+    {
+      "title": "Konsole 26.08.3 implementation source",
+      "url": "https://raw.githubusercontent.com/KDE/konsole/v26.08.3/src/Vt102Emulation.cpp",
+      "saved_path": "datasheets/Konsole_26.08.3_Vt102Emulation.cpp",
+      "revision": "v26.08.3",
+      "sha256": "a83a30e5bc57cb2927561af86617292123501e5545e82ec04cf1c96b643580fe",
+      "sections": [
+        "Vt102Emulation::hook(), SixelModeEnable(), processSixel(), SixelCharacterAdd(), SixelModeDisable(), reportVersion()"
+      ]
+    },
+    {
+      "title": "tmux 3.8 implementation source",
+      "url": "https://raw.githubusercontent.com/tmux/tmux/3.8/input.c",
+      "saved_path": "datasheets/tmux_3.8_input.c",
+      "revision": "3.8",
+      "sha256": "ee070f3812062338b9d9db6b7857bb89398a2a44e07706d27686c7c04f510d87",
+      "sections": [
+        "input-buffer-size handling and default"
+      ]
+    },
+    {
+      "title": "tmux 3.8 implementation source",
+      "url": "https://raw.githubusercontent.com/tmux/tmux/3.8/options-table.c",
+      "saved_path": "datasheets/tmux_3.8_options-table.c",
+      "revision": "3.8",
+      "sha256": "cbf3b034785b30aeee3d67032f99e9d9b173a321e11b19be1a11c9e9914fc866",
+      "sections": [
+        "input-buffer-size handling and default"
+      ]
+    }
+  ],
+  "scope": "Terminal and multiplexer implementations; Xsixel mode selection and fallback policy are project decisions."
+}

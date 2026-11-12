@@ -17,6 +17,7 @@ import signal
 import shutil
 import socket
 import struct
+import sys
 import subprocess
 import tempfile
 import termios
@@ -73,7 +74,7 @@ class Server:
             stderr=self.slave if stderr_to_terminal else self.log, pass_fds=(wfd,),
             start_new_session=True, preexec_fn=limit_memory if memory_limit else None,
             env=env if env is not None else {k: v for k, v in os.environ.items()
-                                             if k not in ("TMUX", "TMUX_PANE", "STY", "TERM_PROGRAM", "LC_TERMINAL")})
+                                             if k not in ("TMUX", "TMUX_PANE", "STY", "TERM_PROGRAM", "LC_TERMINAL", "KONSOLE_VERSION")})
         os.close(wfd)
         self.display = None
         try:
@@ -460,7 +461,7 @@ class Autosize(unittest.TestCase):
                          {'TERM_PROGRAM': 'tmux', 'LC_TERMINAL': 'iTerm2'}):
             with self.subTest(identity=identity):
                 env = {k: v for k, v in os.environ.items() if k not in
-                       ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL')}
+                       ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL', 'KONSOLE_VERSION')}
                 env.update(identity)
                 server = self.server(pixels=(800, 600), env=env)
                 Autosize.check_iterm2_pixels(self, server)
@@ -472,7 +473,7 @@ class Autosize(unittest.TestCase):
                          {'TERM_PROGRAM': 'iTerm.app-extra', 'LC_TERMINAL': 'iTerm2-extra'}):
             with self.subTest(identity=identity):
                 env = {k: v for k, v in os.environ.items() if k not in
-                       ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL')}
+                       ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL', 'KONSOLE_VERSION')}
                 env.update(identity)
                 server = self.server(pixels=(800, 600), env=env)
                 server.wait_output(b'\x1bP')
@@ -548,7 +549,7 @@ class Autosize(unittest.TestCase):
         for screen in (False, True):
             with self.subTest(screen=screen):
                 env = {k: v for k, v in os.environ.items() if k not in
-                       ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL')}
+                       ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL', 'KONSOLE_VERSION')}
                 if screen:
                     env['STY'] = 'xsixel-screen-test'
                 server = self.server(pixels=(1600, 1200), cells=(80, 30),
@@ -595,7 +596,7 @@ class Autosize(unittest.TestCase):
             for screen in (False, True):
                 with self.subTest(identity=identity, screen=screen):
                     env = {k: v for k, v in os.environ.items() if k not in
-                           ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL')}
+                           ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL', 'KONSOLE_VERSION')}
                     env.update(identity)
                     if screen:
                         env['STY'] = 'xsixel-screen-test'
@@ -792,7 +793,7 @@ class Autosize(unittest.TestCase):
 class Iterm2Detection(unittest.TestCase):
     def server(self, screen=False, **kwargs):
         env = {k: v for k, v in os.environ.items() if k not in
-               ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL')}
+               ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL', 'KONSOLE_VERSION')}
         if screen:
             env['STY'] = 'xsixel-iterm-detection-test'
         server = Server(env=env, pixels=(1120, 850), cells=(80, 25), **kwargs)
@@ -1024,7 +1025,7 @@ class TmuxPassthrough(unittest.TestCase):
         socket_path = self.tmux('display-message', '-p', '#{socket_path}').strip()
         pane = self.tmux('display-message', '-p', '#{pane_id}').strip()
         self.env = dict({k: v for k, v in os.environ.items()
-                         if k not in ("TERM_PROGRAM", "LC_TERMINAL", "STY")}, TMUX=socket_path + ',0,0', TMUX_PANE=pane)
+                         if k not in ("TERM_PROGRAM", "LC_TERMINAL", "KONSOLE_VERSION", "STY")}, TMUX=socket_path + ',0,0', TMUX_PANE=pane)
 
     def tmux(self, *args):
         return subprocess.check_output(['tmux', '-L', self.socket, '-f', '/dev/null',
@@ -1270,10 +1271,93 @@ class TmuxPassthrough(unittest.TestCase):
             libc.free(pixels)
             libc.free(palette)
 
+    @unittest.skipUnless(shutil.which('xprop'), 'xprop not installed')
+    def test_konsole_identity_through_tmux_and_manual_override(self):
+        self.tmux('set-option', '-p', 'allow-passthrough', 'on')
+        server = Server(pixels=(560, 425), cells=(80, 25), env=self.env)
+        self.addCleanup(server.close)
+        server.wait_output(b'\x1b\x1b[>q')
+        server.reply(b'\x1bP>|Konsole 26.08.2\x1b\\')
+        server.wait_output(b'0;0q"1;1;560;425')
+        self.assertIn('"konsole"', RenderModeControl.mode(self, server))
+        server.close()
+        server = Server(pixels=(560, 425), cells=(80, 25), env=self.env,
+                        args=('-iterm2',))
+        self.addCleanup(server.close)
+        server.reply(b'\x1bP>|Konsole 26.08.2\x1b\\')
+        time.sleep(.05)
+        self.assertIn('"iterm2"', RenderModeControl.mode(self, server))
+
+    def test_konsole_large_image_is_one_opaque_packet(self):
+        self.tmux('set-option', '-p', 'allow-passthrough', 'on')
+        result = subprocess.run(['tmux', '-L', self.socket, 'set-option', '-s',
+                                 'input-buffer-size', '8388608'], capture_output=True)
+        if result.returncode:
+            self.skipTest('tmux has no configurable input buffer')
+        server = UnboundedServer(pixels=(1280, 900), env=self.env,
+                                 args=('-konsole',))
+        self.addCleanup(server.close)
+        time.sleep(.1)
+        start = len(server.output)
+        UnboundedServer.noise(server.name, 1280, 900)
+        server.wait_output(b'q"1;1;1280;900', start)
+        header = server.output.index(b'q"1;1;1280;900', start)
+        server.wait_output(b'\x1b\x1b\\\x1b\\', header)
+        packets = re.findall(rb'\x1bPtmux;((?:\x1b\x1b|[^\x1b])*)\x1b\\',
+                             bytes(server.output[start:]), re.S)
+        self.assertEqual(len(packets), 1)
+        self.assertGreater(len(packets[0]), 1048576)
+        raw = packets[0].replace(b'\x1b\x1b', b'\x1b')
+        self.assertTrue(raw.startswith(b'\x1b[?80h\x1b[H\x1bP0;0q'))
+        w, h, rgb = Iterm2Detection.decode(raw[raw.index(b'\x1bP'):])
+        self.assertEqual((w, h), (1280, 900))
+        self.assertNotEqual(rgb[-6:-3], rgb[-3:])
+
+    def test_konsole_capacity_failure_restores_terminal_before_guidance(self):
+        self.tmux('set-option', '-p', 'allow-passthrough', 'on')
+        server = UnboundedServer(pixels=(1280, 900), env=self.env,
+                                 args=('-konsole',), stderr_to_terminal=True,
+                                 terminate_on_disconnect=False)
+        self.addCleanup(server.close)
+        server.x11.XCloseDisplay(server.display)
+        server.display = None
+        time.sleep(.1)
+        start = len(server.output)
+        UnboundedServer.noise(server.name, 1280, 900)
+        self.assertEqual(server.process.wait(timeout=10), 0)
+        server.wait_output(b'input-buffer-size', start)
+        data = bytes(server.output[start:])
+        self.assertNotIn(b'0;0q', data)
+        self.assertLess(data.index(b'\x1b[?25h'), data.index(b'Xsixel: Konsole image'))
+        self.assertEqual(termios.tcgetattr(server.slave), server.original_termios)
+
+    def test_konsole_old_tmux_does_not_leak_optional_query_errors(self):
+        self.tmux('set-option', '-p', 'allow-passthrough', 'on')
+        with tempfile.TemporaryDirectory(prefix='xsixel-old-tmux-') as tmp:
+            wrapper = Path(tmp) / 'tmux'
+            wrapper.write_text('#!/bin/sh\ncase "$*" in\n'
+                '  *input-buffer-size*) echo "unknown buffer option" >&2; exit 1;;\n'
+                'esac\nexec ' + shlex.quote(shutil.which('tmux')) + ' "$@"\n')
+            wrapper.chmod(0o700)
+            env = dict(self.env, PATH=tmp + os.pathsep + os.environ['PATH'])
+            server = UnboundedServer(pixels=(800, 600), env=env,
+                                     args=('-konsole',), stderr_to_terminal=True,
+                                     terminate_on_disconnect=False)
+            self.addCleanup(server.close)
+            server.x11.XCloseDisplay(server.display)
+            server.display = None
+            UnboundedServer.noise(server.name, 800, 600)
+            self.assertEqual(server.process.wait(timeout=10), 0)
+            server.wait_output(b'Use tmux with a configurable input-buffer-size')
+            self.assertNotIn(b'unknown buffer option', server.output)
+            self.assertNotIn(b'tmux set-option -s input-buffer-size', server.output)
+            self.assertEqual(termios.tcgetattr(server.slave), server.original_termios)
+            server.close()
+
 
 class ScreenPassthrough(unittest.TestCase):
     def server(self, **kwargs):
-        env = {k: v for k, v in os.environ.items() if k not in ('TMUX', 'TMUX_PANE', 'TERM_PROGRAM', 'LC_TERMINAL')}
+        env = {k: v for k, v in os.environ.items() if k not in ('TMUX', 'TMUX_PANE', 'TERM_PROGRAM', 'LC_TERMINAL', 'KONSOLE_VERSION')}
         env['STY'] = 'xsixel-screen-test'
         server = Server(env=env, **kwargs)
         self.addCleanup(server.close)
@@ -1304,7 +1388,7 @@ class ScreenPassthrough(unittest.TestCase):
 
     def test_iterm2_identity_forwarded_through_screen(self):
         env = {k: v for k, v in os.environ.items() if k not in
-               ('TMUX', 'TMUX_PANE', 'TERM_PROGRAM', 'LC_TERMINAL')}
+               ('TMUX', 'TMUX_PANE', 'TERM_PROGRAM', 'LC_TERMINAL', 'KONSOLE_VERSION')}
         env.update(STY='xsixel-screen-test', LC_TERMINAL='iTerm2')
         server = Server(pixels=(800, 600), env=env)
         self.addCleanup(server.close)
@@ -1421,6 +1505,132 @@ class ScreenPassthrough(unittest.TestCase):
              (4, 5, 1194, 790), (5, 5, 1194, 790)])
 
 
+class UnboundedServer(Server):
+    @staticmethod
+    def noise(name, width, height):
+        # A separate client can finish even if an oversized image stops Xsixel.
+        code = r"""
+import ctypes as C, ctypes.util, random, os, sys
+x = C.CDLL(ctypes.util.find_library('X11'))
+x.XOpenDisplay.restype = C.c_void_p
+x.XOpenDisplay.argtypes = [C.c_char_p]
+x.XDefaultRootWindow.restype = C.c_ulong
+x.XDefaultRootWindow.argtypes = [C.c_void_p]
+x.XDefaultVisual.restype = C.c_void_p
+x.XDefaultVisual.argtypes = [C.c_void_p, C.c_int]
+x.XCreateGC.restype = C.c_void_p
+x.XCreateGC.argtypes = [C.c_void_p, C.c_ulong, C.c_ulong, C.c_void_p]
+x.XCreateImage.restype = C.c_void_p
+x.XCreateImage.argtypes = [C.c_void_p, C.c_void_p, C.c_uint, C.c_int, C.c_int,
+                          C.c_void_p, C.c_uint, C.c_uint, C.c_int, C.c_int]
+x.XPutImage.argtypes = [C.c_void_p, C.c_ulong, C.c_void_p, C.c_void_p,
+                       C.c_int, C.c_int, C.c_int, C.c_int, C.c_uint, C.c_uint]
+x.XSync.argtypes = [C.c_void_p, C.c_int]
+d = x.XOpenDisplay(sys.argv[1].encode())
+w, h = map(int, sys.argv[2:])
+root = x.XDefaultRootWindow(d)
+data = C.create_string_buffer(random.Random(137).randbytes(w*h*4))
+image = x.XCreateImage(d, x.XDefaultVisual(d, 0), 24, 2, 0, data, w, h, 32, w*4)
+gc = x.XCreateGC(d, root, 0, None)
+x.XPutImage(d, root, gc, image, 0, 0, 0, 0, w, h)
+x.XSync(d, False)
+os._exit(0)
+"""
+        subprocess.run([sys.executable, '-c', code, name, str(width), str(height)],
+                       check=True, timeout=10)
+
+    def drain(self):
+        try:
+            while True:
+                data = os.read(self.master, 65536)
+                if not data:
+                    return
+                self.output.extend(data)
+        except OSError:
+            pass
+
+
+@unittest.skipUnless(shutil.which('xprop'), 'xprop not installed')
+class KonsoleRendering(unittest.TestCase):
+    def server(self, **kwargs):
+        server = Server(pixels=(560, 425), cells=(80, 25), **kwargs)
+        self.addCleanup(server.close)
+        return server
+
+    def packets(self, server, start):
+        server.wait_output(b'\x1bP0;0q', start)
+        time.sleep(.1)
+        return re.findall(rb'\x1bP0;0q.*?\x1b\\', bytes(server.output[start:]), re.S)
+
+    def test_environment_and_option_precedence(self):
+        env = {k: v for k, v in os.environ.items() if k not in
+               ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL')}
+        env['KONSOLE_VERSION'] = '260802'
+        for args, mode in (((), 'konsole'), (('-iterm2',), 'iterm2'),
+                           (('-iterm2', '-konsole'), 'konsole')):
+            with self.subTest(args=args):
+                server = self.server(env=env, args=args)
+                self.assertIn('"' + mode + '"', RenderModeControl.mode(self, server))
+                server.close()
+
+    def test_ssh_identity_and_manual_mode_precedence(self):
+        for screen in (False, True):
+            with self.subTest(screen=screen):
+                env = {k: v for k, v in os.environ.items() if k not in
+                       ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL', 'KONSOLE_VERSION')}
+                if screen:
+                    env['STY'] = 'xsixel-konsole-test'
+                server = self.server(env=env)
+                server.reply(b'\x1bP>|Konsole 26.08.2\x1b\\')
+                server.wait_output(b'0;0q"1;1;560;425')
+                self.assertIn('"konsole"', RenderModeControl.mode(self, server))
+                self.assertEqual(server.dimensions(), (560, 425))
+                self.assertNotIn(b'ReportCellSize', server.output)
+                server.close()
+        server = self.server()
+        RenderModeControl.set_mode(self, server, 'fast')
+        server.reply(b'\x1bP>|Konsole 26.08.2\x1b\\')
+        time.sleep(.05)
+        self.assertIn('"fast"', RenderModeControl.mode(self, server))
+
+    def test_opaque_prefix_preserves_background_and_cell_boundaries(self):
+        server = self.server(args=('-konsole',))
+        DamagePlanning.fill(self, server, [(0, 0, 560, 425)])
+        time.sleep(.15)
+        start = len(server.output)
+        window = server.x11.XCreateSimpleWindow(server.display, server.root,
+                                               141, 105, 20, 10, 0, 0, 0xff)
+        server.x11.XMapWindow(server.display, window)
+        server.x11.XSync(server.display, False)
+        packets = self.packets(server, start)
+        self.assertEqual(len(packets), 1)
+        self.assertIn(b'q"1;1;161;204#', packets[0])
+        w, h, rgb = Iterm2Detection.decode(packets[0])
+        self.assertEqual((w, h), (161, 204))
+        for x, y, color in ((0, 0, (255, 0, 0)), (140, 104, (255, 0, 0)),
+                            (150, 110, (0, 0, 255)), (160, 118, (255, 0, 0))):
+            actual = rgb[(y*w+x)*3:(y*w+x)*3+3]
+            self.assertTrue(all(abs(a-b) <= 4 for a, b in zip(actual, color)),
+                            (x, y, actual, color))
+        start = len(server.output)
+        DamagePlanning.fill(self, server, [(559, 424, 1, 1)])
+        self.assertIn(b'q"1;1;560;425', self.packets(server, start)[-1])
+
+    def test_unknown_geometry_uses_full_image_and_runtime_switch(self):
+        server = Server(pixels=(563, 427), cells=(80, 25), args=('-konsole',))
+        self.addCleanup(server.close)
+        time.sleep(.1)
+        start = len(server.output)
+        DamagePlanning.fill(self, server, [(141, 105, 20, 10)])
+        self.assertIn(b'q"1;1;563;427', self.packets(server, start)[-1])
+        RenderModeControl.set_mode(self, server, 'fast')
+        server.wait_output(b'\x1bP0;1q"1;1;563;427', start)
+        start = len(server.output)
+        RenderModeControl.set_mode(self, server, 'konsole')
+        server.wait_output(b'\x1bP0;0q"1;1;563;427', start)
+        self.assertIn('"konsole"', RenderModeControl.mode(self, server))
+
+
 @unittest.skipUnless(shutil.which('xprop'), 'xprop not installed')
 class RenderModeControl(unittest.TestCase):
     property = '_XSIXEL_RENDER_MODE'
@@ -1435,10 +1645,11 @@ class RenderModeControl(unittest.TestCase):
                               capture_output=True, text=True, check=check, timeout=5)
 
     def mode(self, server):
-        return self.xprop(server, self.property).stdout.strip()
+        return RenderModeControl.xprop(self, server, '_XSIXEL_RENDER_MODE').stdout.strip()
 
     def set_mode(self, server, mode):
-        return self.xprop(server, '-f', self.property, '8s', '-set', self.property, mode)
+        return RenderModeControl.xprop(self, server, '-f', '_XSIXEL_RENDER_MODE', '8s',
+                                      '-set', '_XSIXEL_RENDER_MODE', mode)
 
     def test_round_trip_redraw_and_subsequent_damage(self):
         server = self.server()
@@ -1470,7 +1681,7 @@ class RenderModeControl(unittest.TestCase):
         self.assertIn('"iterm2"', self.mode(explicit))
         explicit.close()
         env = {k: v for k, v in os.environ.items() if k not in
-               ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL')}
+               ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL', 'KONSOLE_VERSION')}
         env['LC_TERMINAL'] = 'iTerm2'
         detected = self.server(env=env)
         self.assertIn('"iterm2"', self.mode(detected))
@@ -1591,7 +1802,7 @@ class RetinaQuantization(unittest.TestCase):
         for screen in (False, True):
             with self.subTest(screen=screen):
                 env = {k: v for k, v in os.environ.items() if k not in
-                       ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL')}
+                       ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL', 'KONSOLE_VERSION')}
                 if screen:
                     env['STY'] = 'retina-palette-test'
                 server = Server(pixels=(320, 240), env=env, args=('-iterm2-scale', '2'))
@@ -1682,7 +1893,7 @@ class ExecuteCommand(unittest.TestCase):
             for command, status in commands:
                 with self.subTest(status=status):
                     env = {k: v for k, v in os.environ.items() if k not in
-                           ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL')}
+                           ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL', 'KONSOLE_VERSION')}
                     env['TMPDIR'] = tmp
                     before = set(Path(tmp).glob('Xsixel-*-exec-*'))
                     server = Server(pixels=(640, 480), args=('-keep', '-exec', command),
@@ -1773,7 +1984,7 @@ class ExecuteCommand(unittest.TestCase):
                 reader.start()
                 with tempfile.TemporaryFile() as log:
                     env = {k: v for k, v in os.environ.items() if k not in
-                           ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL')}
+                           ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL', 'KONSOLE_VERSION')}
                     process = subprocess.Popen([os.environ['XSIXEL'], '-displayfd', '2',
                         '-nolisten', 'tcp', '-ac', '-exec', command],
                         stdin=slave, stdout=slave, stderr=log, env=env, start_new_session=True)
