@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Hiroki Sato <hrs@allbsd.org>
+
 option('xorg', type: 'combo', choices: ['true', 'false', 'auto'], value: 'auto',
        description: 'Enable Xorg X Server')
 option('xorg-sdk', type: 'boolean', value: false,

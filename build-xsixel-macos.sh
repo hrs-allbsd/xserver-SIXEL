@@ -1,4 +1,6 @@
 #!/bin/sh
+# Copyright (c) 2026 Hiroki Sato <hrs@allbsd.org>
+
 set -eu
 
 prefix=${PREFIX:-/usr/local}

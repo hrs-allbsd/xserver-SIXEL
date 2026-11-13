@@ -1,3 +1,7 @@
+/*
+ * Copyright (c) 2026 Hiroki Sato <hrs@allbsd.org>
+ */
+
 #include <dix-config.h>
 #include "dix/dix_priv.h"
 #include <stdio.h>
@@ -13,12 +17,14 @@
 extern char **environ;
 
 static int child_notify_fd = -1;
+Bool kdRedirectChildOutput = TRUE;
 
 struct child_command {
     int logfd;
     int notifyfd;
     char *command;
     char **env;
+    Bool redirect_output;
 };
 
 void
@@ -74,9 +80,11 @@ static void *child_command(void *unused)
     dprintf(child->logfd, "Starting child command: %s\n", child->command);
     error = posix_spawn_file_actions_init(&actions);
     if (!error) {
-        error = posix_spawn_file_actions_adddup2(&actions, child->logfd, STDOUT_FILENO);
-        if (!error)
-            error = posix_spawn_file_actions_adddup2(&actions, child->logfd, STDERR_FILENO);
+        if (child->redirect_output) {
+            error = posix_spawn_file_actions_adddup2(&actions, child->logfd, STDOUT_FILENO);
+            if (!error)
+                error = posix_spawn_file_actions_adddup2(&actions, child->logfd, STDERR_FILENO);
+        }
         if (!error)
             error = posix_spawn_file_actions_addclose(&actions, child->logfd);
         if (!error)
@@ -122,6 +130,7 @@ void KdExecuteChildCommand(void)
     if (!child)
         FatalError("Xsixel: cannot allocate child command\n");
     child->notifyfd = -1;
+    child->redirect_output = kdRedirectChildOutput;
     child->command = strdup(kdExecuteCommand);
     while (environ[count])
         count++;

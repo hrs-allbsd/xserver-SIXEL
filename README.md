@@ -92,6 +92,8 @@ If you want to work on anything, just let us know. If you have any questions, [j
 
 ## Xsixel terminal server
 
+Copyright (c) 2026 Hiroki Sato <hrs@allbsd.org>
+
 The `sixel` branch adds the Xsixel terminal backend to XLibre. Build it with
 Meson and Ninja, with libsixel and the usual XLibre development dependencies
 available through pkg-config:
@@ -143,6 +145,44 @@ after the command exits, for example `Xsixel :10 -keep -exec xterm`. Without
 usual meaning: exit when the last X client disconnects. Commands are run with
 `/bin/sh -c`; keep the session command in the foreground, since a command that
 backgrounds its application finishes when that shell exits.
+
+Client compatibility is automatic by default. Override one module with
+`-compat name=auto|on|off`; repeat the option to control several modules:
+
+```sh
+Xsixel :9 -compat iterm2=off -compat konsole=on -exec ratpoison
+Xsixel :9 -compat screen=on -exec ratpoison
+```
+
+| Module name | Controlled behavior |
+| --- | --- |
+| `tmux` | Passthrough, configuration checks, pane geometry, cell mouse input and image limits/splitting |
+| `screen` | Passthrough, cell mouse input, periodic redraw and full-frame replay |
+| `xterm` | Host-pointer hiding and removal of ioctl border remainders through screen |
+| `mlterm` | Isolation of `-exec` child stdout/stderr from the terminal image |
+| `iterm2` | Identity/cell probes, Retina geometry/scaling, input conversion and compatible rendering |
+| `windows-terminal` | Probes correcting stale SSH pixel sizes, cell-size fallback and the 1016 mouse fallback query |
+| `konsole` | Automatic identification and opaque, cell/band-aligned rendering |
+
+`auto` retains environment/terminal-reply detection and the existing protocol
+fallbacks. SSH does not always expose a terminal's name: the xterm, mlterm and
+Windows Terminal modules therefore retain their applicable protocol or stream
+protections for unidentified terminals too. `on` forces those protections;
+for tmux/screen it forces the transport, and for iTerm2/Konsole it also selects
+the render mode. `off` prevents that module from being enabled by late replies.
+Turning a transport off sends output directly; it does not reconfigure the
+multiplexer. tmux still takes precedence over screen when both are enabled.
+Disabling mlterm stream isolation allows child output onto the image; launcher
+status messages still go to its private log and command lifetime is unchanged.
+
+Options are processed left to right. `-iterm2`, `-iterm2-scale`,
+`-iterm2-full-redraw` and `-konsole` also enable their module explicitly, so a
+later `-compat iterm2=off` or `-compat konsole=off` overrides them. Runtime
+`_XSIXEL_RENDER_MODE` changes cannot select a disabled module. Rendering choices
+remain independent of geometry and the transport: `fast` alone does not disable
+iTerm2 Retina/input corrections, and selecting `konsole` does not select iTerm2
+geometry. These controls are startup settings and do not change global terminal
+or multiplexer preferences.
 
 Inside tmux, Xsixel detects `TMUX` and automatically sends SIXEL images through
 tmux passthrough, regardless of whether tmux was built with SIXEL support.
@@ -460,3 +500,13 @@ command above). Otherwise RandR can report a correctly enlarged screen while
 pixels beyond the terminal's graphics limit are clipped. Xterm does not permit
 changing this resource through XTSMGRAPHICS after startup; restart the outer
 terminal to apply it.
+
+The compatibility implementation is separate from X server processing:
+`hw/kdrive/sixel/sixel.c` owns the framebuffer, RandR, event delivery and timers;
+`render.c` owns common pixel encoding and damage planning. Their `client.h`
+hooks cover initialization/shutdown, size and input replies, coordinate
+conversion, update bounds, pixel conversion, image limits and image delivery.
+`client.c` dispatches those hooks; `client-tmux.c`, `client-screen.c`,
+`client-xterm.c`, `client-mlterm.c`, `client-iterm2.c`, `client-windows.c` and
+`client-konsole.c` contain the corresponding policies. Rendering and transport
+hooks are selected independently; there is no module loop in the pixel encoder.

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Hiroki Sato <hrs@allbsd.org>
+
 build_kdrive = build_xsixel or build_xephyr or build_xfake or build_xfbdev or build_xmodesetting
 
 want_kdrive_linux = build_xfbdev or build_xmodesetting

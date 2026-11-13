@@ -101,6 +101,50 @@ The
 alternative requires DEC locator support in the terminal;
 use the default SGR protocol in multiplexers.
 .TP
+.BI \-compat " name=auto|on|off"
+Control one client compatibility module.
+Repeat this option to control several modules.
+Names are
+.BR tmux ,
+.BR screen ,
+.BR xterm ,
+.BR mlterm ,
+.BR iterm2 ,
+.BR windows-terminal ,
+and
+.BR konsole .
+The default,
+.BR auto ,
+retains environment and terminal-reply detection and existing protocol
+fallbacks for unidentified SSH terminals.
+.B on
+forces the module;
+.B off
+prevents automatic activation, including from late terminal replies.
+Options are processed left to right.
+.PP
+The tmux and screen modules control passthrough, geometry/input handling
+and redraw behavior.  Disabling a transport sends output directly.
+The xterm module controls host-pointer hiding and border rounding through
+screen.  The mlterm module isolates child stdout/stderr from the image;
+disabling it allows child output on the terminal, while private launcher
+status logging and command lifetime remain unchanged.
+The Windows Terminal module controls stale SSH size probes, cell-size
+fallback and the pixel-mouse fallback query.
+These protocol/stream protections also apply to unidentified terminals in
+auto mode.  iTerm2 controls identification, Retina/input geometry and
+rendering; Konsole controls identification and opaque rendering.
+.PP
+The legacy iTerm2 and Konsole options explicitly enable their module.
+A later
+.B \-compat iterm2=off
+or
+.B \-compat konsole=off
+wins.  The root render-mode property cannot select a disabled module.
+A render-mode change alone does not alter the selected transport or disable
+Retina/input geometry corrections.
+No global terminal or multiplexer settings are modified.
+.TP
 .B \-iterm2
 Force iTerm2 compatibility rendering when automatic identification is
 unavailable.

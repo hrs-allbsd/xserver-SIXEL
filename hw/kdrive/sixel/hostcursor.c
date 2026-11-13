@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 Hiroki Sato <hrs@allbsd.org> */
 /* Keep Xlib types separate from the X server's internal headers. */
 #include "hostcursor.h"
 #ifdef HAVE_HOST_XFIXES

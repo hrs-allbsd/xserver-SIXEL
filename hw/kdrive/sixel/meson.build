@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Hiroki Sato <hrs@allbsd.org>
+
 sixel_dep = dependency('libsixel')
 chafa_dep = dependency('chafa', required: get_option('chafa'))
 sixel_config = configuration_data()
@@ -14,7 +16,10 @@ endif
 
 xsixel_server = executable(
     'Xsixel',
-    ['sixel.c', 'sixelinit.c', 'hostcursor.c', '../src/kexeccmd.c', '../../stubs/ddxBeforeReset.c'],
+    ['sixel.c', 'sixelinit.c', 'render.c', 'hostcursor.c',
+     'client.c', 'client-tmux.c', 'client-screen.c', 'client-xterm.c',
+     'client-mlterm.c', 'client-iterm2.c', 'client-windows.c',
+     'client-konsole.c', '../src/kexeccmd.c', '../../stubs/ddxBeforeReset.c'],
     include_directories: [inc, include_directories('../src')],
     dependencies: [common_dep, sixel_dep, chafa_dep, host_x11_dep, host_xfixes_dep, dependency('threads')],
     c_args: host_cursor_args,

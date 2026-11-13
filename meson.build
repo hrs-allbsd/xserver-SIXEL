@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Hiroki Sato <hrs@allbsd.org>
+
 project('xserver', 'c',
         default_options: [
             'buildtype=debugoptimized',

@@ -1,4 +1,6 @@
 #!/bin/sh
+# Copyright (c) 2026 Hiroki Sato <hrs@allbsd.org>
+
 set -eu
 
 # Requires Meson, Ninja, libsixel development files and the XLibre build dependencies.

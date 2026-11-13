@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Hiroki Sato <hrs@allbsd.org>
+
 """PTY integration tests. Run with XSIXEL=/path/to/Xsixel python3 test/xsixel-autosize.py.
 
 Requires libX11, libXrandr, xdpyinfo and xsetroot. No real terminal is modified.
@@ -2007,6 +2009,121 @@ class ExecuteCommand(unittest.TestCase):
                 server.x11.XCloseDisplay(server.display)
                 server.display = None
                 self.assertEqual(server.process.wait(timeout=5), 0)
+
+
+class ClientCompatibility(unittest.TestCase):
+    def environment(self, **values):
+        env = {k: v for k, v in os.environ.items() if k not in
+               ('TMUX', 'TMUX_PANE', 'STY', 'TERM_PROGRAM', 'LC_TERMINAL', 'KONSOLE_VERSION')}
+        env.update(values)
+        return env
+
+    def server(self, **kwargs):
+        server = Server(pixels=(560, 425), cells=(80, 25), **kwargs)
+        self.addCleanup(server.close)
+        return server
+
+    def test_rendering_modules_can_be_forced_disabled_and_reset(self):
+        for client, hint, identity in (
+                ('iterm2', {'LC_TERMINAL': 'iTerm2'}, b'\x1bP>|iTerm2 3.7.6\x1b\\'),
+                ('konsole', {'KONSOLE_VERSION': '260802'}, b'\x1bP>|Konsole 26.08.2\x1b\\')):
+            cases = [(('-compat', client + '=on'), {}, client),
+                     (('-compat', client + '=off'), hint, 'fast'),
+                     (('-' + client, '-compat', client + '=off'), hint, 'fast'),
+                     (('-compat', client + '=off', '-' + client), {}, client),
+                     (('-compat', client + '=off', '-compat', client + '=auto'), hint, client)]
+            for args, env, mode in cases:
+                with self.subTest(client=client, args=args):
+                    server = self.server(args=args, env=self.environment(**env))
+                    server.reply(identity)
+                    time.sleep(.04)
+                    self.assertIn('"' + mode + '"', RenderModeControl.mode(self, server))
+                    if mode == 'fast':
+                        server.reply(b'\x1b]1337;ReportCellSize=17;7;2\x07')
+                        self.assertEqual(server.dimensions(), (560, 425))
+                        if client == 'iterm2':
+                            self.assertNotIn(b'ReportCellSize', server.output)
+                    server.close()
+
+    def test_disabled_render_mode_cannot_be_enabled_by_root_property(self):
+        for client in ('iterm2', 'konsole'):
+            with self.subTest(client=client):
+                server = self.server(args=('-compat', client + '=off'))
+                result = subprocess.run(['xprop', '-display', server.name, '-root', '-f',
+                                         '_XSIXEL_RENDER_MODE', '8s', '-set',
+                                         '_XSIXEL_RENDER_MODE', client], capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('"fast"', RenderModeControl.mode(self, server))
+                server.close()
+
+    def test_screen_transport_can_be_forced_and_bypassed(self):
+        for args, env, wrapped in (
+                (('-compat', 'screen=on'), {}, True),
+                (('-compat', 'screen=off'), {'STY': 'xsixel-policy-test'}, False),
+                (('-compat', 'screen=off', '-compat', 'screen=auto'),
+                 {'STY': 'xsixel-policy-test'}, True)):
+            with self.subTest(args=args):
+                server = self.server(args=args, env=self.environment(**env))
+                marker = b'\x1bP\x1b[H\x1bP0;1q'
+                if wrapped:
+                    server.wait_output(marker)
+                else:
+                    server.wait_output(b'\x1bP0;1q')
+                    self.assertNotIn(marker, server.output)
+                server.close()
+
+    def test_tmux_can_be_bypassed_without_querying_its_configuration(self):
+        server = self.server(args=('-compat', 'tmux=off'),
+                             env=self.environment(TMUX='/nonexistent/socket,0,0'))
+        server.wait_output(b'\x1bP0;1q')
+        self.assertNotIn(b'\x1bPtmux;', server.output)
+        self.assertEqual(server.dimensions(), (560, 425))
+
+    def test_pointer_hiding_and_border_rounding_can_be_disabled(self):
+        for policy in ('on', 'off'):
+            with self.subTest(policy=policy):
+                server = Server(pixels=(562, 429), cells=(80, 25),
+                                args=('-compat', 'screen=on', '-compat', 'xterm=' + policy))
+                self.addCleanup(server.close)
+                self.assertEqual(server.dimensions(),
+                                 (560, 425) if policy == 'on' else (562, 429))
+                server.close()
+                if policy == 'on':
+                    self.assertIn(b'\x1b[>3p', server.output)
+                    self.assertIn(b'\x1b[>0p', server.output)
+                else:
+                    self.assertNotIn(b'\x1b[>3p', server.output)
+                    self.assertNotIn(b'\x1b[>0p', server.output)
+        server = self.server(args=('-compat', 'screen=on', '-compat', 'xterm=off'))
+        self.assertEqual(server.dimensions(), (560, 425))
+
+    def test_stale_ssh_size_and_mouse_fallback_can_be_disabled(self):
+        server = self.server(args=('-compat', 'windows-terminal=off'))
+        server.wait_output(b'\x1bP0;1q')
+        for query in (b'\x1b[14t', b'\x1b[16t', b'\x1b[?1016$p'):
+            self.assertNotIn(query, server.output)
+        server.reply(b'\x1b[6;20;10t\x1b[?1016;4$y')
+        time.sleep(.08)
+        self.assertEqual(server.dimensions(), (560, 425))
+        self.assertNotIn(b'\x1b[?1016l', server.output)
+
+    def test_child_stream_isolation_can_be_disabled_without_changing_lifetime(self):
+        command = "printf XSIXEL_COMPAT_CHILD_STDOUT; printf XSIXEL_COMPAT_CHILD_STDERR >&2"
+        server = self.server(args=('-compat', 'mlterm=off', '-keep', '-exec', command),
+                             stderr_to_terminal=True)
+        server.wait_output(b'XSIXEL_COMPAT_CHILD_STDOUT')
+        server.wait_output(b'XSIXEL_COMPAT_CHILD_STDERR')
+        self.assertIsNone(server.process.poll())
+        self.assertNotIn(b'Starting child command:', server.output)
+
+    def test_invalid_policies_fail_before_terminal_setup(self):
+        for value in ('unknown=on', 'xterm=maybe', '=off', 'screen=', 'screen'):
+            with self.subTest(value=value):
+                result = subprocess.run([os.environ['XSIXEL'], '-compat', value],
+                                        capture_output=True, env=self.environment(), timeout=5)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn(b'\x1b', result.stdout)
+                self.assertIn(b'Xsixel:', result.stderr)
 
 
 if __name__ == '__main__':

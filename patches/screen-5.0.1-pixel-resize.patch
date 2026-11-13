@@ -1,0 +1,58 @@
+Copyright (c) 2026 Hiroki Sato <hrs@allbsd.org>
+
+--- a/resize.c
++++ b/resize.c
+@@ -74,12 +74,14 @@
+ void CheckScreenSize(int change_flag)
+ {
+ 	int wi, he;
++	int have_winsize;
+ 
+ 	if (display == NULL) {
+ 		return;
+ 	}
+ 
+-	if (ioctl(D_userfd, TIOCGWINSZ, (char *)&glwz) != 0) {
++	have_winsize = ioctl(D_userfd, TIOCGWINSZ, (char *)&glwz) == 0;
++	if (!have_winsize) {
+ 		wi = D_CO;
+ 		he = D_LI;
+ 	} else {
+@@ -92,6 +94,26 @@
+ 	}
+ 
+ 	if (D_width == wi && D_height == he) {
++		/* A font change may alter pixels without changing the grid. Do not
++		 * reflow layers, but update full-window PTYs so the kernel sends
++		 * SIGWINCH to graphics applications. Keep split-region and hidden
++		 * windows out of this display-specific update. */
++		if (have_winsize) {
++			Canvas *cv;
++			for (cv = D_cvlist; cv; cv = cv->c_next) {
++				Window *p = Layer2Window(cv->c_layer);
++				struct winsize current;
++				if (!p || p->w_ptyfd < 0 || !p->w_pid ||
++				    p->w_width != wi || p->w_height != he)
++					continue;
++				if (ioctl(p->w_ptyfd, TIOCGWINSZ, &current) == 0 &&
++				    current.ws_col == glwz.ws_col &&
++				    current.ws_row == glwz.ws_row &&
++				    (current.ws_xpixel != glwz.ws_xpixel ||
++				     current.ws_ypixel != glwz.ws_ypixel))
++					ioctl(p->w_ptyfd, TIOCSWINSZ, &glwz);
++			}
++		}
+ 		return;
+ 	}
+ 	KillBlanker();
+--- a/process.c
++++ b/process.c
+@@ -5829,6 +5829,8 @@
+ {
+ 	if (display == NULL)
+ 		return;
++	/* A returning window may have missed a pixel-only resize while hidden. */
++	CheckScreenSize(0);
+ 	if (D_status) {
+ 		Msg(0, "%s", "");	/* wait till mintime (keep gcc quiet) */
+ 		RemoveStatus();

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Hiroki Sato <hrs@allbsd.org>
+
 simple_xinit = executable(
     'simple-xinit',
     'simple-xinit.c',

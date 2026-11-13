@@ -2,6 +2,7 @@
  * Copyright © 2004 PillowElephantBadgerBankPond
  * Copyright © 2014 Sergii Pylypenko
  * Copyright © 2014 Hayaki Saito
+ * Copyright © 2026 Hiroki Sato <hrs@allbsd.org>
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
  * documentation for any purpose is hereby granted without fee, provided that
@@ -25,241 +26,7 @@
  *    - jaymz
  *
  */
-#include <dix-config.h>
-#include "os/cmdline.h"
-#include "os/ddx_priv.h"
-#include "sixel-config.h"
-#include "hostcursor.h"
-#include "dix/dix_priv.h"
-#include "dix/property_priv.h"
-#include "property.h"
-#include "windowstr.h"
-#include <X11/Xatom.h>
-#ifdef HAVE_CHAFA
-#include <chafa.h>
-/* Ensure we use a non-premultiplied BGRA format; fallback aliases for older API names */
-#ifndef CHAFA_PIXEL_BGRA8_UNASSOCIATED
-#  ifdef CHAFA_PIXEL_BGRA8_UNPREMULTIPLIED
-#    define CHAFA_PIXEL_BGRA8_UNASSOCIATED CHAFA_PIXEL_BGRA8_UNPREMULTIPLIED
-#  else
-#    define CHAFA_PIXEL_BGRA8_UNASSOCIATED CHAFA_PIXEL_BGRA8_PREMULTIPLIED
-#  endif
-#endif
-#endif
-#include "kdrive.h"
-#ifdef HAVE_LIBSIXEL
-#include <sixel.h>
-#endif
-#include <termios.h>
-#include <X11/keysym.h>
-#include <sys/wait.h>
-#if USE_MUTEX
-# include <pthread.h>
-#endif
-#include <signal.h>
-#include <sys/ioctl.h>
-#include <unistd.h>
-#include <limits.h>
-#include <math.h>
-#include <errno.h>
-#include <fcntl.h>
-
-/* Multiplexer wrapping leaves direct terminal rendering unchanged. */
-static Bool sixelTmux;
-static Bool sixelScreen;
-static Bool sixelMouseCells;
-static Bool sixelMouseModeQueryPending;
-enum sixel_render_mode {
-	SIXEL_RENDER_FAST,
-	SIXEL_RENDER_ITERM2,
-	SIXEL_RENDER_KONSOLE
-};
-static enum sixel_render_mode sixelRenderMode;
-static Bool sixelRenderModeExplicit;
-static size_t sixelTmuxImageLimit = 1048576;
-static size_t sixelTmuxImageRequired;
-static Bool sixelTmuxLimitQueried, sixelTmuxLimitOption;
-static int sixelIterm2Scale; /* 0: automatic, 1/2: explicit override. */
-static int sixelDetectedScale = 1;
-static Bool sixelIdentityPending, sixelCellPending;
-static Bool sixelIterm2FullRedraw;
-static Bool sixelIterm2Terminal; /* Startup identity, independent of render mode. */
-
-/* SSH may omit environment hints.  The startup identity query can select
- * compatibility later without delaying initialization. */
-static void
-sixelDetectTerminal(void)
-{
-	const char *program, *terminal, *konsole;
-
-	program = getenv("TERM_PROGRAM");
-	terminal = getenv("LC_TERMINAL");
-	konsole = getenv("KONSOLE_VERSION");
-	if (konsole != NULL && *konsole != '\0') {
-		if (!sixelRenderModeExplicit)
-			sixelRenderMode = SIXEL_RENDER_KONSOLE;
-	} else if ((program != NULL && !strcmp(program, "iTerm.app")) ||
-	    (terminal != NULL && !strcmp(terminal, "iTerm2"))) {
-		sixelIterm2Terminal = TRUE;
-		if (!sixelRenderModeExplicit)
-			sixelRenderMode = SIXEL_RENDER_ITERM2;
-	}
-}
-
-static Bool
-sixelTmuxOption(const char *pane, const char *option, char *value,
-    size_t capacity, Bool required)
-{
-	int fd, fds[2], status;
-	pid_t pid, waited;
-	ssize_t n;
-	size_t used;
-
-	if (!pane || !*pane || pipe(fds) < 0) {
-		if (required)
-			FatalError("Xsixel: cannot check tmux option "
-			    "(TMUX_PANE missing or pipe failed)\n");
-		return (FALSE);
-	}
-	pid = fork();
-	if (pid == 0) {
-		close(fds[0]);
-		if (dup2(fds[1], STDOUT_FILENO) < 0)
-			_exit(127);
-		close(fds[1]);
-		if (!required) {
-			fd = open("/dev/null", O_WRONLY);
-			if (fd < 0 || dup2(fd, STDERR_FILENO) < 0)
-				_exit(127);
-			close(fd);
-		}
-		execlp("tmux", "tmux", "show-options", "-A",
-		    strcmp(option, "allow-passthrough") == 0 ? "-p" : "-s",
-		    "-v", "-t", pane, option, (char *)NULL);
-		_exit(127);
-	}
-	close(fds[1]);
-	if (pid < 0) {
-		close(fds[0]);
-		if (required)
-			FatalError("Xsixel: cannot query tmux\n");
-		return (FALSE);
-	}
-	used = 0;
-	while (used < capacity - 1) {
-		n = read(fds[0], value + used, capacity - 1 - used);
-		if (n > 0)
-			used += n;
-		else if (n == 0 || errno != EINTR)
-			break;
-	}
-	close(fds[0]);
-	do {
-		waited = waitpid(pid, &status, 0);
-	} while (waited < 0 && errno == EINTR);
-	value[used] = '\0';
-	value[strcspn(value, "\r\n")] = '\0';
-	if (waited != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-		if (required)
-			FatalError("Xsixel: cannot query tmux setting; "
-			    "check tmux and TMUX_PANE\n");
-		return (FALSE);
-	}
-	return (TRUE);
-}
-
-/* Older tmux versions have a fixed 1 MiB limit.  Newer versions grow their
- * input buffer by powers of two up to the configured server option. */
-static void
-sixelCheckTmuxImageLimit(void)
-{
-	char value[32], *end;
-	unsigned long long limit;
-
-	if (!sixelTmux || sixelRenderMode != SIXEL_RENDER_KONSOLE ||
-	    sixelTmuxLimitQueried)
-		return;
-	sixelTmuxLimitQueried = TRUE;
-	if (!sixelTmuxOption(getenv("TMUX_PANE"), "input-buffer-size", value,
-	    sizeof(value), FALSE))
-		return;
-	errno = 0;
-	limit = strtoull(value, &end, 10);
-	if (errno || end == value || *end || limit < 32 || limit > UINT_MAX)
-		return;
-	sixelTmuxLimitOption = TRUE;
-	sixelTmuxImageLimit = 32;
-	while (sixelTmuxImageLimit <= limit / 2)
-		sixelTmuxImageLimit *= 2;
-}
-
-static void
-sixelCheckTmux(void)
-{
-    const char *tmux = getenv("TMUX");
-    const char *pane = getenv("TMUX_PANE");
-    char value[32];
-
-    if (!tmux || !*tmux)
-        return;
-    sixelTmuxOption(pane, "allow-passthrough", value, sizeof(value), TRUE);
-    if (strcmp(value, "on") != 0 && strcmp(value, "all") != 0)
-        FatalError("Xsixel: tmux allow-passthrough is off. Run in this pane:\n"
-                   "  tmux set-option -p allow-passthrough on\n"
-                   "Then restart Xsixel. To enable it persistently, add to ~/.tmux.conf:\n"
-                   "  set -g allow-passthrough on\n");
-    sixelTmuxOption(pane, "focus-events", value, sizeof(value), TRUE);
-    if (strcmp(value, "on") != 0)
-        FatalError("Xsixel: tmux focus-events is off. Run:\n"
-                   "  tmux set-option -g focus-events on\n"
-                   "Then restart Xsixel. To enable it persistently, add to ~/.tmux.conf:\n"
-                   "  set -g focus-events on\n");
-    sixelTmux = TRUE;
-}
-
-/* GNU screen has a 768-byte DCS buffer. Keep packets below 256 bytes,
- * including delimiters, and split ESC-backslash across packets so it cannot
- * terminate the enclosing passthrough string. No ESC doubling is used. */
-static void
-sixelScreenWrite(const char *data, size_t length)
-{
-    while (length) {
-        size_t n = min(length, 252), i;
-
-        for (i = 0; i + 1 < n; i++) {
-            if (data[i] == '\033' && data[i + 1] == '\\') {
-                n = i + 1;
-                break;
-            }
-        }
-        fputs("\033P", stdout);
-        fwrite(data, 1, n, stdout);
-        fputs("\033\\", stdout);
-        data += n;
-        length -= n;
-    }
-}
-
-/* Multiplexers need distinct envelopes for terminal-specific controls. */
-static void
-sixelTerminalControl(const char *s)
-{
-    if (sixelScreen) {
-        sixelScreenWrite(s, strlen(s));
-        return;
-    }
-    if (!sixelTmux) {
-        fputs(s, stdout);
-        return;
-    }
-    fputs("\033Ptmux;", stdout);
-    for (; *s; s++) {
-        if (*s == '\033')
-            putchar('\033');
-        putchar(*s);
-    }
-    fputs("\033\\", stdout);
-}
+#include "sixel-private.h"
 
 static Bool sixelDecMouse = FALSE;
 
@@ -339,94 +106,21 @@ int mouseState = 0;
 
 enum { SIXEL_FRAME_INTERVAL = 8 };
 
-typedef struct
-{
-    int w;
-    int h;
-    int pitch;
-    int output_scale;
-    int pixel_w, pixel_h;
-    int reported_pixel_w, reported_pixel_h;
-    int cell_w, cell_h;
-    int cell_pixel_w, cell_pixel_h;
-    double iterm_cell_w, iterm_cell_h;
-    int iterm_cell_scale;
-    Bool auto_size;
-    Bool pixel_size_reported;
-    Bool pixel_size_reply; /* Explicit 14t reply, rather than ioctl fallback. */
-    KdScreenInfo *screen;
-    Rotation randr;
-    Bool shadow;
-    unsigned char *buffer;
-    unsigned char *bitmap;
-    /* libsixel backend */
-#ifdef HAVE_LIBSIXEL
-    sixel_dither_t *dither;
-    sixel_output_t *output;
-    unsigned char *encoded;
-    size_t encoded_size, encoded_capacity;
-    Bool encode_failed;
-    unsigned char *screen_frame;
-    size_t screen_frame_size;
-    Bool screen_frame_valid;
-    unsigned short *retina_palette_cache;
-#endif
-    /* chafa backend */
-#ifdef HAVE_CHAFA
-    ChafaCanvasConfig *chafa_cfg;
-    ChafaCanvas *chafa_canvas;
-    ChafaTermInfo *chafa_tinfo;
-#endif
-} SIXEL_Driver;
 
 static SIXEL_Driver *g_driver = NULL;
 static OsTimerPtr sixelFrameTimer;
-static OsTimerPtr sixelTmuxSizeTimer;
+static OsTimerPtr sixelSizeReplyTimer;
 static Bool sixelFramePending;
 static RegionRec sixelPendingDamage;
 static Bool sixelDamageInitialized;
 static int sixelHostCursorFd = -1;
 
-static int
-sixelOutputScale(void)
-{
-    return sixelIterm2Terminal && !sixelTmux ?
-           (sixelIterm2Scale ? sixelIterm2Scale : sixelDetectedScale) : 1;
-}
-
-static void
-sixelQueryCellSize(void)
-{
-    /* In tmux this is a geometry-only probe. iTerm2's 16t reply uses points,
-     * while SIXEL uses backing pixels. Other terminals may simply ignore it. */
-    if ((sixelIterm2Terminal || sixelTmux) && !sixelCellPending) {
-        sixelCellPending = TRUE;
-        sixelTerminalControl("\033]1337;ReportCellSize\007");
-    }
-}
 
 /* Screen coordinates and damage rectangles use signed 16-bit coordinates. */
 static Bool
 sixelValidSize(int width, int height)
 {
     return width > 0 && height > 0 && width <= SHRT_MAX && height <= SHRT_MAX;
-}
-
-/* screen preserves xterm's ioctl pixel size including its internal border,
- * whereas SIXEL is clipped to the character grid. Use whole integer-sized
- * cells, keeping the original report for replies arriving in either order.
- * This adds neither terminal queries nor work to the frame rendering path. */
-static void
-sixelNormalizeScreenPixels(SIXEL_Driver *driver)
-{
-    if (!sixelScreen || !driver->pixel_size_reported)
-        return;
-    driver->pixel_w = driver->reported_pixel_w;
-    driver->pixel_h = driver->reported_pixel_h;
-    if (driver->cell_w > 0 && driver->pixel_w >= driver->cell_w)
-        driver->pixel_w -= driver->pixel_w % driver->cell_w;
-    if (driver->cell_h > 0 && driver->pixel_h >= driver->cell_h)
-        driver->pixel_h -= driver->pixel_h % driver->cell_h;
 }
 
 static void
@@ -447,24 +141,7 @@ sixelReadTerminalSize(SIXEL_Driver *driver)
             driver->cell_h = ws.ws_row;
         }
     }
-    sixelNormalizeScreenPixels(driver);
-    if (!driver->cell_w || !driver->cell_h)
-        printf("\033[18t");
-    /* Windows ssh.exe can preserve a plausible but stale 640x480 pixel size.
-     * Use ioctl immediately, then let terminal replies correct it. */
-    /* iTerm2's ioctl may use Retina backing pixels, while 14t includes window
-     * chrome. Cell dimensions describe mouse coordinates, not image pixels. Keep
-     * tmux's pane cell counts authoritative; query through screen as usual. */
-    if (sixelTmux) {
-        sixelQueryCellSize();
-        /* Outer window dimensions (14t) must never replace pane dimensions. */
-        sixelTerminalControl("\033[16t");
-    }
-    else if (sixelIterm2Terminal)
-        sixelTerminalControl("\033[16t");
-    else
-        sixelTerminalControl("\033[14t\033[16t");
-    sixelQueryCellSize();
+    sixelClientReadSize(driver);
     fflush(stdout);
 }
 
@@ -592,8 +269,8 @@ restart:
                 state = STATE_ESC;
                 goto restart;
             } else if (pending.nparams < 255) {
-                const char *prefix = string_type == SIXEL_TERMINAL_ID ?
-                                     ">|" : "1337;ReportCellSize=";
+                const char *prefix = sixelClientReplyPrefix(
+                    string_type == SIXEL_TERMINAL_ID);
                 if (pending.nparams < strlen(prefix) && c != prefix[pending.nparams]) {
                     /* Preserve ordinary Alt-P/Alt-] and unrecognized escapes.
                      * Only the actual response prefixes enter string parsing. */
@@ -714,7 +391,6 @@ restart:
 }
 
 
-
 static int SendModifierKey(int state, uint8_t press_state)
 {
     int posted = 0;
@@ -811,421 +487,6 @@ static void tty_restore(void)
     tcsetattr(fileno(stdin), TCSADRAIN, &orig_termios);
 }
 
-#ifdef HAVE_LIBSIXEL
-/* Blank SIXEL columns/rows advance the raster without touching existing pixels
- * when DCS parameter Pb is 1. This permits exact pixel offsets with DECSDM set. */
-static void
-sixelHorizontalOffset(FILE *out, int x)
-{
-    if (x)
-        fprintf(out, "!%d?", x);
-}
-
-static Bool
-sixelPatchCells(SIXEL_Driver *driver, int *cw, int *ch)
-{
-    double w, h;
-    if ((sixelRenderMode != SIXEL_RENDER_ITERM2 && driver->output_scale == 1) ||
-        sixelRenderMode == SIXEL_RENDER_KONSOLE ||
-        !sixelIterm2Terminal || sixelTmux || sixelIterm2FullRedraw ||
-        !driver->iterm_cell_scale || driver->cell_w <= 0 || driver->cell_h <= 0)
-        return FALSE;
-    w = driver->iterm_cell_w * driver->iterm_cell_scale / driver->output_scale;
-    h = driver->iterm_cell_h * driver->iterm_cell_scale / driver->output_scale;
-    *cw = (int)(w + 0.5);
-    *ch = (int)(h + 0.5);
-    return *cw > 0 && *ch > 0 && fabs(w - *cw) < 0.001 &&
-           fabs(h - *ch) < 0.001 &&
-           (int64_t)*cw * driver->cell_w == driver->w &&
-           (int64_t)*ch * driver->cell_h == driver->h;
-}
-
-/* Konsole images are opaque placements.  Include the real pixels from the
- * origin and cover whole cells so replacing one placement cannot expose holes
- * in another.  Unknown or fractional cell geometry needs a complete frame. */
-static BoxRec
-sixelKonsoleBounds(SIXEL_Driver *driver, const BoxRec *damage)
-{
-	BoxRec box;
-	int cw, ch;
-
-	box = (BoxRec){0, 0, driver->w, driver->h};
-	if (driver->cell_w <= 0 || driver->cell_h <= 0 ||
-	    driver->w % driver->cell_w || driver->h % driver->cell_h ||
-	    driver->pixel_w != driver->w * driver->output_scale ||
-	    driver->pixel_h != driver->h * driver->output_scale)
-		return (box);
-	cw = driver->w / driver->cell_w;
-	ch = driver->h / driver->cell_h;
-	if (cw <= 0 || ch <= 0)
-		return (box);
-	/* SixelCharacterAdd() extends Konsole's actual image height to the
-	 * entire last six-pixel band, even with shorter raster attributes.
-	 * Include those pixels rather than leaving a black strip below it. */
-	if (ch % 2 != 0)
-		ch *= 2;
-	if (ch % 3 != 0)
-		ch *= 3;
-	box.x2 = min(driver->w, (damage->x2 + cw - 1) / cw * cw);
-	box.y2 = min(driver->h, (damage->y2 + ch - 1) / ch * ch);
-	return (box);
-}
-
-static void
-sixelRetinaPixels(SIXEL_Driver *driver, int x1, int y1, int width, int height)
-{
-    const unsigned char *palette = sixel_dither_get_palette(driver->dither);
-    int colors = sixel_dither_get_num_of_palette_colors(driver->dither);
-
-    for (int y = 0; y < height; y++) {
-        const unsigned char *src = driver->buffer +
-            (size_t)(y1 + y) * driver->pitch + x1 * 4;
-        unsigned char *row = driver->bitmap + (size_t)y * width * 4;
-        for (int x = 0; x < width; x++, src += 4) {
-            /* Match the RGB555 bucket resolution of libsixel's built-in
-             * palette lookup. First use chooses the nearest palette entry;
-             * subsequent patches keep that choice, including at cell edges. */
-            unsigned int key = (src[2] >> 3) << 10 |
-                               (src[1] >> 3) << 5 | (src[0] >> 3);
-            unsigned short *cached = &driver->retina_palette_cache[key];
-            if (!*cached) {
-                int distance = INT_MAX;
-                for (int i = 0; i < colors; i++) {
-                    int r = src[2] - palette[i * 3];
-                    int g = src[1] - palette[i * 3 + 1];
-                    int b = src[0] - palette[i * 3 + 2];
-                    int d = r * r + g * g + b * b;
-                    if (d < distance) {
-                        distance = d;
-                        *cached = i + 1;
-                    }
-                }
-            }
-            row[x * 2] = row[x * 2 + 1] = *cached - 1;
-        }
-        memcpy(row + width * 2, row, width * 2);
-    }
-}
-
-static Bool
-sixelRenderRectPart(SIXEL_Driver *driver, BoxPtr damage, Bool part)
-{
-    int x1 = max(0, damage->x1), y1 = max(0, damage->y1);
-    int x2 = min(driver->w, damage->x2), y2 = min(driver->h, damage->y2);
-    int x, y, width, height, cw, ch, row = 0, col = 0;
-    Bool patch = sixelPatchCells(driver, &cw, &ch);
-    Bool full;
-    Bool indexed = FALSE;
-    size_t body, end, chunk, i;
-    SIXELSTATUS status;
-    FILE *out = stdout;
-    char *screen_data = NULL;
-    size_t screen_length = 0;
-
-    if (x1 >= x2 || y1 >= y2)
-        return TRUE;
-    if (sixelTmuxImageRequired)
-        return TRUE;
-    /* iTerm2 treats transparent gaps as opaque and replaces whole cells.
-     * Position opaque, cell-aligned patches when geometry is known. Unknown
-     * geometry and shared viewers can retain the full-image compatibility path.
-     * The normal mode retains its transparent-offset fast path. */
-    if (sixelRenderMode == SIXEL_RENDER_KONSOLE) {
-        BoxRec box = sixelKonsoleBounds(driver, damage);
-        x1 = y1 = 0;
-        x2 = box.x2;
-        y2 = box.y2;
-    } else if (patch) {
-        /* iTerm2 leaves black remnants when replacing horizontal fragments of
-         * an older image. Whole-width cell rows avoid splitting image runs. */
-        x1 = 0;
-        y1 = y1 / ch * ch;
-        x2 = driver->w;
-        y2 = min(driver->h, (y2 + ch - 1) / ch * ch);
-        col = x1 / cw + 1;
-        row = y1 / ch + 1;
-    } else if (!part && (sixelRenderMode == SIXEL_RENDER_ITERM2 || driver->output_scale > 1)) {
-        x1 = y1 = 0;
-        x2 = driver->w;
-        y2 = driver->h;
-    }
-    if (!patch && sixelRenderMode != SIXEL_RENDER_KONSOLE) {
-        y1 = y1 / 6 * 6;
-        y2 = min(driver->h, (y2 + 5) / 6 * 6);
-    }
-    width = x2 - x1;
-    height = y2 - y1;
-    full = x1 == 0 && y1 == 0 && x2 == driver->w && y2 == driver->h;
-    /* Without diffusion, quantizing identical enlarged pixels four times is
-     * redundant. Use only public libsixel palette/PAL8 APIs; allocation failure
-     * retains the RGB path. Other terminals and tmux keep their current dither. */
-    if (driver->output_scale == 2 && sixelIterm2Terminal && !sixelTmux) {
-        if (!driver->retina_palette_cache)
-            driver->retina_palette_cache = calloc(32768, sizeof(unsigned short));
-        indexed = driver->retina_palette_cache != NULL;
-    }
-    if (indexed)
-        sixelRetinaPixels(driver, x1, y1, width, height);
-    for (y = y1; !indexed && y < y2; y++) {
-        unsigned char *src = driver->buffer + (size_t)y * driver->pitch + x1 * 4;
-        unsigned char *dst = driver->bitmap + (size_t)(y - y1) * width * 3;
-        for (x = 0; x < width; x++, src += 4, dst += 3) {
-            dst[0] = src[2];
-            dst[1] = src[1];
-            dst[2] = src[0];
-        }
-    }
-    if (driver->output_scale == 2) {
-        /* Expand backwards in the reusable RGB buffer, preserving source pixels
-         * until read. Integer replication keeps bitmap fonts and cursors crisp. */
-        for (y = height - 1; !indexed && y >= 0; y--) {
-            unsigned char *src = driver->bitmap + (size_t)y * width * 3;
-            unsigned char *dst = driver->bitmap + (size_t)(y * 2) * width * 6;
-            for (x = width - 1; x >= 0; x--) {
-                unsigned char rgb[3];
-                memcpy(rgb, src + x * 3, 3);
-                memcpy(dst + x * 6, rgb, 3);
-                memcpy(dst + x * 6 + 3, rgb, 3);
-            }
-            memcpy(dst + width * 6, dst, width * 6);
-        }
-        width *= 2;
-        height *= 2;
-        x1 *= 2;
-        y1 *= 2;
-        x2 *= 2;
-        y2 *= 2;
-    }
-    driver->encoded_size = 0;
-    driver->encode_failed = FALSE;
-    /* Error diffusion depends on pixels outside a patch and leaves visible
-     * seams when the same background is encoded with another origin. Use a
-     * position-independent mapping for iTerm2 full frames and patches alike. */
-    if ((sixelIterm2Terminal && !sixelTmux) ||
-        sixelRenderMode == SIXEL_RENDER_KONSOLE)
-        sixel_dither_set_diffusion_type(driver->dither, SIXEL_DIFFUSE_NONE);
-    if (indexed)
-        sixel_dither_set_pixelformat(driver->dither, SIXEL_PIXELFORMAT_PAL8);
-    status = sixel_encode(driver->bitmap, width, height, 3,
-                          driver->dither, driver->output);
-    if (indexed)
-        sixel_dither_set_pixelformat(driver->dither, SIXEL_PIXELFORMAT_RGB888);
-    if (SIXEL_FAILED(status) || driver->encode_failed)
-        return FALSE;
-    /* Keep libsixel's palette and pixel data, replacing only the envelope and
-     * raster attributes. No RGB pixels are allocated for the transparent gap. */
-    end = driver->encoded_size;
-    if (end < 4 || driver->encoded[0] != '\033' || driver->encoded[1] != 'P' ||
-        driver->encoded[end - 2] != '\033' || driver->encoded[end - 1] != '\\')
-        return FALSE;
-    body = 2;
-    while (body < end && driver->encoded[body] != 'q')
-        body++;
-    if (++body >= end - 2)
-        return FALSE;
-    if (driver->encoded[body] == '"') {
-        body++;
-        while (body < end - 2 &&
-               ((driver->encoded[body] >= '0' && driver->encoded[body] <= '9') ||
-                driver->encoded[body] == ';'))
-            body++;
-    }
-    /* Count the actual envelope, transparent gaps and offset commands before
-     * sending a large image. Keep all packets that fit the tmux default limit
-     * on the original path. Independent images avoid inter-packet controls
-     * interrupting an open SIXEL string in the outer terminal. */
-    if (sixelTmux && sixelRenderMode == SIXEL_RENDER_KONSOLE) {
-        size_t length;
-
-        /* Transparent subdivision corrupts Konsole's opaque placements.
-         * Check the complete envelope before emitting any part of the image.
-         * Report a capacity failure only after restoring the terminal. */
-        length = strlen("\033Ptmux;\033\033[?80h\033\033[H\033\033P") +
-            snprintf(NULL, 0, "0;0q\"1;1;%d;%d", x2, y2) +
-            end - body - 2 + strlen("\033\033\\\033\\");
-        if (length > sixelTmuxImageLimit) {
-            sixelTmuxImageRequired = length;
-            GiveUp(0);
-            return TRUE;
-        }
-    } else if (sixelTmux && end > 65536) {
-        size_t length = end - body + 128 + y1 / 6;
-        int offset = x1 ? snprintf(NULL, 0, "!%d?", x1) : 0;
-        length += offset;
-        if (offset) {
-            for (i = body; i < end - 2; i++) {
-                if (driver->encoded[i] == '$' || driver->encoded[i] == '-')
-                    length += offset;
-            }
-        }
-        if (length > 1048576) {
-            BoxRec first = {x1, y1, x2, y2}, second = first;
-            if (height > 6) {
-                int middle = y1 + max(6, height / 12 * 6);
-                first.y2 = second.y1 = middle;
-            } else if (width > 1) {
-                first.x2 = second.x1 = x1 + width / 2;
-            } else
-                return FALSE;
-            return sixelRenderRectPart(driver, &first, TRUE) &&
-                   sixelRenderRectPart(driver, &second, TRUE);
-        }
-    }
-    if (sixelScreen) {
-        out = open_memstream(&screen_data, &screen_length);
-        if (!out)
-            return FALSE;
-        if (!patch)
-            fputs("\033[H", out);
-    }
-    if (patch)
-        /* DECSDM ignores CUP. Keep it off for positioned images, rather than
-         * restoring it while iTerm2's asynchronous image work is outstanding.
-         * Whole-cell bounds prevent scrolling; fallback/exit restore the mode. */
-        fprintf(out, "\033[?80l\033[%d;%dH", row, col);
-    else if ((sixelIterm2Terminal && !sixelTmux) ||
-             (sixelRenderMode == SIXEL_RENDER_KONSOLE && !sixelTmux))
-        fputs("\033[?80h\033[H", out);
-    if (sixelTmux) {
-        /* Home and DECSDM must reach the outer terminal together with the image.
-         * The image body contains SIXEL ASCII only, so only the DCS delimiters
-         * require ESC doubling. */
-        fputs(sixelRenderMode == SIXEL_RENDER_KONSOLE ?
-              "\033Ptmux;\033\033[?80h\033\033[H\033\033P" :
-              "\033Ptmux;\033\033[H\033\033P", out);
-        fprintf(out, "0;%dq\"1;1;%d;%d",
-                sixelRenderMode == SIXEL_RENDER_KONSOLE ? 0 : 1, x2, y2);
-    } else
-        fprintf(out, "\033P0;%dq\"1;1;%d;%d",
-                sixelRenderMode == SIXEL_RENDER_KONSOLE ? 0 : 1,
-                patch ? width : x2, patch ? height : y2);
-    for (y = 0; !patch && y < y1; y += 6)
-        putc('-', out);
-    if (!patch)
-        sixelHorizontalOffset(out, x1);
-    chunk = body;
-    for (i = body; i < end - 2; i++) {
-        if (driver->encoded[i] == '$' || driver->encoded[i] == '-') {
-            fwrite(driver->encoded + chunk, 1, i + 1 - chunk, out);
-            if (!patch)
-                sixelHorizontalOffset(out, x1);
-            chunk = i + 1;
-        }
-    }
-    fwrite(driver->encoded + chunk, 1, end - 2 - chunk, out);
-    if (sixelTmux)
-        fputs("\033\033\\\033\\", out);
-    else
-        fprintf(out, "\033\\");
-    if (patch)
-        fputs("\033[H", out);
-    if (sixelScreen) {
-        if (fclose(out) != 0) {
-            free(screen_data);
-            return FALSE;
-        }
-        sixelScreenWrite(screen_data, screen_length);
-        /* Retain the complete positioning/mode envelope as well as the image.
-         * Bound the optional cache; large frames still use the existing path. */
-        if (full && screen_length <= 16 * 1024 * 1024) {
-            free(driver->screen_frame);
-            driver->screen_frame = (unsigned char *)screen_data;
-            driver->screen_frame_size = screen_length;
-            driver->screen_frame_valid = TRUE;
-        } else
-            free(screen_data);
-    }
-    return TRUE;
-}
-
-static Bool
-sixelRenderRect(SIXEL_Driver *driver, BoxPtr damage)
-{
-    return sixelRenderRectPart(driver, damage, FALSE);
-}
-
-/* Count both converted pixels and the fixed cost of another palette/image.
- * This is a work estimate, not a prediction of compressed SIXEL byte size. */
-static int64_t
-sixelRectCost(SIXEL_Driver *driver, const BoxRec *box)
-{
-    return (int64_t)(box->x2 - box->x1) * (box->y2 - box->y1) *
-           driver->output_scale * driver->output_scale + 4096;
-}
-
-static BoxRec
-sixelRectUnion(const BoxRec *a, const BoxRec *b)
-{
-    return (BoxRec){min(a->x1, b->x1), min(a->y1, b->y1),
-                    max(a->x2, b->x2), max(a->y2, b->y2)};
-}
-
-static Bool
-sixelRenderDamage(SIXEL_Driver *driver, RegionPtr damage)
-{
-    enum { MAX_IMAGES = 64 };
-    BoxRec boxes[MAX_IMAGES], extent = *RegionExtents(damage);
-    BoxPtr rects = RegionRects(damage);
-    int count = 0, cw, ch, n = RegionNumRects(damage);
-    Bool patch = sixelPatchCells(driver, &cw, &ch);
-    int64_t cost = 0;
-
-    /* Unknown iTerm2 geometry still needs the full-image compatibility path. */
-    if (!patch && sixelRenderMode != SIXEL_RENDER_KONSOLE &&
-        (sixelRenderMode == SIXEL_RENDER_ITERM2 || driver->output_scale > 1))
-        return sixelRenderRect(driver, &extent);
-    if (!patch)
-        ch = 6;
-    extent.y1 = max(0, extent.y1 / ch * ch);
-    extent.y2 = min(driver->h, (extent.y2 + ch - 1) / ch * ch);
-    if (patch) {
-        extent.x1 = 0;
-        extent.x2 = driver->w;
-    }
-    if (sixelRenderMode == SIXEL_RENDER_KONSOLE)
-        extent = sixelKonsoleBounds(driver, RegionExtents(damage));
-    for (int i = 0; i < n; i++) {
-        BoxRec box = rects[i];
-        int best = -1;
-        int64_t saving = -1;
-        box.y1 = max(0, box.y1 / ch * ch);
-        box.y2 = min(driver->h, (box.y2 + ch - 1) / ch * ch);
-        if (patch) {
-            box.x1 = 0;
-            box.x2 = driver->w;
-        }
-        if (sixelRenderMode == SIXEL_RENDER_KONSOLE)
-            box = sixelKonsoleBounds(driver, &rects[i]);
-        /* Merge only when the saved image overhead pays for the extra area. */
-        for (int j = 0; j < count; j++) {
-            BoxRec merged = sixelRectUnion(&box, &boxes[j]);
-            int64_t s = sixelRectCost(driver, &box) +
-                        sixelRectCost(driver, &boxes[j]) -
-                        sixelRectCost(driver, &merged);
-            if (s > saving) {
-                saving = s;
-                best = j;
-            }
-        }
-        if (best >= 0)
-            boxes[best] = sixelRectUnion(&boxes[best], &box);
-        else if (count < MAX_IMAGES)
-            boxes[count++] = box;
-        else
-            return sixelRenderRect(driver, &extent);
-    }
-    for (int i = 0; i < count; i++)
-        cost += sixelRectCost(driver, &boxes[i]);
-    if (cost >= sixelRectCost(driver, &extent))
-        return sixelRenderRect(driver, &extent);
-    for (int i = 0; i < count; i++) {
-        if (!sixelRenderRect(driver, &boxes[i]))
-            return FALSE;
-    }
-    return TRUE;
-}
-#endif
-
 static int sixelRenderFrame(SIXEL_Driver *driver)
 {
 #ifdef HAVE_CHAFA
@@ -1240,9 +501,7 @@ static int sixelRenderFrame(SIXEL_Driver *driver)
 #ifdef HAVE_LIBSIXEL
     if (g_renderer == RENDERER_LIBSIXEL) {
         BoxRec full = {0, 0, driver->w, driver->h};
-        if (sixelScreen && driver->screen_frame_valid)
-            sixelScreenWrite((char *)driver->screen_frame, driver->screen_frame_size);
-        else if (!sixelRenderRect(driver, &full))
+        if (!sixelClientReplay(driver) && !sixelRenderRect(driver, &full))
             ErrorF("Xsixel: could not encode full frame\n");
     }
 #endif
@@ -1279,8 +538,8 @@ static int sixelRenderFrame(SIXEL_Driver *driver)
         GString *s = chafa_canvas_print(driver->chafa_canvas, driver->chafa_tinfo);
         if (s) {
             printf("\033[H");
-            if (sixelTmux || sixelScreen)
-                sixelTerminalControl(s->str);
+            if (sixelClientWrapped())
+                sixelClientControl(s->str);
             else
                 fwrite(s->str, 1, s->len, stdout);
             g_string_free(s, TRUE);
@@ -1349,8 +608,7 @@ static void
 sixelRenderModeRoot(CallbackListPtr *list, void *closure, void *data)
 {
     ScreenPtr screen = data;
-    const char *mode = sixelRenderMode == SIXEL_RENDER_KONSOLE ? "konsole" :
-                       sixelRenderMode == SIXEL_RENDER_ITERM2 ? "iterm2" : "fast";
+    const char *mode = sixelClientMode();
 
     if (!g_driver || screen != g_driver->screen->pScreen)
         return;
@@ -1368,7 +626,6 @@ sixelRenderModeProperty(CallbackListPtr *list, void *closure, void *data)
 {
     PropertyFilterParam *request = data;
     WindowPtr root, window;
-    enum sixel_render_mode mode;
     size_t i;
 
     if (request->skip || !sixelRenderModeAtom || !g_driver ||
@@ -1403,13 +660,7 @@ sixelRenderModeProperty(CallbackListPtr *list, void *closure, void *data)
     }
     if (request->mode != PropModeReplace)
         return;
-    if (request->len == 4 && !memcmp(request->value, "fast", 4))
-        mode = SIXEL_RENDER_FAST;
-    else if (request->len == 6 && !memcmp(request->value, "iterm2", 6))
-        mode = SIXEL_RENDER_ITERM2;
-    else if (request->len == 7 && !memcmp(request->value, "konsole", 7))
-        mode = SIXEL_RENDER_KONSOLE;
-    else
+    if (!sixelClientModeAllowed(request->value, request->len))
         return;
     request->status = dixLookupWindow(&window, request->window, request->client,
                                       DixSetPropAccess);
@@ -1419,20 +670,7 @@ sixelRenderModeProperty(CallbackListPtr *list, void *closure, void *data)
         request->property, request->type, request->format, request->mode,
         request->len, request->value, request->sendevent);
     if (request->status == Success)
-        sixelRenderModeExplicit = TRUE;
-    if (request->status == Success && sixelRenderMode != mode) {
-#ifdef HAVE_LIBSIXEL
-        if (g_driver->dither && sixelRenderMode == SIXEL_RENDER_KONSOLE &&
-            !(sixelIterm2Terminal && !sixelTmux))
-            sixel_dither_set_diffusion_type(g_driver->dither, SIXEL_DIFFUSE_FS);
-#endif
-        sixelRenderMode = mode;
-        sixelCheckTmuxImageLimit();
-#ifdef HAVE_LIBSIXEL
-        g_driver->screen_frame_valid = FALSE;
-#endif
-        SIXEL_Flip(g_driver);
-    }
+        sixelClientSetMode(request->value, request->len);
 }
 
 static void
@@ -1451,44 +689,6 @@ sixelStartRenderModeControl(void)
         sixelStopRenderModeControl();
         FatalError("Xsixel: could not register render mode control\n");
     }
-}
-
-/* screen has no focus notifications. Resend a frame periodically, without
- * terminal queries: their replies can be interpreted as commands after Ctrl-a.
- * screen forwards passthrough output only to displays showing this window. */
-static OsTimerPtr sixelScreenTimer;
-
-enum { SIXEL_SCREEN_REFRESH_INTERVAL = 2000 };
-
-static void
-sixelStopScreenMonitor(void)
-{
-    if (sixelScreenTimer) {
-        TimerFree(sixelScreenTimer);
-        sixelScreenTimer = NULL;
-    }
-}
-
-static CARD32
-sixelScreenPoll(OsTimerPtr timer, CARD32 now, void *arg)
-{
-    if (g_driver) {
-        /* Reattachment may use a different terminal with default modes. */
-        sixelTerminalControl("\033[?80h");
-        SIXEL_Flip(g_driver);
-    }
-    return SIXEL_SCREEN_REFRESH_INTERVAL;
-}
-
-static void
-sixelStartScreenMonitor(void)
-{
-    if (!sixelScreen)
-        return;
-    sixelScreenTimer = TimerSet(NULL, 0, SIXEL_SCREEN_REFRESH_INTERVAL,
-                                sixelScreenPoll, NULL);
-    if (!sixelScreenTimer)
-        ErrorF("Xsixel: could not start screen automatic redraw monitor\n");
 }
 
 static Bool sixelMapFramebuffer(KdScreenInfo *screen)
@@ -1569,7 +769,7 @@ static Bool sixelScreenInit(KdScreenInfo *screen)
     if (!driver)
         return FALSE;
     driver->screen = screen;
-    driver->output_scale = sixelOutputScale();
+    driver->output_scale = sixelClientOutputScale();
     driver->auto_size = !screen->width && !screen->height;
     sixelReadTerminalSize(driver);
     if (driver->auto_size && sixelValidSize(driver->pixel_w, driver->pixel_h)) {
@@ -1585,6 +785,7 @@ static Bool sixelScreenInit(KdScreenInfo *screen)
         return FALSE;
     }
     g_driver = driver;
+    sixelClientAttach(driver);
     RegionInit(&sixelPendingDamage, NullBox, 0);
     sixelDamageInitialized = TRUE;
     /* Force a sane default pixel format (depth 24, bpp 32, XRGB8888). */
@@ -1649,7 +850,7 @@ static void sixelShadowUpdate(ScreenPtr pScreen, shadowBufPtr pBuf)
     KdScreenInfo *screen = pScreenPriv->screen;
     SIXEL_Driver *driver = screen->driver;
 #ifdef HAVE_LIBSIXEL
-    driver->screen_frame_valid = FALSE;
+    sixelClientDamage(driver);
 #endif
     if (driver->shadow)
         shadowUpdatePacked(pScreen, pBuf);
@@ -1746,9 +947,9 @@ static Bool sixelRandRSetConfig(ScreenPtr pScreen,
         height = pSize->width;
     }
     next.randr = KdAddRotation(screen->randr, randr);
-    next.output_scale = sixelOutputScale();
+    next.output_scale = sixelClientOutputScale();
 #ifdef HAVE_LIBSIXEL
-    next.screen_frame_valid = FALSE;
+    sixelClientDamage(&next);
 #endif
     if (!sixelAllocateBuffers(&next, width, height))
         return FALSE;
@@ -1857,7 +1058,7 @@ static Status sixelKeyboardInit(KdKeyboardInfo *ki)
     free(ki->xkbRules);
     free(ki->xkbModel);
     free(ki->xkbLayout);
-    ki->name = strdup("mlterm keyboard");
+    ki->name = strdup("SIXEL terminal keyboard");
     ki->xkbRules = strdup("evdev");
     ki->xkbModel = strdup("pc105");
     ki->xkbLayout = strdup("us");
@@ -1966,43 +1167,18 @@ void ddxUseMsg(void)
     ErrorF("-exec command    Execute command after server started; exit when it finishes\n");
     ErrorF("-keep, -keep-server      Keep server running after the -exec command exits\n");
     ErrorF("-mouse-protocol {sgr|dec}  Select terminal mouse reporting (default: sgr pixels)\n");
-    ErrorF("-iterm2                  Force iTerm2 compatibility (also detected from startup environment)\n");
-    ErrorF("-iterm2-scale {auto|1|2}  iTerm2 image enlargement (default: auto; libsixel only)\n");
-    ErrorF("-iterm2-full-redraw      Use full images for shared screen viewers\n");
-    ErrorF("-konsole                 Force opaque, cell-aligned Konsole rendering\n");
+    sixelClientUseMsg();
     ErrorF("-backend {chafa|libsixel}  Choose renderer backend (default: libsixel if built)\n");
 }
 
 int ddxProcessArgument(int argc, char **argv, int i)
 {
-    if (!strcmp(argv[i], "-konsole")) {
-        sixelRenderMode = SIXEL_RENDER_KONSOLE;
-        sixelRenderModeExplicit = TRUE;
-        return 1;
-    }
+    int consumed = sixelClientArgument(argc, argv, i);
+
+    if (consumed)
+        return consumed;
     if (!strcmp(argv[i], "-keep") || !strcmp(argv[i], "-keep-server")) {
         kdKeepServer = TRUE;
-        return 1;
-    }
-    if (!strcmp(argv[i], "-iterm2-full-redraw")) {
-        sixelIterm2FullRedraw = TRUE;
-        sixelRenderMode = SIXEL_RENDER_ITERM2;
-        sixelRenderModeExplicit = sixelIterm2Terminal = TRUE;
-        return 1;
-    }
-    if (!strcmp(argv[i], "-iterm2-scale")) {
-        if (i + 1 >= argc || (strcmp(argv[i + 1], "auto") && strcmp(argv[i + 1], "1") && strcmp(argv[i + 1], "2"))) {
-            UseMsg();
-            return 0;
-        }
-        sixelIterm2Scale = !strcmp(argv[i + 1], "auto") ? 0 : argv[i + 1][0] - '0';
-        sixelRenderMode = SIXEL_RENDER_ITERM2;
-        sixelRenderModeExplicit = sixelIterm2Terminal = TRUE;
-        return 2;
-    }
-    if (!strcmp(argv[i], "-iterm2")) {
-        sixelRenderMode = SIXEL_RENDER_ITERM2;
-        sixelRenderModeExplicit = sixelIterm2Terminal = TRUE;
         return 1;
     }
     if (!strcmp(argv[i], "-mouse-protocol")) {
@@ -2048,63 +1224,14 @@ int ddxProcessArgument(int argc, char **argv, int i)
 
 /* The outer terminal supplies cell geometry, not pane geometry. Preserve ioctl
  * padding when its cell size agrees; replace stale SSH pixels otherwise. */
-static void
-sixelNormalizeTmuxPixels(SIXEL_Driver *driver)
-{
-    double cell_w = driver->cell_pixel_w, cell_h = driver->cell_pixel_h;
-    double w, h;
 
-    if (!sixelTmux || driver->cell_w <= 0 || driver->cell_h <= 0)
-        return;
-    /* A known Retina terminal must not shrink to a points-only 16t reply if
-     * its backing-cell query is unavailable. Retain ioctl in that case. */
-    if (sixelIterm2Terminal && !driver->iterm_cell_scale)
-        return;
-    if (driver->iterm_cell_scale) {
-        cell_w = driver->iterm_cell_w * driver->iterm_cell_scale;
-        cell_h = driver->iterm_cell_h * driver->iterm_cell_scale;
-    }
-    w = cell_w * driver->cell_w;
-    h = cell_h * driver->cell_h;
-    if (cell_w < 1 || cell_h < 1 || w > SHRT_MAX || h > SHRT_MAX)
-        return;
-    if (driver->pixel_size_reported &&
-        driver->reported_pixel_w / driver->cell_w == cell_w &&
-        driver->reported_pixel_h / driver->cell_h == cell_h) {
-        driver->pixel_w = driver->reported_pixel_w;
-        driver->pixel_h = driver->reported_pixel_h;
-    } else {
-        driver->pixel_w = (int)(w + 0.5);
-        driver->pixel_h = (int)(h + 0.5);
-    }
-}
 
 static void
 sixelApplyTerminalSize(SIXEL_Driver *driver)
 {
-    int scale = sixelOutputScale();
+    int scale = sixelClientOutputScale();
     int width, height;
-    sixelNormalizeScreenPixels(driver);
-    if (driver->iterm_cell_scale && !sixelTmux &&
-        driver->cell_w > 0 && driver->cell_h > 0) {
-        double w = driver->iterm_cell_w * driver->cell_w * driver->iterm_cell_scale;
-        double h = driver->iterm_cell_h * driver->cell_h * driver->iterm_cell_scale;
-        if (w >= 1 && h >= 1 && w <= SHRT_MAX && h <= SHRT_MAX) {
-            driver->pixel_w = driver->reported_pixel_w = (int)(w + 0.5);
-            driver->pixel_h = driver->reported_pixel_h = (int)(h + 0.5);
-            driver->pixel_size_reported = TRUE;
-        }
-    }
-    if (!sixelTmux && !driver->pixel_size_reply &&
-        !(sixelIterm2Terminal && driver->pixel_size_reported) &&
-        driver->cell_pixel_w > 0 && driver->cell_pixel_h > 0 &&
-        driver->cell_w > 0 && driver->cell_h > 0 &&
-        driver->cell_pixel_w <= SHRT_MAX / driver->cell_w / driver->output_scale &&
-        driver->cell_pixel_h <= SHRT_MAX / driver->cell_h / driver->output_scale) {
-        driver->pixel_w = driver->cell_pixel_w * driver->cell_w * driver->output_scale;
-        driver->pixel_h = driver->cell_pixel_h * driver->cell_h * driver->output_scale;
-    }
-    sixelNormalizeTmuxPixels(driver);
+    sixelClientNormalizeSize(driver);
     width = driver->auto_size && driver->pixel_w > 0 ? max(1, driver->pixel_w / scale) : driver->w;
     height = driver->auto_size && driver->pixel_h > 0 ? max(1, driver->pixel_h / scale) : driver->h;
 #ifdef RANDR
@@ -2123,10 +1250,9 @@ sixelApplyTerminalSize(SIXEL_Driver *driver)
     fflush(stdout);
 }
 
-/* Coalesce 16t and the Retina reply even when separate reads deliver them in
- * reverse order. This timer runs only for tmux geometry replies, not frames. */
+/* Coalesce related geometry replies without delaying normal frames. */
 static CARD32
-sixelTmuxSizeTimeout(OsTimerPtr timer, CARD32 now, void *arg)
+sixelSizeReplyTimeout(OsTimerPtr timer, CARD32 now, void *arg)
 {
     if (g_driver)
         sixelApplyTerminalSize(g_driver);
@@ -2162,22 +1288,21 @@ sixelResizeTimeout(OsTimerPtr timer, CARD32 now, void *arg)
 
     if (!driver)
         return 0;
-    if (sixelTmuxSizeTimer)
-        TimerCancel(sixelTmuxSizeTimer);
+    if (sixelSizeReplyTimer)
+        TimerCancel(sixelSizeReplyTimer);
     /* Pixel and cell dimensions must belong to this terminal configuration.
      * In particular, do not reuse cell geometry after a font-size change. */
     driver->pixel_w = driver->pixel_h = 0;
     driver->reported_pixel_w = driver->reported_pixel_h = 0;
     driver->cell_w = driver->cell_h = 0;
     driver->cell_pixel_w = driver->cell_pixel_h = 0;
-    driver->iterm_cell_scale = 0;
-    sixelCellPending = FALSE;
+    sixelClientResetSize(driver);
     driver->pixel_size_reported = FALSE;
     driver->pixel_size_reply = FALSE;
     sixelReadTerminalSize(driver);
-    if (sixelTmux)
-        sixelTmuxSizeTimer = TimerSet(sixelTmuxSizeTimer, 0, 100,
-                                     sixelTmuxSizeTimeout, NULL);
+    if (sixelClientCoalesceSize())
+        sixelSizeReplyTimer = TimerSet(sixelSizeReplyTimer, 0, 100,
+                                     sixelSizeReplyTimeout, NULL);
     else if (sixelValidSize(driver->pixel_w, driver->pixel_h))
         sixelApplyTerminalSize(driver);
     return 0;
@@ -2245,9 +1370,9 @@ sixelStopResizeMonitor(void)
         TimerFree(sixelResizeTimer);
         sixelResizeTimer = NULL;
     }
-    if (sixelTmuxSizeTimer) {
-        TimerFree(sixelTmuxSizeTimer);
-        sixelTmuxSizeTimer = NULL;
+    if (sixelSizeReplyTimer) {
+        TimerFree(sixelSizeReplyTimer);
+        sixelSizeReplyTimer = NULL;
     }
     if (sixelResizePipe[0] >= 0) {
         RemoveNotifyFd(sixelResizePipe[0]);
@@ -2264,13 +1389,7 @@ sixelStopResizeMonitor(void)
 static void
 sixelEnableMouse(void)
 {
-    if (sixelDecMouse)
-        printf("\033[1;1'z\033[1;3'{\033['w");
-    else if (sixelTmux || sixelScreen || sixelMouseCells)
-        /* Multiplexers and terminals without 1016 report character cells. */
-        printf("\033[?1006h\033[?1003h");
-    else
-        printf("\033[?1006h\033[?1016h\033[?1003h");
+    sixelClientMouseStart(sixelDecMouse);
     fflush(stdout);
 }
 
@@ -2307,29 +1426,7 @@ sixelMouseReport(sixel_key_t *key)
     flags = key->params[0];
     x = key->params[1] - 1;
     y = key->params[2] - 1;
-    if ((sixelTmux || sixelScreen || sixelMouseCells) && g_driver &&
-        g_driver->cell_w > 0 && g_driver->cell_h > 0) {
-        int width = g_driver->pixel_w > 0 ? g_driver->pixel_w / g_driver->output_scale : g_driver->w;
-        int height = g_driver->pixel_h > 0 ? g_driver->pixel_h / g_driver->output_scale : g_driver->h;
-
-        /* SGR 1006 coordinates use cells without 1016 support. Place the
-         * pointer at the cell centre using current geometry after each resize.
-         * Terminals supporting 1016 retain their pixel coordinates. */
-        x = ((int64_t)x * width + width / 2) / g_driver->cell_w;
-        y = ((int64_t)y * height + height / 2) / g_driver->cell_h;
-    }
-    else if (sixelIterm2Terminal && g_driver &&
-             g_driver->cell_pixel_w > 0 && g_driver->cell_pixel_h > 0 &&
-             g_driver->cell_w > 0 && g_driver->cell_h > 0) {
-        /* iTerm2 reports SGR pixels in points, but displays SIXEL in Retina
-         * backing pixels. Convert input independently of framebuffer sizing. */
-        double mouse_width = (g_driver->iterm_cell_scale ? g_driver->iterm_cell_w :
-                              g_driver->cell_pixel_w) * g_driver->cell_w;
-        double mouse_height = (g_driver->iterm_cell_scale ? g_driver->iterm_cell_h :
-                               g_driver->cell_pixel_h) * g_driver->cell_h;
-        x = (int64_t)x * (g_driver->pixel_w / g_driver->output_scale) / mouse_width;
-        y = (int64_t)y * (g_driver->pixel_h / g_driver->output_scale) / mouse_height;
-    }
+    sixelClientMousePosition(g_driver, &x, &y);
     button = flags & 3;
     if (flags & 64) {
         if (!release) {
@@ -2378,110 +1475,23 @@ static void sixelPollInput(void)
             case SIXEL_TERMINAL_ID:
             case SIXEL_CELL_SIZE: {
                 char text[256];
-                int used = 0;
-                double h, w, scale;
                 for (int j = 0; j < key->nparams; j++)
                     text[j] = key->params[j];
                 text[key->nparams] = 0;
-                if (key->value == SIXEL_TERMINAL_ID && sixelIdentityPending) {
-                    sixelIdentityPending = FALSE;
-                    if (!strncmp(text, ">|iTerm2 ", 9) && !sixelTmux) {
-                        sixelIterm2Terminal = TRUE;
-                        if (!sixelRenderModeExplicit)
-                            sixelRenderMode = SIXEL_RENDER_ITERM2;
-#ifdef HAVE_LIBSIXEL
-                        g_driver->screen_frame_valid = FALSE;
-#endif
-                        /* iTerm2 3.7.6 reports 1016 as permanently disabled in
-                         * DECRQM despite implementing it. Identity is stronger
-                         * evidence here; retain native pixel mouse precision. */
-                        if (!sixelTmux && !sixelScreen && !sixelDecMouse) {
-                            sixelMouseModeQueryPending = FALSE;
-                            sixelMouseCells = FALSE;
-                            sixelEnableMouse();
-                        }
-                        if (g_driver && g_driver->screen->pScreen)
-                            sixelRenderModeRoot(NULL, NULL, g_driver->screen->pScreen);
-                        sixelQueryCellSize();
-                        fflush(stdout);
-                    } else if (!strncmp(text, ">|Konsole ", 10) &&
-                               !sixelRenderModeExplicit) {
-                        sixelRenderMode = SIXEL_RENDER_KONSOLE;
-                        sixelCheckTmuxImageLimit();
-#ifdef HAVE_LIBSIXEL
-                        g_driver->screen_frame_valid = FALSE;
-#endif
-                        if (g_driver && g_driver->screen->pScreen) {
-                            sixelRenderModeRoot(NULL, NULL, g_driver->screen->pScreen);
-                            SIXEL_Flip(g_driver);
-                        }
-                    }
-                } else if (key->value == SIXEL_CELL_SIZE && sixelCellPending &&
-                           g_driver &&
-                           sscanf(text, "1337;ReportCellSize=%lf;%lf;%lf%n",
-                                  &h, &w, &scale, &used) == 3 &&
-                           text[used] == 0 && isfinite(w) && isfinite(h) &&
-                           isfinite(scale) && w >= 1 && h >= 1 &&
-                           w <= SHRT_MAX && h <= SHRT_MAX &&
-                           (scale == 1 || scale == 2)) {
-                    sixelCellPending = FALSE;
-                    if (!sixelTmux)
-                        sixelDetectedScale = g_renderer == RENDERER_LIBSIXEL ? (int)scale : 1;
-                    g_driver->iterm_cell_w = w;
-                    g_driver->iterm_cell_h = h;
-                    g_driver->iterm_cell_scale = (int)scale;
-                    g_driver->cell_pixel_w = (int)w;
-                    g_driver->cell_pixel_h = (int)h;
-                    size_changed = TRUE;
-                }
+                size_changed |= sixelClientStringReply(g_driver,
+                    key->value == SIXEL_TERMINAL_ID, text,
+                    g_renderer == RENDERER_LIBSIXEL);
                 break;
             }
             case SIXEL_DECRPM:
-                /* Only consume the answer to our one-time startup query.
-                 * No answer preserves the existing pixel mode for terminals
-                 * implementing 1016 without DECRQM support. */
-                if (sixelMouseModeQueryPending && key->nparams == 2 &&
-                    key->params[0] == 1016 && key->params[1] >= 0 &&
-                    key->params[1] <= 4) {
-                    sixelMouseModeQueryPending = FALSE;
-                    if (key->params[1] == 0 || key->params[1] == 4) {
-                        sixelMouseCells = TRUE;
-                        /* Disable 1016 before selecting SGR cell encoding. */
-                        printf("\033[?1016l");
-                        sixelEnableMouse();
-                    }
-                }
+                if (key->nparams == 2)
+                    sixelClientMouseReply(key->params[0], key->params[1]);
                 break;
             case SIXEL_DTTERM_SEQS:
                 if (g_driver && key->nparams == 3 &&
                     sixelValidSize(key->params[2], key->params[1])) {
-                    switch (key->params[0]) {
-                    case 4:
-                        if (sixelTmux)
-                            break;
-                        if (sixelIterm2Terminal && g_driver->pixel_size_reported)
-                            break;
-                        g_driver->pixel_size_reported = TRUE;
-                        g_driver->pixel_size_reply = TRUE;
-                        g_driver->pixel_h = key->params[1];
-                        g_driver->pixel_w = key->params[2];
-                        g_driver->reported_pixel_w = key->params[2];
-                        g_driver->reported_pixel_h = key->params[1];
-                        size_changed = TRUE;
-                        break;
-                    case 6:
-                        g_driver->cell_pixel_h = key->params[1];
-                        g_driver->cell_pixel_w = key->params[2];
-                        size_changed = TRUE;
-                        break;
-                    case 8:
-                        g_driver->cell_h = key->params[1];
-                        g_driver->cell_w = key->params[2];
-                        size_changed = TRUE;
-                        break;
-                    default:
-                        break;
-                    }
+                    size_changed |= sixelClientSizeReply(g_driver,
+                        key->params[0], key->params[2], key->params[1]);
                 }
                 break;
 
@@ -2583,9 +1593,9 @@ static void sixelPollInput(void)
         }
     }
     if (g_driver && size_changed) {
-        if (sixelTmux)
-            sixelTmuxSizeTimer = TimerSet(sixelTmuxSizeTimer, 0, 100,
-                                         sixelTmuxSizeTimeout, NULL);
+        if (sixelClientCoalesceSize())
+            sixelSizeReplyTimer = TimerSet(sixelSizeReplyTimer, 0, 100,
+                                         sixelSizeReplyTimeout, NULL);
         else
             sixelApplyTerminalSize(g_driver);
     }
@@ -2598,22 +1608,11 @@ static int sixelInit(void)
     printf("\033[H");
     printf("\033[?1004h");
     printf("\033[?25l");
-    /* Save the terminal's SIXEL mode and prevent bottom-edge scrolling. */
-    sixelTerminalControl("\033[?80s\033[?80h");
-    /* Request the strongest terminal fallback; XFixes handles motion too. */
-    printf("\033[>3p");
+    sixelClientControl("\033[?80s\033[?80h");
+    sixelClientPointerStart();
     mouseState = 0;
-    sixelMouseCells = FALSE;
-    sixelMouseModeQueryPending = FALSE;
     sixelEnableMouse();
-    sixelIdentityPending = TRUE;
-    sixelTerminalControl("\033[>q");
-    sixelQueryCellSize();
-    if (!sixelTmux && !sixelScreen && !sixelDecMouse && !sixelIterm2Terminal) {
-        sixelMouseModeQueryPending = TRUE;
-        printf("\033[?1016$p");
-        fflush(stdout);
-    }
+    sixelClientInitControls();
 
     return 0;
 }
@@ -2626,13 +1625,12 @@ static void sixelFini(void)
     char buf[4096];
 
     sixelStopRenderModeControl();
-    sixelStopScreenMonitor();
+    sixelClientStop();
     sixelStopResizeMonitor();
     if (sixelHostCursorFd >= 0) {
         RemoveNotifyFd(sixelHostCursorFd);
         sixelHostCursorFd = -1;
     }
-    sixelHostCursorFini();
     if (sixelFrameTimer) {
         TimerFree(sixelFrameTimer);
         sixelFrameTimer = NULL;
@@ -2651,10 +1649,8 @@ static void sixelFini(void)
     /* Stop all frame producers before erasing the final image. Multiplexer
      * passthrough graphics live outside its text grid, so clear both. */
     printf("\033[H\033[2J");
-    if (sixelTmux || sixelScreen)
-        sixelTerminalControl("\033[H\033[2J");
-    sixelTerminalControl("\033[?80r");
-    printf("\033[>0p");
+    sixelClientFiniControls();
+    sixelClientPointerStop();
     printf("\033[?25h");
     printf("\033[?1004l");
     fflush(stdout);
@@ -2686,32 +1682,14 @@ static void sixelFini(void)
         if (g_driver->output)
             sixel_output_unref(g_driver->output);
         free(g_driver->encoded);
-        free(g_driver->screen_frame);
-        free(g_driver->retina_palette_cache);
+        sixelClientRelease(g_driver);
 #endif
         free(g_driver->buffer);
         free(g_driver->bitmap);
         free(g_driver);
         g_driver = NULL;
     }
-    if (sixelTmuxImageRequired) {
-        size_t limit = 32;
-
-        fprintf(stderr, "Xsixel: Konsole image needs %zu bytes; "
-                "tmux input capacity is %zu bytes.\n",
-                sixelTmuxImageRequired, sixelTmuxImageLimit);
-        while (limit < sixelTmuxImageRequired && limit <= UINT_MAX / 2)
-            limit *= 2;
-        if (sixelTmuxLimitOption && limit >= sixelTmuxImageRequired)
-            fprintf(stderr, "Run:\n"
-                    "  tmux set-option -s input-buffer-size %zu\n"
-                    "Then restart Xsixel. To persist, add to ~/.tmux.conf:\n"
-                    "  set -s input-buffer-size %zu\n", limit, limit);
-        else
-            fprintf(stderr, "Use tmux with a configurable input-buffer-size, "
-                    "or run Xsixel directly or through GNU screen.\n");
-        fflush(stderr);
-    }
+    sixelClientFinish();
 }
 
 static void
@@ -2750,26 +1728,42 @@ static const KdOsFuncs sixelOsFuncs = {
     .Bell = sixelBell,
 };
 
+static void
+sixelRedrawCallback(void)
+{
+    if (g_driver)
+        SIXEL_Flip(g_driver);
+}
+
+static void
+sixelPublishModeCallback(void)
+{
+    if (g_driver && g_driver->screen->pScreen)
+        sixelRenderModeRoot(NULL, NULL, g_driver->screen->pScreen);
+}
+
 void ddxInit(void)
 {
-    sixelDetectTerminal();
-    sixelCheckTmux();
-    sixelCheckTmuxImageLimit();
-    /* TMUX takes precedence; nested multiplexers are not supported. */
-    sixelScreen = !sixelTmux && getenv("STY") && *getenv("STY");
+    static const struct sixel_client_callbacks callbacks = {
+        .redraw = sixelRedrawCallback,
+        .publish_mode = sixelPublishModeCallback,
+        .enable_mouse = sixelEnableMouse
+    };
+
+    sixelClientInit(&callbacks);
     /* Initialize terminal + sixel, then hook stdin for input */
     KdOsInit(&sixelOsFuncs);
     sixelInit();
-    sixelHostCursorFd = sixelHostCursorInit();
+    sixelHostCursorFd = sixelClientHostCursor();
     if (sixelHostCursorFd >= 0) {
         if (!SetNotifyFd(sixelHostCursorFd, sixelHostCursorNotify, X_NOTIFY_READ, NULL)) {
-            sixelHostCursorFini();
+            sixelClientPointerStop();
             sixelHostCursorFd = -1;
         } else {
             sixelHostCursorDispatch();
         }
     }
-    sixelStartScreenMonitor();
+    sixelClientStart();
     SetNotifyFd(STDIN_FILENO, sixelNotifyFd, X_NOTIFY_READ, NULL);
     if (!sixelStartResizeMonitor())
         FatalError("Xsixel: could not monitor terminal size changes\n");
